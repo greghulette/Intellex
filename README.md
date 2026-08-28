@@ -35,3 +35,13 @@ python -m venv .venv && .venv/Scripts/activate    # Windows
 pip install -r requirements.txt
 python -m py_compile src/*.py                      # no test suite yet
 ```
+
+## Prerequisite gap
+
+**There is no Python on this machine** (checked 2026-08-28: not on PATH, not in
+`%LOCALAPPDATA%\Programs\Python`, `WindowsApps`, `C:\Python*` or `Program Files`).
+Install CPython 3.11+ before any of the above works — `src/transport.py` has therefore
+**never been syntax-checked**.
+
+Worth knowing: ESP-Flasher-Companion ships as a frozen `.exe`, so it runs without Python.
+Building or developing either app needs a real interpreter.
