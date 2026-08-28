@@ -51,7 +51,21 @@ class WebSocketTransport(Transport):
             raise TransportError("websockets not installed") from e
 
         try:
-            self._ws = connect(self._url, open_timeout=self._connect_timeout)
+            # KEEPALIVE PINGS ARE THE POINT, not politeness.
+            #
+            # When the droid reboots its AP vanishes, but the TCP socket keeps
+            # looking healthy: nothing is sent, nothing errors, and recv() simply
+            # blocks. Measured against a real reboot, the board was serving again
+            # after 2.6 s while this end did not notice the link had died for 34 s
+            # -- so almost all of a 78 s outage was DETECTION, not recovery.
+            #
+            # WebSocket ping/pong forces the question every few seconds. This is the
+            # same lesson the config tool learned on serial, where a failing WRITE
+            # became the only liveness proof because a parked read never returns.
+            self._ws = connect(self._url,
+                               open_timeout=self._connect_timeout,
+                               ping_interval=3,   # ask...
+                               ping_timeout=3)    # ...and give up quickly
         except Exception as e:
             raise TransportError(f"cannot connect {self._url}: {type(e).__name__}: {e}") from e
 

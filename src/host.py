@@ -362,6 +362,17 @@ async def index(_req: web.Request) -> web.StreamResponse:
     return web.FileResponse(f)
 
 
+# How long the link may stay down before we suspect the routing problem rather than
+# a droid that is simply still booting. A NaviCore is back in ~3 s over USB but an
+# AP restart plus re-association is slower, so wait long enough not to bounce an
+# adapter that was about to recover on its own.
+BOUNCE_AFTER_FAILS = 6       # ~6 s misrouted before acting
+BOUNCE_COOLDOWN_S  = 10.0    # short: a bounce is now conditional on being misrouted,
+                             # so retrying is cheap and the first one after the AP
+                             # returns is the one that sticks
+auto_bounce = True           # --no-auto-bounce turns it off
+
+
 async def reconnect_loop(_app: web.Application) -> None:
     """Rebuild the link whenever it is down but still wanted.
 
@@ -378,6 +389,8 @@ async def reconnect_loop(_app: web.Application) -> None:
     open() every second for that long is free, and a slow reconnect is the
     difference between "it recovered" and "it hung".
     """
+    fails = 0
+    last_bounce = -1e9
     while True:
         try:
             await asyncio.sleep(1.0)
@@ -395,8 +408,47 @@ async def reconnect_loop(_app: web.Application) -> None:
                 await asyncio.to_thread(lambda: bridge.attach(bridge.rebuild(),
                                                               _label_for(spec), spec))
                 print(f"reconnected  {bridge.target_label}")
+                fails = 0
             except TransportError:
-                pass          # still down; try again next tick. Expected during a reboot.
+                fails += 1
+                # ── Self-heal the routing problem ─────────────────────────────
+                # A NaviCore reboot takes its SoftAP down. Windows drops the DHCP
+                # lease on the adapter joined to it, which removes the on-link
+                # route for 192.168.4.0/24 -- so traffic for the droid falls back
+                # to the DEFAULT route and leaves via the house network, where it
+                # dies. Retrying cannot fix that: every attempt goes out the wrong
+                # adapter. Only re-associating restores the route.
+                #
+                # Safe to do unattended because the bounce is scoped to the single
+                # interface associated with the droid's SSID -- the house adapter is
+                # never touched. That scoping is what makes automation reasonable
+                # here when it would not have been for a blanket `netsh wlan
+                # disconnect`.
+                spec = bridge._spec or {}
+                now = asyncio.get_running_loop().time()
+                if (auto_bounce and fails >= BOUNCE_AFTER_FAILS
+                        and spec.get("kind") == "ws"
+                        and (now - last_bounce) > BOUNCE_COOLDOWN_S):
+                    # Bounce only when the ROUTE is actually wrong -- i.e. the source
+                    # address the OS would use to reach the droid is not on the
+                    # droid's own subnet. That is the specific damage a reboot does
+                    # (lease lost, on-link route gone, traffic falls back to the
+                    # default route and leaves via the house adapter).
+                    #
+                    # Checking this rather than just counting seconds matters: if the
+                    # route is fine and the droid is merely still booting, bouncing
+                    # achieves nothing and burns a cooldown -- which is exactly what
+                    # made the first measured recovery take 73 s instead of ~15 s.
+                    host = spec.get("host", "192.168.4.1")
+                    via = await asyncio.to_thread(discover.local_ip_for, host)
+                    same_subnet = bool(via) and via.rsplit(".", 1)[0] == host.rsplit(".", 1)[0]
+                    if not same_subnet:
+                        last_bounce = now
+                        ssid = spec.get("ssid", "NaviCore")
+                        ok, msg = await asyncio.to_thread(discover.wifi_bounce, ssid)
+                        print(f"routed via {via or 'nothing'} instead of {host} — "
+                              f"re-associating {ssid}: {'ok' if ok else 'FAILED'} ({msg})")
+                        fails = 0
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -451,6 +503,10 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--serial", help="attach this COM port at startup")
     ap.add_argument("--ws", help="attach this droid host at startup")
+    ap.add_argument("--ssid", default="NaviCore",
+                    help="SSID to re-associate when the droid AP restarts (default: NaviCore)")
+    ap.add_argument("--no-auto-bounce", action="store_true",
+                    help="do not re-associate the droid adapter automatically")
     a = ap.parse_args()
 
     if a.serial and a.ws:
@@ -459,7 +515,9 @@ def main() -> int:
     # Record the target BEFORE trying, so a droid that is down at launch is still
     # waited for rather than silently forgotten.
     spec = ({"kind": "serial", "port": a.serial} if a.serial
-            else {"kind": "ws", "host": a.ws} if a.ws else None)
+            else {"kind": "ws", "host": a.ws, "ssid": a.ssid} if a.ws else None)
+    global auto_bounce
+    auto_bounce = not a.no_auto_bounce
     if spec:
         bridge.set_target(spec)
         try:
