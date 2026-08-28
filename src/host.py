@@ -386,6 +386,12 @@ async def index(_req: web.Request) -> web.StreamResponse:
         return web.Response(
             text=_inject_shim(f.read_text(encoding="utf-8", errors="replace")),
             content_type="text/html",
+            # no-store, or a bundle refresh does nothing visible: the browser keeps
+            # serving the page it already has and the user concludes the update
+            # failed. That is exactly what happened after the first fetch_webui run
+            # — the file on disk was current while the tab was hours behind. Costs
+            # nothing here; it is a local read over loopback.
+            headers={"Cache-Control": "no-store, must-revalidate"},
         )
     if not f.is_file():
         # Explain rather than 404. src/webui/ is gitignored and populated at build
