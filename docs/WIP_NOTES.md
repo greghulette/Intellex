@@ -72,6 +72,7 @@ in some other symptom.
 
 | Commit | What it did | Files |
 |---|---|---|
+| `e6a51c5` | **First NON-additive change.** Split framing from dispatch: `handleSerialInput()` keeps the read loop, the ~430-line dispatch moves verbatim to `processInputLine(const String&)` so a non-serial transport can reuse it. Verified a pure refactor by normalised diff (274 executable lines, byte-identical). Reverting this is a code MOVE, not a deletion — see §1 | `NaviCore.ino`, `docs/PROTOCOLS.md` |
 | `5958d70` | `wifiEnabled` bool, default false, six sites. Hidden toggle in the cloud-backup modal (reusing the existing 4×-wordmark gesture rather than adding a second secret). **Inert** — nothing read the flag | `rc_config.h`, `config_tool/index.html`, `docs/CONFIG_SCHEMA.md`, `docs/CONFIG_TOOL.md` |
 | `327ae1d` | `wifiSsid[33]` + `wifiPassword[64]` — the flag alone could not name or secure an AP. Own NVS key `wifi`. AP name/password fields beside the toggle. Still inert | `rc_config.h`, `config_tool/index.html`, `docs/CONFIG_SCHEMA.md`, `docs/CONFIG_TOOL.md` |
 | `2c0e788` | **The flag became live.** `setup()` raises the SoftAP before `wcb->begin()`. Removed the now-false "No WiFi AP or web server" comment | `NaviCore.ino`, `config_tool/index.html`, `docs/CONFIG_SCHEMA.md`, `docs/TROUBLESHOOTING.md` |
