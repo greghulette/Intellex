@@ -36,12 +36,21 @@ pip install -r requirements.txt
 python -m py_compile src/*.py                      # no test suite yet
 ```
 
-## Prerequisite gap
+## Environment
 
-**There is no Python on this machine** (checked 2026-08-28: not on PATH, not in
-`%LOCALAPPDATA%\Programs\Python`, `WindowsApps`, `C:\Python*` or `Program Files`).
-Install CPython 3.11+ before any of the above works — `src/transport.py` has therefore
-**never been syntax-checked**.
+Python **3.14.7**, installed via the Python Install Manager at
+`%LOCALAPPDATA%\Python\pythoncore-3.14-64`. Its shim directory
+(`%LOCALAPPDATA%\Python\bin`) was missing from PATH — added to the **User** PATH on
+2026-08-28, so a new shell finds `python` and `pip`.
 
-Worth knowing: ESP-Flasher-Companion ships as a frozen `.exe`, so it runs without Python.
-Building or developing either app needs a real interpreter.
+```bash
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m py_compile src/*.py     # no test suite yet — this is the bar
+```
+
+All dependencies resolve on 3.14: pyinstaller 6.22.2, esptool 5.3.1, pyserial 3.5,
+websockets 17.1, aiohttp 3.14.3.
+
+`transport.list_serial_ports()` is verified working against real hardware. Everything else
+in `transport.py` is a contract with no implementation yet.
