@@ -6,8 +6,9 @@ touched site, kept current as the work proceeds.
 
 **If you are here to rip it out, go to [§1](#1-how-to-remove-it).** Everything else is context.
 
-Status: **in progress.** The SoftAP comes up and a laptop can associate. Nothing listens on it
-yet — the comms server is not written, so the AP is currently an open door to an empty room.
+Status: **in progress.** The SoftAP comes up, a laptop associates, and the WebSocket command
+endpoint answers over it (PING -> PONG, verified 2026-08-28). The droid side is functional;
+the desktop app is not written yet.
 
 Related: [CONFIG_SCHEMA.md](CONFIG_SCHEMA.md) · [CONFIG_TOOL.md](CONFIG_TOOL.md) ·
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
@@ -78,6 +79,7 @@ in some other symptom.
 
 | Commit | What it did | Files |
 |---|---|---|
+| `bdf476e` | **The WebSocket command endpoint** (`navicore_wsserver.h`, +33.5 KB flash / +1.4 KB static RAM). Gated on `wifiEnabled`; feeds the same `processInputLine()` as USB. Handler on Core 0 enqueues only, command runs from `loop()` on Core 1. **Verified on hardware** — PING → PONG. NOTE: this commit also swept up an unrelated `rc_telemetry.h` change from a concurrent session (adaptive fragment fill), which briefly broke CI; fixed in `6c8ed16`. Neither belongs to this effort | `NaviCore.ino`, `navicore_wsserver.h`, `docs/PROTOCOLS.md` |
 | `e6a51c5` | **First NON-additive change.** Split framing from dispatch: `handleSerialInput()` keeps the read loop, the ~430-line dispatch moves verbatim to `processInputLine(const String&)` so a non-serial transport can reuse it. Verified a pure refactor by normalised diff (274 executable lines, byte-identical). Reverting this is a code MOVE, not a deletion — see §1 | `NaviCore.ino`, `docs/PROTOCOLS.md` |
 | `5958d70` | `wifiEnabled` bool, default false, six sites. Hidden toggle in the cloud-backup modal (reusing the existing 4×-wordmark gesture rather than adding a second secret). **Inert** — nothing read the flag | `rc_config.h`, `config_tool/index.html`, `docs/CONFIG_SCHEMA.md`, `docs/CONFIG_TOOL.md` |
 | `327ae1d` | `wifiSsid[33]` + `wifiPassword[64]` — the flag alone could not name or secure an AP. Own NVS key `wifi`. AP name/password fields beside the toggle. Still inert | `rc_config.h`, `config_tool/index.html`, `docs/CONFIG_SCHEMA.md`, `docs/CONFIG_TOOL.md` |
