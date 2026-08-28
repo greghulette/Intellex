@@ -43,7 +43,22 @@ from typing import Optional
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from aiohttp import web, WSMsgType                       # noqa: E402
+try:
+    from aiohttp import web, WSMsgType                   # noqa: E402
+except ImportError:                                      # pragma: no cover
+    # Almost always "ran with the wrong interpreter" rather than "not installed":
+    # the dependencies live in .venv, and `python src/host.py` uses whatever is on
+    # PATH. Say so, because the bare ModuleNotFoundError reads like a broken app.
+    sys.stderr.write(
+        "\nNaviLink: aiohttp is not available to this interpreter.\n"
+        f"  running: {sys.executable}\n\n"
+        "Use the launcher, which creates the venv and installs deps on first run:\n"
+        "  Windows:  scripts\\run-windows.bat --serial COM5\n"
+        "  macOS:    ./scripts/run-macos.command --serial /dev/cu.usbmodem1101\n\n"
+        "Or run the venv's interpreter directly:\n"
+        "  .venv\\Scripts\\python.exe src\\host.py --serial COM5\n\n"
+    )
+    raise SystemExit(1)
 from transport import Transport, TransportError, list_serial_ports   # noqa: E402
 from serial_transport import SerialTransport             # noqa: E402
 from ws_transport import WebSocketTransport              # noqa: E402
