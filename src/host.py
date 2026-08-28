@@ -194,6 +194,18 @@ async def api_discover(req: web.Request) -> web.Response:
     return web.json_response({"candidates": found})
 
 
+async def api_wifi_bounce(req: web.Request) -> web.Response:
+    """Reconnect the droid's WLAN profile — the scripted version of the manual
+    adapter toggle. Explicit action, never automatic."""
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    ssid = body.get("ssid", "NaviCore")
+    ok, msg = await asyncio.to_thread(discover.wifi_bounce, ssid)
+    return web.json_response({"ok": ok, "message": msg})
+
+
 async def api_status(_req: web.Request) -> web.Response:
     return web.json_response({
         "attached": bridge.attached,
@@ -422,6 +434,7 @@ def build_app() -> web.Application:
         web.get("/_api/ports", api_ports),
         web.get("/_api/status", api_status),
         web.get("/_api/discover", api_discover),
+        web.post("/_api/wifi-bounce", api_wifi_bounce),
         web.post("/_api/attach", api_attach),
         web.post("/_api/detach", api_detach),
         web.post("/_api/signals", api_signals),

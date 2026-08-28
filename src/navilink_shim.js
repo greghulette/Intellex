@@ -198,7 +198,41 @@
     }
   }
 
+  // ── Disable esptool flashing ──────────────────────────────────────────────
+  // Flashing genuinely CANNOT work through this shim, and letting it try wastes
+  // minutes on a sync that can never succeed.
+  //
+  // esptool-js drives a real port: it toggles DTR/RTS in a timing-sensitive reset
+  // dance to enter the bootloader, polls readable.locked / writable.locked, and
+  // cancels readers mid-stream. Over a WebSocket there are no control lines at all
+  // (set_signals is a documented no-op on that transport), so the board never
+  // enters download mode and esptool sits printing "... ___ ..." forever.
+  //
+  // Not a gap to close later either: the native host runs esptool directly, the
+  // same Python package ESP-Flasher-Companion already ships. Doing it through the
+  // browser would be strictly worse. So disable the buttons and say why, rather
+  // than leaving a trap that looks like a hardware fault.
+  function disableFlashButtons() {
+    const ids = ['btn-fw-flash', 'btn-fw-wipe'];
+    const why = 'Flashing is not available through the NaviLink app — '
+              + 'use the web tool over USB, or ESP-Flasher-Companion.';
+    for (const id of ids) {
+      const b = document.getElementById(id);
+      if (!b) continue;
+      b.disabled = true;
+      b.title = why;
+    }
+    // OTA is different: it is just commands on the line, so it works over either
+    // transport. Left enabled deliberately.
+  }
+
   // After load, so the tool has defined its functions and wired its UI. The delay
   // is for its own connect-modal setup, not the socket.
-  window.addEventListener('load', () => setTimeout(autoConnect, 400), { once: true });
+  window.addEventListener('load', () => setTimeout(() => {
+    disableFlashButtons();
+    autoConnect();
+  }, 400), { once: true });
+  // The tool re-enables these whenever the transport changes, so re-assert after
+  // any connect settles rather than only once at load.
+  setInterval(disableFlashButtons, 3000);
 })();

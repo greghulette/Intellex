@@ -29,6 +29,7 @@ rather than merely finding something alive.
 from __future__ import annotations
 
 import json
+import sys
 import socket
 from typing import Optional
 
@@ -117,6 +118,44 @@ def scan(candidates: Optional[list[str]] = None) -> list[dict]:
             "hint": _hint(via, reachable, version),
         })
     return out
+
+
+def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
+    """Disconnect and reconnect the WLAN profile for `ssid`.
+
+    THE PROBLEM: an ESP32 SoftAP disappears every time the board reboots -- which
+    is every flash, every config change that needs a restart, every OTA. Windows
+    frequently keeps the association in a half-dead state afterwards: the adapter
+    still reports "connected" with a valid DHCP lease and a correct on-link route,
+    and no traffic passes. Toggling the adapter clears it, which is why that became
+    a manual ritual after every reboot.
+
+    This is the scripted version of that ritual. `netsh wlan connect` uses a
+    profile Windows has already saved, so it needs no password and -- unlike
+    disabling the adapter -- no elevation.
+
+    NOT automatic. Bouncing someone's WiFi behind their back is the kind of thing
+    that breaks a video call mid-sentence; it is exposed as an action the app can
+    offer once discovery reports the specific "routable but no TCP" state.
+    """
+    import subprocess
+    if sys.platform != "win32":
+        # macOS needs the interface name and a different tool; not worth guessing
+        # at one here when the failure mode has only been observed on Windows.
+        return False, "adapter bounce is implemented for Windows only"
+    try:
+        subprocess.run(["netsh", "wlan", "disconnect"],
+                       capture_output=True, timeout=10, check=False)
+        r = subprocess.run(["netsh", "wlan", "connect", f"name={ssid}"],
+                           capture_output=True, timeout=15, text=True, check=False)
+        out = (r.stdout or r.stderr or "").strip()
+        if r.returncode != 0:
+            return False, out or f"netsh exited {r.returncode}"
+        return True, out or f"reconnecting to {ssid}"
+    except FileNotFoundError:
+        return False, "netsh not found"
+    except subprocess.TimeoutExpired:
+        return False, "netsh timed out"
 
 
 def _hint(via: Optional[str], reachable: bool, version: Optional[str]) -> str:
