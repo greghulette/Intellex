@@ -206,6 +206,47 @@ async def api_wifi_bounce(req: web.Request) -> web.Response:
     return web.json_response({"ok": ok, "message": msg})
 
 
+_DTG_RE = __import__("re").compile(r'id="footer-dtg"[^>]*>([^<]+)<')
+
+
+def _bundled_dtg() -> str:
+    f = WEBUI_DIR / "index.html"
+    if not f.is_file():
+        return ""
+    m = _DTG_RE.search(f.read_text(encoding="utf-8", errors="replace"))
+    return m.group(1).strip() if m else ""
+
+
+def _published_dtg() -> str:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                "https://greghulette.github.io/NaviCore/config_tool/index.html",
+                timeout=10) as r:
+            head = r.read(400_000).decode("utf-8", "replace")   # stamp is near the top
+        m = _DTG_RE.search(head)
+        return m.group(1).strip() if m else ""
+    except Exception:
+        return ""            # offline is normal and not an error
+
+
+async def api_webui_version(_req: web.Request) -> web.Response:
+    """Is the bundled config tool behind what is published?
+
+    Worth surfacing rather than leaving to be noticed: the bundle is a COPY, so it
+    silently ages every time the tool is updated. Drifting three hours behind while
+    debugging the tool's own behaviour is a genuinely confusing place to be.
+    """
+    bundled = _bundled_dtg()
+    published = await asyncio.to_thread(_published_dtg)
+    return web.json_response({
+        "bundled": bundled,
+        "published": published,
+        "stale": bool(bundled and published and bundled != published),
+        "checked": bool(published),
+    })
+
+
 async def api_status(_req: web.Request) -> web.Response:
     return web.json_response({
         "attached": bridge.attached,
@@ -486,6 +527,7 @@ def build_app() -> web.Application:
         web.get("/_api/ports", api_ports),
         web.get("/_api/status", api_status),
         web.get("/_api/discover", api_discover),
+        web.get("/_api/webui-version", api_webui_version),
         web.post("/_api/wifi-bounce", api_wifi_bounce),
         web.post("/_api/attach", api_attach),
         web.post("/_api/detach", api_detach),
@@ -530,7 +572,15 @@ def main() -> int:
     url = f"http://{BIND_HOST}:{a.port}/"
     sys.stdout.reconfigure(line_buffering=True)   # so a redirected log is live, not buffered
     print(f"serving   {url}")
-    print(f"ui        {'bundled' if (WEBUI_DIR / 'index.html').is_file() else 'NOT bundled (see / for why)'}")
+    _b = _bundled_dtg()
+    _p = _published_dtg()
+    if not _b:
+        print("ui        NOT bundled (see / for why)")
+    elif _p and _p != _b:
+        print(f"ui        {_b}  ** OUT OF DATE ** published is {_p}")
+        print("          refresh with: python tools/fetch_webui.py")
+    else:
+        print(f"ui        {_b}" + ("" if _p else "  (could not reach Pages to compare)"))
     print("ctrl-c to stop")
     try:
         web.run_app(build_app(), host=BIND_HOST, port=a.port, print=None)
