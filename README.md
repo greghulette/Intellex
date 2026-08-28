@@ -16,7 +16,7 @@ Scaffold. Nothing runs yet.
 | Transport contracts | Defined and honoured — **the DTR-on-open reset is fixed** (no board reboot when the port opens) |
 | Serial / WebSocket transports | **Both verified on hardware** — `tools/smoke_transport.py serial|ws` |
 | Local HTTP + WS host | **Verified on hardware** — same client code reaches the droid over serial AND WiFi |
-| UI bundling + update-from-Pages | Not written |
+| UI bundling + update-from-Pages | Working — `tools/fetch_webui.py`, verified byte-identical to Pages |
 | Packaging | Not written — port ESP-Flasher-Companion's proven pipeline |
 
 ## Layout

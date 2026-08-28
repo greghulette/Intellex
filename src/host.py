@@ -166,6 +166,28 @@ async def api_detach(_req: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def api_signals(req: web.Request) -> web.Response:
+    """DTR/RTS from the page's shimmed setSignals().
+
+    Must actually reach the port. The config tool deasserts both right after
+    open() precisely to stop the board resetting, so dropping this on the floor
+    would reintroduce the reboot this project exists to fix. A WebSocket target
+    has no control lines and no-ops by design (Transport.set_signals).
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    t = bridge._transport
+    if t is None:
+        return web.json_response({"ok": False, "error": "nothing attached"}, status=409)
+    try:
+        t.set_signals(dtr=body.get("dataTerminalReady"), rts=body.get("requestToSend"))
+    except TransportError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=502)
+    return web.json_response({"ok": True})
+
+
 # ── the byte pipe ───────────────────────────────────────────────────────────────
 async def ws_link(req: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse(heartbeat=30)
@@ -194,8 +216,42 @@ async def ws_link(req: web.Request) -> web.WebSocketResponse:
 
 
 # ── static UI ───────────────────────────────────────────────────────────────────
+SHIM_FILE = pathlib.Path(__file__).resolve().parent / "navilink_shim.js"
+SHIM_TAG = '<script src="/_navilink.js"></script>'
+
+
+async def shim_js(_req: web.Request) -> web.StreamResponse:
+    return web.FileResponse(SHIM_FILE, headers={"Content-Type": "application/javascript"})
+
+
+def _inject_shim(html: str) -> str:
+    """Put the shim ahead of the tool's own scripts, at SERVE time only.
+
+    The file on disk is never touched. That is the point: src/webui/index.html
+    stays byte-identical to the copy published on Pages, so the update button is
+    a plain overwrite and there is no fork to keep in step. Injecting a tag is
+    the difference between "we ship the same file" and "we ship our version".
+    """
+    if SHIM_TAG in html:
+        return html
+    # Before the FIRST script, whatever it is -- navigator.serial has to exist
+    # before any tool code runs, not merely before the tool connects.
+    lower = html.lower()
+    at = lower.find("<script")
+    if at == -1:
+        at = lower.find("</head>")
+    if at == -1:
+        return SHIM_TAG + html          # no head, no script: prepend and hope
+    return html[:at] + SHIM_TAG + "\n" + html[at:]
+
+
 async def index(_req: web.Request) -> web.StreamResponse:
     f = WEBUI_DIR / "index.html"
+    if f.is_file():
+        return web.Response(
+            text=_inject_shim(f.read_text(encoding="utf-8", errors="replace")),
+            content_type="text/html",
+        )
     if not f.is_file():
         # Explain rather than 404. src/webui/ is gitignored and populated at build
         # time from the public NaviCore repo — an empty one is the normal state of a
@@ -220,6 +276,8 @@ def build_app() -> web.Application:
         web.get("/_api/status", api_status),
         web.post("/_api/attach", api_attach),
         web.post("/_api/detach", api_detach),
+        web.post("/_api/signals", api_signals),
+        web.get("/_navilink.js", shim_js),
         web.get("/_link", ws_link),
     ])
     if WEBUI_DIR.is_dir():
