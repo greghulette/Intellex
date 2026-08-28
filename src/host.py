@@ -413,7 +413,7 @@ async def index(_req: web.Request) -> web.StreamResponse:
 # a droid that is simply still booting. A NaviCore is back in ~3 s over USB but an
 # AP restart plus re-association is slower, so wait long enough not to bounce an
 # adapter that was about to recover on its own.
-BOUNCE_AFTER_FAILS = 6       # ~6 s misrouted before acting
+BOUNCE_AFTER_FAILS = 2       # act before Windows gets round to it on its own
 BOUNCE_COOLDOWN_S  = 10.0    # short: a bounce is now conditional on being misrouted,
                              # so retrying is cheap and the first one after the AP
                              # returns is the one that sticks
@@ -441,6 +441,29 @@ async def reconnect_loop(_app: web.Application) -> None:
     while True:
         try:
             await asyncio.sleep(1.0)
+
+            # ── Route-based liveness ──────────────────────────────────────────
+            # Do not wait for the socket to notice. When the droid's AP goes away
+            # the TCP connection can look healthy for a long time -- measured at
+            # 12.5 s even with 1 s WebSocket keepalive pings, because the failure is
+            # below TCP and the pings simply queue.
+            #
+            # But the OS knows immediately: the moment the lease drops, the source
+            # address it would pick for the droid stops being on the droid's subnet.
+            # Asking that question costs a UDP connect() with no traffic, so it can
+            # be asked every second, and it detects the exact failure in ~1 s rather
+            # than waiting out a TCP timeout.
+            spec_now = bridge._spec or {}
+            if bridge.attached and spec_now.get("kind") == "ws":
+                host_now = spec_now.get("host", "192.168.4.1")
+                via_now = await asyncio.to_thread(discover.local_ip_for, host_now)
+                on_subnet = bool(via_now) and \
+                    via_now.rsplit(".", 1)[0] == host_now.rsplit(".", 1)[0]
+                if not on_subnet:
+                    print(f"route to {host_now} left via {via_now or 'nothing'} — link is dead")
+                    bridge.last_error = "route lost (droid AP down?)"
+                    bridge._drop()      # keep the target; the loop below rebuilds it
+
             if bridge.attached or not bridge.wants_link:
                 bridge.reconnecting = False
                 continue
