@@ -29,6 +29,12 @@ Revert in that order (newest → oldest); the reverse conflicts, because each co
 last. **`a2b64b8` is NOT part of this work** — it is the fragment-pacing and channel-clamp fix
 that happened to land in the same session. Do not revert it.
 
+**`e6a51c5` is deliberately absent from that list.** It splits `handleSerialInput()` into framing
+plus `processInputLine()`, and it is a verified pure refactor with no WiFi in it — the wireless
+work merely needed it first. **Leave it in.** It makes the input path reusable and better on its
+own terms, and reverting it is a code *move* that will conflict with anything landed since. Only
+revert it if you specifically want the old single-function shape back, and do it separately.
+
 ### If the commits have become tangled with later work
 
 Remove by symbol instead. These names appear nowhere else in the tree, so a grep is exhaustive:
