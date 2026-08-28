@@ -85,6 +85,9 @@ class Bridge:
         self._spec: Optional[dict] = None
         self._want: bool = False
         self.reconnecting: bool = False
+        # When we last heard ANYTHING from the droid. Traffic is proof of life, and
+        # cheaper and safer than any probe -- see the idle gate in reconnect_loop().
+        self.last_rx: float = 0.0
 
     # -- page side ---------------------------------------------------------------
     def bind_page(self, ws: web.WebSocketResponse, loop: asyncio.AbstractEventLoop) -> None:
@@ -153,6 +156,8 @@ class Bridge:
     # -- the thread boundary -----------------------------------------------------
     def _on_transport_data(self, chunk: bytes) -> None:
         """Called on a READER THREAD. Must not touch aiohttp directly."""
+        import time as _t
+        self.last_rx = _t.monotonic()     # cheap, and it gates the liveness probe
         loop, ws = self._loop, self._ws
         if loop is None or ws is None:
             return                    # no page attached; drop rather than buffer forever
@@ -414,6 +419,10 @@ async def index(_req: web.Request) -> web.StreamResponse:
 # AP restart plus re-association is slower, so wait long enough not to bounce an
 # adapter that was about to recover on its own.
 BOUNCE_AFTER_FAILS = 2       # act before Windows gets round to it on its own
+# Only probe after this much silence. Long enough that any real exchange (a
+# command, the live monitor, an OTA chunk) keeps us out of the probe path
+# entirely; short enough that a dead AP is caught in a couple of seconds.
+PROBE_IDLE_S = 2.0
 BOUNCE_COOLDOWN_S  = 10.0    # short: a bounce is now conditional on being misrouted,
                              # so retrying is cheap and the first one after the AP
                              # returns is the one that sticks
@@ -438,6 +447,7 @@ async def reconnect_loop(_app: web.Application) -> None:
     """
     fails = 0
     last_bounce = -1e9
+    probe_fails = 0
     while True:
         try:
             await asyncio.sleep(1.0)
@@ -456,13 +466,41 @@ async def reconnect_loop(_app: web.Application) -> None:
             spec_now = bridge._spec or {}
             if bridge.attached and spec_now.get("kind") == "ws":
                 host_now = spec_now.get("host", "192.168.4.1")
-                via_now = await asyncio.to_thread(discover.local_ip_for, host_now)
-                on_subnet = bool(via_now) and \
-                    via_now.rsplit(".", 1)[0] == host_now.rsplit(".", 1)[0]
-                if not on_subnet:
-                    print(f"route to {host_now} left via {via_now or 'nothing'} — link is dead")
-                    bridge.last_error = "route lost (droid AP down?)"
-                    bridge._drop()      # keep the target; the loop below rebuilds it
+                import time as _t
+                # Same clock as _on_transport_data — loop.time() is not guaranteed
+                # to be monotonic() and mixing them makes idle nonsense.
+                idle = _t.monotonic() - (bridge.last_rx or 0)
+
+                # ACTIVE PROBE, gated on IDLE.
+                #
+                # Watching the socket or the route both wait on Windows deciding the
+                # association is gone -- measured at ~12 s either way. A TCP connect
+                # fails as soon as ARP does, which is earlier, so probing genuinely
+                # beats both.
+                #
+                # But it must never fire during an OTA. Writing flash on an ESP32
+                # disables the instruction cache and can stall BOTH cores, so a probe
+                # mid-erase can fail on a perfectly healthy board -- and tearing the
+                # link down mid-update is far worse than a slow reconnect.
+                #
+                # Hence the idle gate: traffic IS proof of life, so while bytes are
+                # flowing (an OTA, the live monitor, any command) we never probe at
+                # all. Only genuine silence gets probed, which is exactly the case
+                # where a dead AP hides.
+                if idle > PROBE_IDLE_S:
+                    alive = await asyncio.to_thread(discover.tcp_open, host_now, 80, 1.0)
+                    if alive:
+                        probe_fails = 0
+                    else:
+                        probe_fails += 1
+                        # Two in a row: one failure could be a momentary stall.
+                        if probe_fails >= 2:
+                            print(f"{host_now} unreachable after {idle:.0f}s idle — link is dead")
+                            bridge.last_error = "probe failed (droid AP down?)"
+                            probe_fails = 0
+                            bridge._drop()   # keep the target; the loop rebuilds it
+                else:
+                    probe_fails = 0          # traffic is flowing; nothing to prove
 
             if bridge.attached or not bridge.wants_link:
                 bridge.reconnecting = False
