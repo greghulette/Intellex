@@ -236,7 +236,13 @@ SHIM_TAG = '<script src="/_navilink.js"></script>'
 
 
 async def shim_js(_req: web.Request) -> web.StreamResponse:
-    return web.FileResponse(SHIM_FILE, headers={"Content-Type": "application/javascript"})
+    # no-store: the shim changes far more often than the tool during development,
+    # and a cached copy means editing it appears to do nothing. Costs nothing --
+    # it is 7 KB from loopback.
+    return web.FileResponse(SHIM_FILE, headers={
+        "Content-Type": "application/javascript",
+        "Cache-Control": "no-store, must-revalidate",
+    })
 
 
 def _inject_shim(html: str) -> str:

@@ -143,4 +143,41 @@
   };
 
   console.info('[NaviLink] navigator.serial is backed by', LINK_URL);
+
+  // ── Auto-connect ──────────────────────────────────────────────────────────
+  // Without this the user must click Connect and choose "Direct USB" — a label
+  // that is now actively misleading, because the host may well be on WiFi with no
+  // cable in sight. The tool's transport names describe how IT reaches a board,
+  // and the shim has made that one thing regardless of what is on the far end.
+  //
+  // Relabelling would mean editing index.html, which is the fork this whole
+  // approach exists to avoid. So instead: the host already knows what it is
+  // attached to, so just drive the tool's own connect path and skip the question.
+  //
+  // Calls the page's connectDirect(), which is the branch that ends up in
+  // navigator.serial. Feature-detected and non-fatal: if the tool ever renames it,
+  // auto-connect quietly stops and the manual button still works — a stale
+  // assumption here must not make the app unusable.
+  async function autoConnect() {
+    try {
+      const r = await fetch('/_api/status');
+      const st = await r.json();
+      if (!st.attached) {
+        console.info('[NaviLink] host has no transport attached — not auto-connecting');
+        return;
+      }
+      if (typeof window.connectDirect !== 'function') {
+        console.warn('[NaviLink] connectDirect() not found; click Connect manually');
+        return;
+      }
+      console.info('[NaviLink] auto-connecting to', st.target);
+      await window.connectDirect();
+    } catch (e) {
+      console.warn('[NaviLink] auto-connect skipped:', e && e.message);
+    }
+  }
+
+  // After load, so the tool has defined its functions and wired its UI. The delay
+  // is for its own connect-modal setup, not the socket.
+  window.addEventListener('load', () => setTimeout(autoConnect, 400), { once: true });
 })();
