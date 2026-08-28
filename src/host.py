@@ -62,6 +62,7 @@ except ImportError:                                      # pragma: no cover
 from transport import Transport, TransportError, list_serial_ports   # noqa: E402
 from serial_transport import SerialTransport             # noqa: E402
 from ws_transport import WebSocketTransport              # noqa: E402
+import discover                                          # noqa: E402
 
 WEBUI_DIR = pathlib.Path(__file__).resolve().parent / "webui"
 DEFAULT_PORT = 8765
@@ -138,6 +139,18 @@ bridge = Bridge()
 # ── control plane ───────────────────────────────────────────────────────────────
 async def api_ports(_req: web.Request) -> web.Response:
     return web.json_response({"ports": list_serial_ports()})
+
+
+async def api_discover(req: web.Request) -> web.Response:
+    """Which droids are reachable, and via which adapter.
+
+    Runs in a thread: the probes are blocking socket work and would otherwise
+    stall the event loop that is also serving the page.
+    """
+    extra = req.query.get("hosts", "")
+    cands = [h.strip() for h in extra.split(",") if h.strip()] or None
+    found = await asyncio.to_thread(discover.scan, cands)
+    return web.json_response({"candidates": found})
 
 
 async def api_status(_req: web.Request) -> web.Response:
@@ -295,6 +308,7 @@ def build_app() -> web.Application:
         web.get("/", index),
         web.get("/_api/ports", api_ports),
         web.get("/_api/status", api_status),
+        web.get("/_api/discover", api_discover),
         web.post("/_api/attach", api_attach),
         web.post("/_api/detach", api_detach),
         web.post("/_api/signals", api_signals),
