@@ -27,8 +27,29 @@ git commit -m "Remove the WiFi/desktop-app work"
 ```
 
 Revert in that order (newest → oldest); the reverse conflicts, because each commit builds on the
-last. **`a2b64b8` is NOT part of this work** — it is the fragment-pacing and channel-clamp fix
-that happened to land in the same session. Do not revert it.
+last.
+
+### Do NOT revert these — same session, different work
+
+The config-transfer throughput effort landed alongside this and is entirely unrelated to WiFi.
+It touches the *mesh* path, which the WebSocket work does not use at all:
+
+| Commit | What |
+|---|---|
+| `a2b64b8` | Fragment **pacing** floor (`FRAG_PACE_FLOOR_MS` = 100, derived per-line) + the mesh-channel 1–11 clamp + the fragment idle-timeout fix |
+| `6c8ed16` | Config **download**: adaptive fragment fill (`_jsonEscCost`, `rc_telemetry.h`) |
+| `30e81f1` | Config **upload**: adaptive fragment fill (`FRAG_ENV_TARGET_BYTES` = 180, `config_tool/index.html`) |
+| `de9ad49`, `f7296b6` | Doc repairs for the above |
+
+**These are the two independent levers on mesh transfer speed and they compound**: *pace* (how
+long between fragments) and *chunk* (how full each fragment is). `FRAG_CHUNK_BYTES` = 80 is now
+a worst-case floor that the adaptive code grows from, not the actual size. Reverting the WiFi
+work must leave all of this alone.
+
+Note also that `bdf476e` (WebSocket endpoint) **carries an unrelated `rc_telemetry.h` hunk**
+swept in from a concurrent session in the same checkout — the adaptive-fill code, committed
+mid-edit, which briefly broke CI until `6c8ed16`. A revert of `bdf476e` would take that with it.
+Revert the file paths, not the whole commit.
 
 **`e6a51c5` is deliberately absent from that list.** It splits `handleSerialInput()` into framing
 plus `processInputLine()`, and it is a verified pure refactor with no WiFi in it — the wireless

@@ -13,8 +13,8 @@ Scaffold. Nothing runs yet.
 |---|---|
 | Firmware SoftAP (`wifiEnabled`, off by default) | Landed in NaviCore; AP verified on hardware |
 | Droid-side comms server | **Verified on hardware** — WS endpoint answers PING with PONG |
-| Transport contracts | Defined (`src/transport.py`) |
-| Serial / WebSocket transports | WS proven by `tools/smoke_ws.py`; the Transport classes are still stubs |
+| Transport contracts | Defined and honoured — **the DTR-on-open reset is fixed** (no board reboot when the port opens) |
+| Serial / WebSocket transports | **Both verified on hardware** — `tools/smoke_transport.py serial|ws` |
 | Local HTTP + WS host | Not written |
 | UI bundling + update-from-Pages | Not written |
 | Packaging | Not written — port ESP-Flasher-Companion's proven pipeline |
