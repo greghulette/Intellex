@@ -138,20 +138,49 @@ def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
     that breaks a video call mid-sentence; it is exposed as an action the app can
     offer once discovery reports the specific "routable but no TCP" state.
     """
+    import re
     import subprocess
     if sys.platform != "win32":
         # macOS needs the interface name and a different tool; not worth guessing
         # at one here when the failure mode has only been observed on Windows.
         return False, "adapter bounce is implemented for Windows only"
+
+    # MUST be scoped to ONE interface. `netsh wlan disconnect` with no interface
+    # disconnects EVERY wireless adapter -- on the two-adapter setup this exists to
+    # serve, that drops the user's house WiFi (and any call on it) to fix the droid
+    # link. Find the adapter actually associated with `ssid` and touch only that.
     try:
-        subprocess.run(["netsh", "wlan", "disconnect"],
+        show = subprocess.run(["netsh", "wlan", "show", "interfaces"],
+                              capture_output=True, timeout=10, text=True, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, f"netsh unavailable: {e.__class__.__name__}"
+
+    iface = None
+    current = None
+    for line in (show.stdout or "").splitlines():
+        m = re.match(r"\s*Name\s*:\s*(.+?)\s*$", line)
+        if m:
+            current = m.group(1)
+            continue
+        m = re.match(r"\s*SSID\s*:\s*(.+?)\s*$", line)
+        if m and m.group(1) == ssid:
+            iface = current
+            break
+
+    if not iface:
+        return False, (f'no wireless interface is associated with "{ssid}" — '
+                       "join it once by hand so Windows saves the profile")
+
+    try:
+        subprocess.run(["netsh", "wlan", "disconnect", f"interface={iface}"],
                        capture_output=True, timeout=10, check=False)
-        r = subprocess.run(["netsh", "wlan", "connect", f"name={ssid}"],
+        r = subprocess.run(["netsh", "wlan", "connect",
+                            f"name={ssid}", f"interface={iface}"],
                            capture_output=True, timeout=15, text=True, check=False)
         out = (r.stdout or r.stderr or "").strip()
         if r.returncode != 0:
             return False, out or f"netsh exited {r.returncode}"
-        return True, out or f"reconnecting to {ssid}"
+        return True, f'{iface}: {out or "reconnecting to " + ssid}'
     except FileNotFoundError:
         return False, "netsh not found"
     except subprocess.TimeoutExpired:

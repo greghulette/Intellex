@@ -226,6 +226,48 @@
     // transport. Left enabled deliberately.
   }
 
+  // ── Say which transport is actually in use ────────────────────────────────
+  // The tool's status reads "Connected" whatever is behind navigator.serial, so a
+  // WiFi session looks identical to a cable. That is not cosmetic: what you do
+  // when it stops responding differs completely — check the cable, or check the
+  // adapter and whether the AP came back after a reboot.
+  //
+  // Appended to the tool's own text rather than replacing it, and re-applied on a
+  // timer because the tool rewrites that span on every state change. Guarded by a
+  // marker so it cannot stack up.
+  const MARK = ' · ';
+  let lastTarget = '';
+
+  async function refreshTarget() {
+    try {
+      const st = await (await fetch('/_api/status')).json();
+      lastTarget = st.attached ? String(st.target || '') : '';
+    } catch (_) { lastTarget = ''; }
+  }
+
+  function labelFor(target) {
+    if (!target) return '';
+    // "ws://192.168.4.1/ws" -> "WiFi 192.168.4.1"; "serial COM5" -> "USB COM5"
+    const m = /^ws:\/\/([^/:]+)/.exec(target);
+    if (m) return 'WiFi ' + m[1];
+    return target.replace(/^serial\s+/, 'USB ');
+  }
+
+  function annotateStatus() {
+    const el = document.getElementById('status-text');
+    if (!el) return;
+    const label = labelFor(lastTarget);
+    const base = el.textContent.split(MARK)[0];
+    // Only annotate once the tool itself says it is connected — decorating
+    // "Disconnected" or "Waiting for board…" would be actively misleading.
+    const want = (label && /connect/i.test(base) && !/disconnect/i.test(base))
+      ? base + MARK + label
+      : base;
+    if (el.textContent !== want) el.textContent = want;
+  }
+
+  setInterval(() => { refreshTarget().then(annotateStatus); }, 2000);
+
   // After load, so the tool has defined its functions and wired its UI. The delay
   // is for its own connect-modal setup, not the socket.
   window.addEventListener('load', () => setTimeout(() => {
