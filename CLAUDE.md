@@ -101,9 +101,11 @@ The droid side is `wifiEnabled` / `wifiSsid` / `wifiPassword` in `NaviCore/rc_co
 default, with the SoftAP raised in `setup()`. Tracked in [`docs/WIP_NOTES.md`](docs/WIP_NOTES.md),
 which also carries the recipe for removing it.
 
-**Unverified as of 2026-08-28:** ESP-NOW surviving alongside the SoftAP on the shared radio.
-Nothing in the ecosystem has ever exercised that path. If the mesh dies with WiFi on, this
-architecture changes.
+**Verified on hardware 2026-08-28: ESP-NOW survives alongside the SoftAP.** Two runs with the
+AP up and a laptop associated — direct USB, then bridged through a mgmt relay: 264 sends,
+98.9% ack, both WCBs at 100% with zero retries, and every failure predating the steady state.
+The shared-radio coexistence path works under real load. This was the assumption the whole
+WiFi transport rested on.
 
 ## Discretion
 

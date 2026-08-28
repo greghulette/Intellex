@@ -141,7 +141,7 @@ for them.
 |---|---|
 | **Verified on hardware** | Save → NVS → boot → `GET_CONFIG` round-trip of all three fields. SoftAP comes up; a laptop associates |
 | **Verified by compiler only** | Everything else. 1,128,539 B, 57% of the 1,966,080 B app slot |
-| **NOT verified** | **ESP-NOW surviving alongside the AP.** The `WCB_Client` coexistence path (`WIFI_AP_STA`, `WIFI_PS_NONE`, channel deferral) has never been exercised by anything in this ecosystem. Confirm `WCB<n> ONLINE` and the roll call still land with WiFi on |
+| **Verified on hardware (2026-08-28)** | **ESP-NOW survives alongside the AP — the design's biggest risk, retired.** SoftAP up with a laptop associated, two runs. Direct USB, 8 min: WCB1 27/27, WCB2 15/15, 100%, no retries. Then bridged **through** the mgmt relay, 10 min: 264 sends, 98.9% ack, WCB1 34/34 and WCB2 19/19 at 100%, relay itself 209/211. Crucially the retry/fail counters were **identical in both snapshots** (9 retry, 3 fail) — every failure predates the steady state, and ~206 later sends produced none. The `WCB_Client` coexistence path (`WIFI_AP_STA`, `WIFI_PS_NONE`, channel deferral) works under real bridge load, not just idle |
 | **Known gap** | Nothing listens on the AP. The comms server is unwritten |
 
 ---
