@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/
+*.manifest
+
+# Bundled copy of the NaviCore config tool — fetched at build time, never committed.
+# The public NaviCore repo is the single source of truth; a committed copy here is a
+# fork waiting to happen. See CLAUDE.md "The UI is NOT forked".
+src/webui/
+
+# Local user state
+*.log
+logs/
+navilink_config.json

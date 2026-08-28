@@ -1,0 +1,16 @@
+# Native serial — the whole reason this app exists (see CLAUDE.md "Why native serial").
+pyserial>=3.5
+
+# Local HTTP + WebSocket host. The page connects to ws://127.0.0.1 and cannot tell
+# whether the far end is a COM port or the droid's own AP.
+websockets>=12.0
+
+# Talking to the droid's SoftAP over WiFi (the second transport, same page code).
+aiohttp>=3.9
+
+# Flashing. Same package ESP-Flasher-Companion uses; do NOT shell out to a separate
+# esptool binary — see the --run-esptool note in CLAUDE.md.
+esptool>=4.7
+
+# Packaging (dev only)
+pyinstaller>=6.0
