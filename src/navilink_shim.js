@@ -88,6 +88,21 @@
         cancel() { try { ws.close(); } catch (_) {} },
       });
 
+      // ONE WEBSOCKET MESSAGE PER LINE — not per write().
+      //
+      // The tool splits any line over 512 B into chunks (sendLine's USB_CHUNK
+      // pacing, which exists to protect the board's USB-CDC RX buffer). Sending
+      // each chunk as its own WebSocket message makes the droid see three
+      // separate "commands" for one line, because a message boundary is not a
+      // line boundary. Short commands survived that; a ~1391 B OTA DATA line did
+      // not, and failed as "base64 error -44 (chunk too big?)" — the decoder was
+      // handed a fragment, not a line.
+      //
+      // A WebSocket is message-framed and the protocol is newline-delimited, so
+      // something has to bridge the two. Doing it here means the droid receives
+      // exactly one complete line per frame, which is the contract its handler
+      // already assumes.
+      let pending = '';
       this.writable = new WritableStream({
         write(chunk) {
           if (ws.readyState !== WebSocket.OPEN) {
@@ -95,9 +110,21 @@
             e.name = 'NetworkError';
             throw e;   // a failing write is the tool's ONLY liveness proof
           }
-          ws.send(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+          const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+          pending += new TextDecoder().decode(bytes, { stream: true });
+          let nl;
+          while ((nl = pending.indexOf('\n')) >= 0) {
+            const line = pending.slice(0, nl + 1);   // keep the newline
+            pending = pending.slice(nl + 1);
+            ws.send(line);
+          }
+          // A tail without a newline stays buffered until the rest arrives. The
+          // tool always terminates its lines, so this only holds a partial chunk.
         },
-        close() { try { ws.close(); } catch (_) {} },
+        close() {
+          if (pending) { try { ws.send(pending); } catch (_) {} pending = ''; }
+          try { ws.close(); } catch (_) {}
+        },
         abort() { try { ws.close(); } catch (_) {} },
       });
     }
