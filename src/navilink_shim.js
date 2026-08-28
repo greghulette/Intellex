@@ -128,7 +128,7 @@
   const thePort = new NaviLinkPort();
   const listeners = { connect: [], disconnect: [] };
 
-  navigator.serial = {
+  const shim = {
     // The host decides what it is attached to, so there is nothing to pick here.
     // A real chooser belongs in the app shell (which can show COM ports AND
     // discovered droids), not behind a browser API that only understands ports.
@@ -141,6 +141,27 @@
     },
     dispatchEvent() { return true; },
   };
+
+  // MUST be defineProperty, not assignment.
+  //
+  // Chrome exposes navigator.serial as a GETTER on Navigator.prototype, not as an
+  // own data property. Under 'use strict' a plain `navigator.serial = shim` throws
+  // "Cannot set property serial of #<Navigator> which has only a getter", which
+  // aborted this whole IIFE -- leaving the REAL Web Serial in place, so the tool
+  // silently went on asking for a physical port and auto-connect never ran. It
+  // failed in exactly the way that looks like the app doing nothing at all.
+  try {
+    Object.defineProperty(navigator, 'serial', {
+      value: shim, configurable: true, writable: true, enumerable: false,
+    });
+  } catch (e) {
+    console.error('[NaviLink] could not install the serial shim:', e);
+    return;   // real Web Serial stays; the tool still works with a cable
+  }
+  if (navigator.serial !== shim) {
+    console.error('[NaviLink] serial shim did not take effect — the tool will use real Web Serial');
+    return;
+  }
 
   console.info('[NaviLink] navigator.serial is backed by', LINK_URL);
 
