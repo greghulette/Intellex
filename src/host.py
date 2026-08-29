@@ -419,10 +419,20 @@ async def index(_req: web.Request) -> web.StreamResponse:
 # AP restart plus re-association is slower, so wait long enough not to bounce an
 # adapter that was about to recover on its own.
 BOUNCE_AFTER_FAILS = 2       # act before Windows gets round to it on its own
-# Only probe after this much silence. Long enough that any real exchange (a
-# command, the live monitor, an OTA chunk) keeps us out of the probe path
-# entirely; short enough that a dead AP is caught in a couple of seconds.
-PROBE_IDLE_S = 2.0
+# Only probe after this much silence, and require this many consecutive failures.
+#
+# PATIENCE IS THE POINT, not speed. Declaring death early does not get the link
+# back sooner -- measured, twice -- because the floor is Windows deciding the
+# association is gone at ~12 s. What early declaration DOES do is reconnect into a
+# state that has not settled: the AP really is back at 2.6 s, so the reconnect
+# succeeds, and then the link dies again at ~12 s when the stale lease is finally
+# dropped. The page sees connect -> disconnect -> connect instead of one clean
+# transition, which reads as instability that is not there.
+#
+# So wait until we would be right. Roughly 6 s idle plus 3 failures lands at ~9 s,
+# just inside Windows' own conclusion, and produces ONE transition.
+PROBE_IDLE_S = 6.0
+PROBE_FAILS_NEEDED = 3
 BOUNCE_COOLDOWN_S  = 10.0    # short: a bounce is now conditional on being misrouted,
                              # so retrying is cheap and the first one after the AP
                              # returns is the one that sticks
@@ -493,8 +503,10 @@ async def reconnect_loop(_app: web.Application) -> None:
                         probe_fails = 0
                     else:
                         probe_fails += 1
-                        # Two in a row: one failure could be a momentary stall.
-                        if probe_fails >= 2:
+                        # Several in a row: one failure could be a momentary stall,
+                        # and acting early only causes a reconnect flap (see the
+                        # note on PROBE_IDLE_S).
+                        if probe_fails >= PROBE_FAILS_NEEDED:
                             print(f"{host_now} unreachable after {idle:.0f}s idle — link is dead")
                             bridge.last_error = "probe failed (droid AP down?)"
                             probe_fails = 0
