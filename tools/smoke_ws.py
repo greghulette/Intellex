@@ -56,7 +56,9 @@ def main() -> int:
     replies: list[str] = []
     with ws:
         print(f"connected\nsending     {a.send}")
-        ws.send(a.send)
+        # Newline-terminated: the firmware frames on newlines, so a bare message is
+        # buffered rather than dispatched. Add one if the caller did not.
+        ws.send(a.send if a.send.endswith("\n") else a.send + "\n")
 
         # The board replies from loop() on Core 1, not from the request handler, so
         # the answer arrives a beat after the send rather than synchronously. Keep

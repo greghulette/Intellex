@@ -288,9 +288,21 @@
     // Only annotate once the tool itself says it is connected — decorating
     // "Disconnected" or "Waiting for board…" would be actively misleading.
     const want = (label && /connect/i.test(base) && !/disconnect/i.test(base))
-      ? base + MARK + label
+      ? base + MARK + label + ' ▾'
       : base;
     if (el.textContent !== want) el.textContent = want;
+
+    // THE WAY BACK. The window has no browser chrome, so once you have picked a
+    // transport there is otherwise no route to the chooser at all — you would have
+    // to close and relaunch the app to switch from USB to WiFi. Make the label you
+    // are already reading the control: it is the one thing on screen that names
+    // the current connection, so it is where you look when you want to change it.
+    if (!el.dataset.navilinkClick) {
+      el.dataset.navilinkClick = '1';
+      el.style.cursor = 'pointer';
+      el.title = 'Change connection (USB / WiFi)';
+      el.addEventListener('click', () => { location.href = '/_launcher'; });
+    }
   }
 
   setInterval(() => { refreshTarget().then(annotateStatus); }, 2000);

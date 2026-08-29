@@ -53,6 +53,7 @@
     <span class="grow" id="uiver">checking the config tool version…</span>
     <button id="update">Update tool</button>
     <button id="rescan">Rescan</button>
+    <button id="back" class="primary" style="display:none">Back to tool</button>
   </div>
 </div>
 
@@ -160,6 +161,23 @@ $('update').onclick = async () => {
   checkUi();
 };
 
+// If something is already attached, this is a "change connection" visit rather
+// than a first run — so offer a way out that does not require picking again.
+// Without it, opening the chooser to look at options would strand you here.
+async function showBackIfConnected() {
+  try {
+    const st = await api('/_api/status');
+    if (st.attached) {
+      $('back').style.display = '';
+      $('back').onclick = () => { location.href = '/'; };
+      setStatus('currently on ' + st.target + ' — pick another, or go back');
+    }
+  } catch (e) { /* nothing attached, or the host is starting: leave it hidden */ }
+}
+
+$('back').onclick = () => { location.href = '/'; };
+
 scan();
 checkUi();
+showBackIfConnected();
 </script>

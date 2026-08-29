@@ -78,7 +78,12 @@ def identify(host: str, timeout: float = _PROBE_TIMEOUT_S) -> Optional[str]:
         return None
     try:
         with connect(f"ws://{host}/ws", open_timeout=timeout, close_timeout=0.5) as ws:
-            ws.send(json.dumps({"type": "PING"}))
+            # TRAILING NEWLINE IS REQUIRED. The protocol is newline-delimited and
+            # the firmware frames on it, so a bare message is buffered forever
+            # waiting for a terminator that never arrives. Without it discovery
+            # reported "answers on port 80 but did not PONG" against a perfectly
+            # healthy droid — the PING was received and simply never dispatched.
+            ws.send(json.dumps({"type": "PING"}) + "\n")
             deadline = timeout
             while deadline > 0:
                 try:
