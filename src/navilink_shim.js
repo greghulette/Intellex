@@ -307,6 +307,46 @@
 
   setInterval(() => { refreshTarget().then(annotateStatus); }, 2000);
 
+  // ── "Still trying" banner ─────────────────────────────────────────────────
+  // A reboot costs ~6 s of dead air and the host recovers on its own, so a banner
+  // that appears instantly would be noise. But when it does NOT come back the
+  // cause is almost always this machine's WiFi rather than the droid — and there
+  // is nothing on screen to say so, or to say what to do about it.
+  //
+  // So: stay quiet through the normal outage, then be specific.
+  const QUIET_S = 20;    // longer than any healthy reboot recovery observed
+  let downSince = 0;
+
+  function banner(html) {
+    let b = document.getElementById('navilink-banner');
+    if (!html) { if (b) b.remove(); return; }
+    if (!b) {
+      b = document.createElement('div');
+      b.id = 'navilink-banner';
+      b.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;'
+        + 'background:#4a3a1e;color:#ffd79a;border-bottom:1px solid #7a5f2e;'
+        + 'padding:9px 14px;font:13px/1.45 system-ui,sans-serif;text-align:center';
+      document.body.appendChild(b);
+    }
+    b.innerHTML = html;
+  }
+
+  async function watchLink() {
+    let st;
+    try { st = await (await fetch('/_api/status')).json(); } catch (_) { return; }
+    if (st.attached || !st.wantsLink) { downSince = 0; banner(''); return; }
+    if (!downSince) downSince = Date.now();
+    const secs = Math.round((Date.now() - downSince) / 1000);
+    if (secs < QUIET_S) { banner(''); return; }   // still within a normal reboot
+    banner(
+      `<b>Still trying to reach the droid</b> — ${secs}s. `
+      + `The app keeps retrying, so no action is needed if it is rebooting.<br>`
+      + `If it does not come back: <b>reconnect this computer to the "NaviCore" WiFi network</b>, `
+      + `or <a href="/_launcher" style="color:#ffd79a">choose a different connection</a>.`
+    );
+  }
+  setInterval(watchLink, 2000);
+
   // After load, so the tool has defined its functions and wired its UI. The delay
   // is for its own connect-modal setup, not the socket.
   window.addEventListener('load', () => setTimeout(() => {

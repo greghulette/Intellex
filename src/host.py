@@ -128,6 +128,29 @@ class Bridge:
         if t:
             with contextlib.suppress(Exception):
                 t.close()
+        # TELL THE PAGE. Reconnecting transparently underneath it seemed kind, but
+        # the tool learns the firmware version from the PONG it gets at connect
+        # time and never asks again. So after an OTA the board rebooted into the
+        # new firmware, the host silently re-attached, and the tool went on
+        # displaying the OLD version — which reads as "the update did not take"
+        # and invites flashing it a second time.
+        #
+        # The droid really did go away, so the page should see that. Dropping its
+        # socket makes the tool run its own link-lost path: reconnect, re-handshake,
+        # re-PING, and pick up the new version. One honest transition beats a
+        # comfortable lie.
+        self._close_page()
+
+    def _close_page(self) -> None:
+        loop, ws = self._loop, self._ws
+        if loop is None or ws is None:
+            return
+        self._ws = None
+        async def shut():
+            with contextlib.suppress(Exception):
+                await ws.close()
+        with contextlib.suppress(Exception):
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(shut()))
 
     def set_target(self, spec: dict) -> None:
         """Want this link, whether or not it can be opened right now.
