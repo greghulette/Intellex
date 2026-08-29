@@ -260,6 +260,42 @@ async def api_webui_version(_req: web.Request) -> web.Response:
     })
 
 
+LAUNCHER_FILE = pathlib.Path(__file__).resolve().parent / "launcher.html"
+
+
+async def launcher(_req: web.Request) -> web.StreamResponse:
+    return web.FileResponse(LAUNCHER_FILE, headers={
+        "Content-Type": "text/html",
+        "Cache-Control": "no-store, must-revalidate",
+    })
+
+
+async def api_update_webui(_req: web.Request) -> web.Response:
+    """Run the fetcher, so refreshing the tool is a button rather than a command.
+
+    Shelled out rather than imported: it is a script with its own argument
+    handling and atomic-swap logic, and duplicating that here would be a second
+    implementation to keep in step.
+    """
+    import subprocess
+    script = pathlib.Path(__file__).resolve().parent.parent / "tools" / "fetch_webui.py"
+
+    def run():
+        return subprocess.run([sys.executable, str(script)],
+                              capture_output=True, text=True, timeout=300)
+
+    try:
+        r = await asyncio.to_thread(run)
+    except Exception as e:
+        return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
+    if r.returncode != 0:
+        return web.json_response(
+            {"ok": False, "error": (r.stdout or r.stderr or "fetch failed").strip()[-300:]},
+            status=502)
+    return web.json_response({"ok": True, "version": _bundled_dtg(),
+                              "log": (r.stdout or "").strip()[-400:]})
+
+
 async def api_status(_req: web.Request) -> web.Response:
     return web.json_response({
         "attached": bridge.attached,
@@ -615,6 +651,8 @@ def build_app() -> web.Application:
         web.get("/_api/status", api_status),
         web.get("/_api/discover", api_discover),
         web.get("/_api/webui-version", api_webui_version),
+        web.post("/_api/update-webui", api_update_webui),
+        web.get("/_launcher", launcher),
         web.post("/_api/wifi-bounce", api_wifi_bounce),
         web.post("/_api/attach", api_attach),
         web.post("/_api/detach", api_detach),

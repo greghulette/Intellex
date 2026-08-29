@@ -30,4 +30,4 @@ fi
 # On macOS a NaviCore enumerates as /dev/cu.usbmodem* (native USB CDC); a bridge
 # WCB behind a CP210x/CH9102 shows as /dev/cu.usbserial* or /dev/cu.wchusbserial*.
 # Use cu.* and not tty.* -- opening tty.* blocks waiting for carrier detect.
-exec "$PY" src/host.py "$@"
+exec "$PY" src/app.py "$@"

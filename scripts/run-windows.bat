@@ -36,5 +36,5 @@ if not exist "%PY%" (
   )
 )
 
-"%PY%" src\host.py %*
+"%PY%" src\app.py %*
 endlocal

@@ -14,3 +14,7 @@ esptool>=4.7
 
 # Packaging (dev only)
 pyinstaller>=6.0
+
+# Desktop window. Optional: without it the app opens the default browser
+# instead, which works identically — the UI is served over http either way.
+pywebview>=5.0
