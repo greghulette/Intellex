@@ -29,6 +29,19 @@ docs/WIP_NOTES.md  firmware-side change tracker + removal recipe
 scripts/           cross-platform build scripts
 ```
 
+## Running it
+
+Double-click **`NaviLink.bat`** (Windows) or **`scripts/run-macos.command`** (macOS).
+First run creates the venv and installs dependencies; after that it just opens.
+
+    NaviLink.bat                     window + chooser
+    NaviLink.bat --ws 192.168.4.1    skip the chooser
+    NaviLink.bat --serial COM5
+    NaviLink.bat --browser           no window, use the default browser
+
+To change connection later, click the transport label in the tool's status bar
+("Connected · USB COM5 ▾") — that returns to the chooser.
+
 ## Development
 
 ```bash
