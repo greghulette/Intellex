@@ -102,6 +102,14 @@ class Bridge:
         t.open()                      # raises TransportError; caller reports it
         self._transport, self.target_label = t, label
         self.last_error = ""
+        # Start the idle clock NOW, not at 0. time.monotonic() is seconds since boot,
+        # so a default of 0.0 made a freshly attached link look idle for the machine's
+        # entire uptime — logged as "unreachable after 1212322s idle" (14 days) and,
+        # worse, it meant the liveness probe fired immediately on every new
+        # connection instead of after the intended quiet period. A link that has
+        # simply not spoken yet is not a dead link.
+        import time as _t
+        self.last_rx = _t.monotonic()
         if spec is not None:
             self._spec = spec         # remember it so we can rebuild this link later
             self._want = True
