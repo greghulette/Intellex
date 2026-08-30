@@ -51,6 +51,8 @@ To change connection later, click the transport label in the tool's status bar
 | Auto re-associate after a droid reboot | `netsh`, measured | `networksetup`, **unverified** |
 | Window | WebView2 | WKWebView (needs pyobjc, installed by marker) |
 
+First run on a Mac: [docs/MACOS_FIRST_RUN.md](docs/MACOS_FIRST_RUN.md).
+
 **No Mac has run any of this.** The macOS paths are written from documentation, not
 from a session at a machine. Expect the first run to need fixes — most likely in
 `_wifi_bounce_macos()` and in whether pywebview picks up WKWebView cleanly. The app
