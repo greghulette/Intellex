@@ -42,6 +42,17 @@ First run creates the venv and installs dependencies; after that it just opens.
 To change connection later, click the transport label in the tool's status bar
 ("Connected · USB COM5 ▾") — that returns to the chooser.
 
+## After a code change — reload or restart?
+
+| Changed | What to do |
+|---|---|
+| `navilink_shim.js`, `launcher.html`, the bundled tool | **F5** in the window — everything UI is served `no-store` |
+| `host.py`, `discover.py`, `*_transport.py`, `app.py` | **Restart the app** — Python is loaded once at startup |
+
+The window has no browser chrome, so F5 / Ctrl+R are wired up in the page itself.
+`NaviLink.bat --dev` adds devtools and a right-click menu for when a reload is not
+enough.
+
 ## Development
 
 ```bash

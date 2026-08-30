@@ -64,6 +64,8 @@ def main() -> int:
     ap.add_argument("--ws", help="attach this droid at launch and skip the chooser")
     ap.add_argument("--ssid", default="NaviCore")
     ap.add_argument("--no-auto-bounce", action="store_true")
+    ap.add_argument("--dev", action="store_true",
+                    help="enable devtools and the right-click menu in the window")
     ap.add_argument("--browser", action="store_true",
                     help="open the default browser instead of an app window")
     a = ap.parse_args()
@@ -121,7 +123,9 @@ def main() -> int:
                           min_size=(900, 640), text_select=True)
     # Blocks until the window closes; the daemon host thread goes with it, which is
     # the point of running it in-process.
-    webview.start()
+    # debug=True gives devtools and a context menu — worth having when a reload
+    # is not enough and you need to see what the page is actually doing.
+    webview.start(debug=a.dev)
     hostmod.bridge.detach()      # release the port/socket deliberately, not by exit
     return 0
 

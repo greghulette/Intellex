@@ -192,6 +192,20 @@
 
   console.info('[NaviLink] navigator.serial is backed by', LINK_URL);
 
+  // ── Reload keys ───────────────────────────────────────────────────────────
+  // The app window has no browser chrome, so F5 and Ctrl+R do nothing — which
+  // makes "just reload" unavailable exactly when it is the cheap fix. The UI
+  // (this shim, the launcher, the bundled tool) is all served no-store, so a
+  // reload picks up edits without restarting the app; only Python changes need a
+  // restart. Ctrl+Shift+R additionally re-fetches, for when a stale asset is
+  // suspected despite the headers.
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))) {
+      e.preventDefault();
+      location.reload();
+    }
+  });
+
   // ── Auto-connect ──────────────────────────────────────────────────────────
   // Without this the user must click Connect and choose "Direct USB" — a label
   // that is now actively misleading, because the host may well be on WiFi with no

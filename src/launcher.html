@@ -60,6 +60,14 @@
 <div class="status" id="status"></div>
 
 <script>
+// F5 / Ctrl+R: the window has no browser chrome, so the usual reload keys are
+// dead. This page is served no-store, so a reload picks up edits immediately.
+addEventListener('keydown', e => {
+  if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r')) {
+    e.preventDefault(); location.reload();
+  }
+});
+
 const $ = id => document.getElementById(id);
 const setStatus = (t, err) => { const s=$('status'); s.textContent=t; s.className='status'+(err?' err':''); };
 
