@@ -145,10 +145,10 @@ def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
     """
     import re
     import subprocess
+    if sys.platform == "darwin":
+        return _wifi_bounce_macos(ssid)
     if sys.platform != "win32":
-        # macOS needs the interface name and a different tool; not worth guessing
-        # at one here when the failure mode has only been observed on Windows.
-        return False, "adapter bounce is implemented for Windows only"
+        return False, f"adapter bounce is not implemented for {sys.platform}"
 
     # MUST be scoped to ONE interface. `netsh wlan disconnect` with no interface
     # disconnects EVERY wireless adapter -- on the two-adapter setup this exists to
@@ -190,6 +190,60 @@ def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
         return False, "netsh not found"
     except subprocess.TimeoutExpired:
         return False, "netsh timed out"
+
+
+def _wifi_bounce_macos(ssid: str) -> tuple[bool, str]:
+    """Power-cycle only the Wi-Fi interface that is on `ssid`.
+
+    UNTESTED — written without a Mac to run it on. The shape mirrors the Windows
+    path, which was measured: find the interface actually associated with the
+    droid's SSID and touch only that one, so a machine with a second adapter on
+    the house network keeps it.
+
+    A power cycle rather than `networksetup -setairportnetwork`, because that
+    wants the passphrase on the command line; cycling lets macOS reconnect from
+    its own keychain. Needs no sudo for -setairportpower on current macOS.
+    """
+    import subprocess
+
+    def run(args, timeout=15):
+        return subprocess.run(args, capture_output=True, text=True,
+                              timeout=timeout, check=False)
+
+    try:
+        # Hardware ports -> the device names (en0, en1, ...) that are Wi-Fi.
+        hw = run(["networksetup", "-listallhardwareports"])
+        devices, want = [], False
+        for line in (hw.stdout or "").splitlines():
+            line = line.strip()
+            if line.startswith("Hardware Port:"):
+                want = "wi-fi" in line.lower() or "airport" in line.lower()
+            elif line.startswith("Device:") and want:
+                devices.append(line.split(":", 1)[1].strip())
+
+        if not devices:
+            return False, "no Wi-Fi hardware port found"
+
+        # Only the one actually on the droid's network.
+        target = None
+        for dev in devices:
+            cur = run(["networksetup", "-getairportnetwork", dev])
+            if ssid in (cur.stdout or ""):
+                target = dev
+                break
+        if not target:
+            return False, (f'no Wi-Fi interface is on "{ssid}" — '
+                           "join it once by hand so macOS remembers it")
+
+        run(["networksetup", "-setairportpower", target, "off"])
+        r = run(["networksetup", "-setairportpower", target, "on"])
+        if r.returncode != 0:
+            return False, (r.stderr or r.stdout or f"exited {r.returncode}").strip()
+        return True, f"{target}: power-cycled, reconnecting to {ssid}"
+    except FileNotFoundError:
+        return False, "networksetup not found"
+    except subprocess.TimeoutExpired:
+        return False, "networksetup timed out"
 
 
 def _hint(via: Optional[str], reachable: bool, version: Optional[str]) -> str:

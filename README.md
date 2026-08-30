@@ -42,6 +42,21 @@ First run creates the venv and installs dependencies; after that it just opens.
 To change connection later, click the transport label in the tool's status bar
 ("Connected · USB COM5 ▾") — that returns to the chooser.
 
+## Platform status
+
+| | Windows | macOS |
+|---|---|---|
+| App, chooser, transports, OTA | **verified on hardware** | written, **never run** |
+| Serial port naming | `COM*` | `/dev/cu.*` — pyserial handles it; labels match both |
+| Auto re-associate after a droid reboot | `netsh`, measured | `networksetup`, **unverified** |
+| Window | WebView2 | WKWebView (needs pyobjc, installed by marker) |
+
+**No Mac has run any of this.** The macOS paths are written from documentation, not
+from a session at a machine. Expect the first run to need fixes — most likely in
+`_wifi_bounce_macos()` and in whether pywebview picks up WKWebView cleanly. The app
+itself does not depend on either: `--browser` skips the window, and the auto-bounce
+is a convenience that reports a clear error when it cannot run.
+
 ## After a code change — reload or restart?
 
 | Changed | What to do |

@@ -18,3 +18,9 @@ pyinstaller>=6.0
 # Desktop window. Optional: without it the app opens the default browser
 # instead, which works identically — the UI is served over http either way.
 pywebview>=5.0
+
+# macOS only. pywebview renders through WKWebView there and needs the Cocoa
+# bridge; the marker keeps it off Windows, where it is dead weight.
+pyobjc-core>=10.0 ; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.0 ; sys_platform == "darwin"
+pyobjc-framework-WebKit>=10.0 ; sys_platform == "darwin"
