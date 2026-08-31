@@ -781,6 +781,12 @@ async def _guard_origin(req: web.Request, handler):
     without anyone having to remember. GETs are read-only and stay open.
     """
     if req.method == "POST" and not _origin_ok(req):
+        # SAY SO. A silent 403 on every POST is indistinguishable from a frozen
+        # app: the page's buttons simply stop working. If a future window backend
+        # sends an Origin this does not recognise, this line is the only thing
+        # that will point at the guard rather than at the droid.
+        print(f"refused cross-origin POST {req.path} from Origin="
+              f"{req.headers.get('Origin')!r}")
         return web.json_response(
             {"ok": False, "error": "cross-origin request refused"}, status=403)
     return await handler(req)
