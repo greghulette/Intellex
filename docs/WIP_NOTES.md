@@ -106,6 +106,10 @@ in some other symptom.
 | `327ae1d` | `wifiSsid[33]` + `wifiPassword[64]` — the flag alone could not name or secure an AP. Own NVS key `wifi`. AP name/password fields beside the toggle. Still inert | `rc_config.h`, `config_tool/index.html`, `docs/CONFIG_SCHEMA.md`, `docs/CONFIG_TOOL.md` |
 | `2c0e788` | **The flag became live.** `setup()` raises the SoftAP before `wcb->begin()`. Removed the now-false "No WiFi AP or web server" comment | `NaviCore.ino`, `config_tool/index.html`, `docs/CONFIG_SCHEMA.md`, `docs/TROUBLESHOOTING.md` |
 
+| `a7e9b3e` | **Per-client line accumulators in the WS handler** (`WsAcc`, `accFor()`), plus `cfg.close_fn = wsClose` for session teardown — which also gave `WsSink::drop()` its first caller. Fixes cross-client command corruption reproduced on hardware. Confined to `navicore_wsserver.h`; removing the endpoint removes this too | `navicore_wsserver.h`, `docs/PROTOCOLS.md`, +4 docs (restored a missing markdown separator row) |
+| `55a097c` | **Three WS sink fixes**: UTF-8-safe frame boundaries (`_utf8SafeLen`), the `_dropping` latch that survived a disconnect, and queue depth 3 → 8 with a 50 ms enqueue wait instead of silent drops. All reproduced on hardware first | `navicore_wsserver.h`, `docs/PROTOCOLS.md` |
+| `4d30c17` | **NOT part of this effort — keep on rip-out.** Both OTA END waits accepted a late DATA-phase ACK: the USB path reported failure on a successful update, the WCB path reported "Verified" for an image the target never verified. Pre-existing on the USB/mesh paths and unrelated to WiFi | `config_tool/index.html`, `docs/PROTOCOLS.md`, `docs/CONFIG_SCHEMA.md` |
+
 `fw_version.h` also changes in each — that is the pre-commit DTG stamp, not part of this work.
 
 ---
@@ -172,7 +176,8 @@ for them.
 | **Verified on hardware** | Save → NVS → boot → `GET_CONFIG` round-trip of all three fields. SoftAP comes up; a laptop associates |
 | **Verified by compiler only** | Everything else. 1,128,539 B, 57% of the 1,966,080 B app slot |
 | **Verified on hardware (2026-08-28)** | **ESP-NOW survives alongside the AP — the design's biggest risk, retired.** SoftAP up with a laptop associated, two runs. Direct USB, 8 min: WCB1 27/27, WCB2 15/15, 100%, no retries. Then bridged **through** the mgmt relay, 10 min: 264 sends, 98.9% ack, WCB1 34/34 and WCB2 19/19 at 100%, relay itself 209/211. Crucially the retry/fail counters were **identical in both snapshots** (9 retry, 3 fail) — every failure predates the steady state, and ~206 later sends produced none. The `WCB_Client` coexistence path (`WIFI_AP_STA`, `WIFI_PS_NONE`, channel deferral) works under real bridge load, not just idle |
-| **Known gap** | Nothing listens on the AP. The comms server is unwritten |
+| **Verified on hardware (2026-08-30)** | The WS endpoint under adversarial load: two clients interleaving partial lines, a client disconnecting mid-line, an 8-command burst in one frame, CRLF framing, and a 13,764 B `GET_CONFIG` arriving whole and parsing — including immediately after a client is killed mid-reply. `_utf8SafeLen` is unit-tested on the host across every split/complete boundary |
+| **Known gap** | Non-ASCII output crossing a frame boundary is fixed by construction and unit-tested, but has not been exercised end-to-end on hardware — that needs a config containing a multi-byte character |
 
 ---
 
@@ -210,4 +215,5 @@ Each will be added to [§2](#2-commits) as it lands.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-08-30 | _(uncommitted)_ | Logged the three NaviCore commits from the bug sweep (`a7e9b3e`, `55a097c`, `4d30c17`) and flagged the OTA one as NOT belonging to this effort — it fixes the pre-existing USB and mesh OTA paths and must survive a rip-out. Replaced the stale "nothing listens on the AP" gap, which the WS endpoint closed in `bdf476e`, with what is now actually unverified. |
 | 2026-08-28 | _(uncommitted)_ | Created. Tracks the WiFi/desktop-app work on `main` in place of a feature branch: revert recipe, symbol-level inventory for when commits get tangled, what removal leaves behind (NVS keys, backup fields, boards already in the field), and the one-line kill switch. Records that the ESP-NOW-alongside-AP path is still unverified, and flags the coming `handleSerialInput()` extraction as the first non-additive change. |

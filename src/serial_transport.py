@@ -129,6 +129,10 @@ class SerialTransport(Transport):
                 chunk = s.read(min(n, _READ_CHUNK))
             except (serial.SerialException, OSError) as e:
                 if not self._stop.is_set():
+                    # Close BEFORE reporting -- see the note in ws_transport. A
+                    # reader that merely returns leaves is_open lying, and the port
+                    # held, if the loss races attach()'s publish.
+                    self.close()
                     self._fire_lost(f"read failed: {e}")
                 return
             if not chunk:

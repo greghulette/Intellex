@@ -24,6 +24,7 @@ endpoints. Serving /_launcher costs nothing and looks like the rest of the app.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import pathlib
 import sys
 import threading
@@ -35,24 +36,46 @@ import host as hostmod                                    # noqa: E402
 from transport import TransportError                      # noqa: E402
 
 
+_serve_error: list = []
+
+
 def _serve(port: int) -> None:
     """Run the aiohttp app forever on this thread."""
     from aiohttp import web
     import asyncio
-    asyncio.set_event_loop(asyncio.new_event_loop())
-    web.run_app(hostmod.build_app(), host=hostmod.BIND_HOST, port=port,
-                print=None, handle_signals=False)   # signals belong to the main thread
+    try:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        web.run_app(hostmod.build_app(), host=hostmod.BIND_HOST, port=port,
+                    print=None, handle_signals=False)  # signals belong to the main thread
+    except BaseException as e:                          # noqa: BLE001
+        # Record it. This thread is a daemon and nothing joins it, so an exception
+        # here (overwhelmingly "port already in use") vanished silently and the
+        # launcher went on to open a window against somebody else's server.
+        _serve_error.append(e)
 
 
 def _wait_until_up(port: int, timeout: float = 10.0) -> bool:
-    """Do not open a window onto a server that is not listening yet."""
-    import socket
+    """Wait for OUR server, not merely for something listening.
+
+    A bare TCP connect answers yes when a PREVIOUS NaviLink (or anything else) already
+    holds the port. Our own bind then failed with WinError 10048, this process opened a
+    window onto the other instance, and -- because a command-line target attaches BEFORE
+    the server thread starts -- it also sat holding COM5, which the live instance then
+    retried forever with "Access is denied". So check that the listener answers our own
+    control endpoint, and give up early if the serve thread has already died.
+    """
+    import json as _json
+    import urllib.request
     deadline = time.monotonic() + timeout
+    url = f"http://{hostmod.BIND_HOST}:{port}/_api/status"
     while time.monotonic() < deadline:
+        if _serve_error:
+            return False
         try:
-            with socket.create_connection((hostmod.BIND_HOST, port), timeout=0.5):
+            with urllib.request.urlopen(url, timeout=0.5) as r:
+                _json.loads(r.read().decode("utf-8", "replace"))
                 return True
-        except OSError:
+        except Exception:
             time.sleep(0.1)
     return False
 
@@ -86,7 +109,15 @@ def main() -> int:
 
     threading.Thread(target=_serve, args=(a.port,), daemon=True, name="navilink-host").start()
     if not _wait_until_up(a.port):
-        print(f"host did not start on {hostmod.BIND_HOST}:{a.port}", file=sys.stderr)
+        why = f": {_serve_error[0]}" if _serve_error else ""
+        print(f"host did not start on {hostmod.BIND_HOST}:{a.port}{why}", file=sys.stderr)
+        if _serve_error and "10048" in str(_serve_error[0]):
+            print("  that port is already in use -- NaviLink may already be running.",
+                  file=sys.stderr)
+        # Release anything the early attach opened, or it stays held by this dying
+        # process and the running instance cannot have it.
+        with contextlib.suppress(Exception):
+            hostmod.bridge.detach()
         return 1
 
     # Straight to the tool when a target was given; otherwise pick one first.
@@ -119,13 +150,42 @@ def main() -> int:
             pass
         return 0
 
-    webview.create_window("NaviLink", url, width=1280, height=880,
-                          min_size=(900, 640), text_select=True)
+    # Backend failures do NOT raise ImportError -- pywebview picks its GUI toolkit
+    # inside start(), and with neither Cocoa nor Qt usable it raises
+    # WebViewException. Guarding only the import above therefore killed the app on
+    # exactly the platform this fallback exists for, contradicting the comment on
+    # it. Anything that goes wrong here falls through to the browser.
+    try:
+        webview.create_window("NaviLink", url, width=1280, height=880,
+                              min_size=(900, 640), text_select=True)
+    except Exception as e:
+        print(f"could not create the window ({type(e).__name__}: {e}) "
+              "-- falling back to the browser.")
+        import webbrowser
+        webbrowser.open(url)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        return 0
     # Blocks until the window closes; the daemon host thread goes with it, which is
     # the point of running it in-process.
     # debug=True gives devtools and a context menu — worth having when a reload
     # is not enough and you need to see what the page is actually doing.
-    webview.start(debug=a.dev)
+    try:
+        webview.start(debug=a.dev)
+    except Exception as e:
+        print(f"the window backend failed ({type(e).__name__}: {e}) "
+              "-- falling back to the browser.")
+        import webbrowser
+        webbrowser.open(url)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        return 0
     hostmod.bridge.detach()      # release the port/socket deliberately, not by exit
     return 0
 

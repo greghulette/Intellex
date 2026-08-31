@@ -39,6 +39,7 @@ import contextlib
 import json
 import pathlib
 import sys
+import threading
 from typing import Optional
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -88,20 +89,57 @@ class Bridge:
         # When we last heard ANYTHING from the droid. Traffic is proof of life, and
         # cheaper and safer than any probe -- see the idle gate in reconnect_loop().
         self.last_rx: float = 0.0
+        # attach()/detach()/_drop() run from the event loop, from asyncio.to_thread
+        # workers AND from transport reader threads. Without this they interleave:
+        # attach() drops the old link, blocks in open() for up to 5 s, then publishes
+        # over whatever a second attach installed meanwhile -- leaking that transport
+        # open and unreachable for the life of the process, with its reader still
+        # feeding bytes from a device nobody thinks is attached.
+        #
+        # NEVER hold this across a blocking call. _drop() joins a reader thread and
+        # open() waits on a handshake; a reader parked in _on_transport_lost waiting
+        # for the same lock would stall the joiner. Take it only around the state
+        # swap and do the I/O outside.
+        self._lock = threading.RLock()
+        # Bumped by every attach() and detach(). An attach whose generation is stale
+        # by the time open() returns has been superseded, and must close what it
+        # opened rather than publish it.
+        self._gen: int = 0
 
     # -- page side ---------------------------------------------------------------
     def bind_page(self, ws: web.WebSocketResponse, loop: asyncio.AbstractEventLoop) -> None:
         self._ws, self._loop = ws, loop
 
-    def unbind_page(self) -> None:
-        self._ws = None
+    def unbind_page(self, ws: Optional[web.WebSocketResponse] = None) -> None:
+        """Clear the page binding, but only if this ws is still the bound one.
+
+        Every /_link handler unbinds in its finally. With two overlapping page
+        sockets (a second tab, a reload racing its predecessor's teardown, or
+        tools/smoke_host.py) the OLD handler's finally would otherwise clear the
+        NEW socket, and _on_transport_data then drops every byte on the floor with
+        nothing left to re-bind it: the page shows Connected and receives nothing.
+        """
+        if ws is None or self._ws is ws:
+            self._ws = None
 
     # -- transport side ----------------------------------------------------------
     def attach(self, t: Transport, label: str, spec: Optional[dict] = None) -> None:
-        self._drop()
+        with self._lock:
+            self._gen += 1
+            mine = self._gen
+        self._drop()                  # takes the lock itself; no I/O held under it
         t.open()                      # raises TransportError; caller reports it
-        self._transport, self.target_label = t, label
-        self.last_error = ""
+        with self._lock:
+            superseded = mine != self._gen
+            if not superseded:
+                self._transport, self.target_label = t, label
+                self.last_error = ""
+        if superseded:
+            # Another attach, or a detach, started while we were inside open().
+            # They win: close what we opened instead of publishing over them.
+            with contextlib.suppress(Exception):
+                t.close()
+            raise TransportError("superseded by a newer attach")
         # Start the idle clock NOW, not at 0. time.monotonic() is seconds since boot,
         # so a default of 0.0 made a freshly attached link look idle for the machine's
         # entire uptime — logged as "unreachable after 1212322s idle" (14 days) and,
@@ -109,22 +147,26 @@ class Bridge:
         # connection instead of after the intended quiet period. A link that has
         # simply not spoken yet is not a dead link.
         import time as _t
-        self.last_rx = _t.monotonic()
-        if spec is not None:
-            self._spec = spec         # remember it so we can rebuild this link later
-            self._want = True
+        with self._lock:
+            self.last_rx = _t.monotonic()
+            if spec is not None:
+                self._spec = spec     # remember it so we can rebuild this link later
+                self._want = True
 
     def detach(self) -> None:
         """User asked to stop. Forget the target so nothing reconnects."""
-        self._want = False
-        self._spec = None
-        self.reconnecting = False
+        with self._lock:
+            self._gen += 1            # cancel any attach still inside open()
+            self._want = False
+            self._spec = None
+            self.reconnecting = False
         self._drop()
 
     def _drop(self) -> None:
         """Tear the link down but KEEP the target — a drop is not a decision."""
-        t, self._transport = self._transport, None
-        self.target_label = ""
+        with self._lock:          # swap under the lock, close OUTSIDE it: t.close()
+            t, self._transport = self._transport, None   # joins a reader thread and
+            self.target_label = ""                       # would stall anyone waiting
         if t:
             with contextlib.suppress(Exception):
                 t.close()
@@ -215,7 +257,10 @@ bridge = Bridge()
 
 # ── control plane ───────────────────────────────────────────────────────────────
 async def api_ports(_req: web.Request) -> web.Response:
-    return web.json_response({"ports": list_serial_ports()})
+    # In a thread: enumerating serial devices is a blocking registry/udev walk and
+    # takes a noticeable moment on Windows with a busy USB tree. Run on the loop it
+    # stalls the very page that asked for it.
+    return web.json_response({"ports": await asyncio.to_thread(list_serial_ports)})
 
 
 async def api_discover(req: web.Request) -> web.Response:
@@ -383,14 +428,43 @@ async def api_signals(req: web.Request) -> web.Response:
     if t is None:
         return web.json_response({"ok": False, "error": "nothing attached"}, status=409)
     try:
-        t.set_signals(dtr=body.get("dataTerminalReady"), rts=body.get("requestToSend"))
+        # Threaded for the same reason as the rest: driving DTR/RTS is a blocking
+        # driver call.
+        await asyncio.to_thread(
+            lambda: t.set_signals(dtr=body.get("dataTerminalReady"),
+                                  rts=body.get("requestToSend")))
     except TransportError as e:
         return web.json_response({"ok": False, "error": str(e)}, status=502)
     return web.json_response({"ok": True})
 
 
 # ── the byte pipe ───────────────────────────────────────────────────────────────
+def _origin_ok(req: web.Request) -> bool:
+    """Refuse a cross-origin /_link upgrade.
+
+    This socket is unauthenticated and drives the droid: reboot, SET_CONFIG,
+    RESET_DEFAULTS. Binding to 127.0.0.1 keeps other machines out but NOT other
+    web pages -- a browser will happily open ws://127.0.0.1:8765/_link from any
+    site the user happens to be visiting, because the same-origin policy does not
+    apply to WebSockets. Origin is the check that does.
+
+    A MISSING Origin is allowed: browsers always send one, so its absence means a
+    native client (tools/smoke_host.py, a script), which is not the threat here.
+    """
+    origin = req.headers.get("Origin")
+    if not origin:
+        return True
+    from urllib.parse import urlparse
+    try:
+        host = urlparse(origin).hostname
+    except Exception:
+        return False
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
 async def ws_link(req: web.Request) -> web.WebSocketResponse:
+    if not _origin_ok(req):
+        raise web.HTTPForbidden(text="cross-origin /_link is refused")
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(req)
     bridge.bind_page(ws, asyncio.get_running_loop())
@@ -412,7 +486,7 @@ async def ws_link(req: web.Request) -> web.WebSocketResponse:
                     await ws.send_str(json.dumps(
                         {"type": "ERROR", "msg": f"link write failed: {e}"}) + "\n")
     finally:
-        bridge.unbind_page()
+        bridge.unbind_page(ws)
     return ws
 
 
@@ -683,8 +757,16 @@ def build_app() -> web.Application:
         web.get("/_navilink.js", shim_js),
         web.get("/_link", ws_link),
     ])
-    if WEBUI_DIR.is_dir():
-        app.router.add_static("/", WEBUI_DIR, show_index=False)
+    # Create it, then register UNCONDITIONALLY. src/webui/ is gitignored, so on a
+    # fresh clone it does not exist, the static route was never added, and aiohttp
+    # fixes its routing table at build time. Pressing "Update tool" then populated
+    # the directory and "/" began serving index.html (a per-request handler), while
+    # every asset that page pulls -- flasher.js, serial-hub.js, the whole
+    # cmdlib/*.json library -- kept 404ing until the process was restarted.
+    # Silently: the page renders, the flasher fails only when used, the command
+    # library is simply empty. index() already explains an empty directory itself.
+    WEBUI_DIR.mkdir(parents=True, exist_ok=True)
+    app.router.add_static("/", WEBUI_DIR, show_index=False)
     return app
 
 

@@ -30,13 +30,23 @@ find out whether everything *else* is fine:
 
 **1. pywebview / WKWebView.** The window is the least-tested piece. `--browser`
 sidesteps it entirely and the app is fully functional that way, so this is an
-annoyance rather than a blocker. If it fails, the useful detail is whatever
-pywebview prints about which backend it tried.
+annoyance rather than a blocker. A backend failure now falls back to the browser by
+itself rather than killing the app — pywebview chooses its toolkit inside
+`start()`, and raises `WebViewException`, not `ImportError`, so guarding only the
+import was not enough. If it fails, the useful detail is whatever pywebview prints
+about which backend it tried.
 
 **2. `_wifi_bounce_macos()`.** Auto re-association after a droid reboot. It looks
 for a Wi-Fi hardware port via `networksetup -listallhardwareports`, then the one
-whose current network matches the SSID. Worth checking by hand first, because if
-these two commands do not say what the code expects, nothing else will hint at it:
+whose current network matches the SSID.
+
+The parser is now exercised by a stubbed test (real `networksetup` output shapes,
+asserted decisions: default-named AP, explicitly-named AP, the `NaviCore_Guest`
+false positive, no Wi-Fi port at all) — so the *logic* is checked even though the
+commands have never actually run on a Mac. What is still unverified is whether
+`networksetup` on your machine prints what the stub assumes. Worth confirming by
+hand, because if these two commands do not say what the code expects, nothing else
+will hint at it:
 
 ```bash
 networksetup -listallhardwareports
@@ -56,8 +66,9 @@ send its path and description from:
 ```
 
 **Use `cu.*`, never `tty.*`** — opening a `tty.` device blocks waiting for carrier
-detect. pyserial lists both; the app does not filter `tty.` out yet, so if a
-connection hangs on open that is the first thing to suspect.
+detect, which a USB CDC device never asserts, so the connect hangs with no error.
+pyserial lists both; the chooser now filters `tty.` out, so you should only ever be
+offered the `cu.` side.
 
 ## Checking it end to end without the UI
 
@@ -75,4 +86,5 @@ running before debugging the window.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-08-30 | _(uncommitted)_ | Three of the four macOS risks on this page are now addressed in code rather than only described. The Wi-Fi bounce matched the SSID as a substring of the whole `networksetup` reply, so a house network called `NaviCore_Guest` would have power-cycled the wrong radio every ~10 s — it now parses the network name out and matches exactly, or as `<ssid>-<suffix>` for a default-named AP (the firmware derives `NaviCore-<deviceId>` when `wifiSsid` is blank, which the old exact-match Windows path never matched either). A window-backend failure falls back to the browser instead of killing the app. The chooser filters `/dev/tty.*`, whose open blocks on carrier detect. The parser logic is covered by a stubbed test; whether real `networksetup` output matches the stub is still unverified. |
 | 2026-08-30 | _(uncommitted)_ | Created. First-run test plan for macOS, written without a Mac to verify against: how to run it, the three things most likely to fail and what each costs, and the headless checks that isolate the app from the window. Records that no Apple Developer account is needed for a locally cloned repo, since Gatekeeper only acts on quarantined downloads. |

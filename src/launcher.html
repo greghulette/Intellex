@@ -125,7 +125,13 @@ async function scan() {
     };
     // Never the droid, on either platform: Bluetooth virtual ports, and macOS's
     // built-in debug/console serial devices.
-    const skip = p => /Bluetooth|\/dev\/cu\.(debug|Bluetooth|wlan)/i.test(`${p.path} ${p.description || ''}`);
+    //
+    // /dev/tty.* is skipped too. macOS exposes every serial device twice -- cu.*
+    // (call-out) and tty.* (dial-in) -- and opening the tty. side BLOCKS until
+    // carrier detect, which a USB CDC device never asserts. Picking one hangs the
+    // connect with no error and no timeout, which reads as "the app is frozen".
+    // pyserial lists both, so the chooser has to be the thing that hides one.
+    const skip = p => /Bluetooth|\/dev\/tty\.|\/dev\/cu\.(debug|Bluetooth|wlan)/i.test(`${p.path} ${p.description || ''}`);
     if (!ports.length) el.innerHTML = '<div class="empty">no serial ports found</div>';
     for (const p of ports) {
       if (skip(p)) continue;

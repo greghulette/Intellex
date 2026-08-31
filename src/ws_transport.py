@@ -124,6 +124,12 @@ class WebSocketTransport(Transport):
                 continue                      # idle, not a fault
             except Exception as e:
                 if not self._stop.is_set():
+                    # Close BEFORE reporting. is_open is "did anyone call close()",
+                    # so a reader that just returns leaves the transport looking open
+                    # forever -- and if the loss lands in the window between open()
+                    # and attach()'s publish, nothing else ever closes it either.
+                    # close() is safe from this thread: it skips joining itself.
+                    self.close()
                     self._fire_lost(f"recv failed: {type(e).__name__}: {e}")
                 return
             if msg is None:

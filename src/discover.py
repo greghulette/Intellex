@@ -125,6 +125,24 @@ def scan(candidates: Optional[list[str]] = None) -> list[dict]:
     return out
 
 
+def _ssid_matches(current: str, want: str) -> bool:
+    """Is `current` the droid's network?
+
+    Exact first, then the "<want>-<suffix>" form. The firmware derives its AP name
+    as NaviCore-<deviceId> whenever wifiSsid is left blank (NaviCore.ino), while
+    every caller here defaults to the bare "NaviCore" -- so an exact-only test
+    silently never matches a default-named droid, and the bounce reports "no
+    interface is associated" against an adapter that is sitting on it.
+
+    Deliberately NOT a substring test. `want in current` also matches a house
+    network called NaviCore_Guest or a second droid's AP, and the whole reason this
+    module scopes to one interface is that bouncing the wrong radio drops the
+    user's real network (and any call on it).
+    """
+    current = (current or "").strip()
+    return bool(current) and (current == want or current.startswith(want + "-"))
+
+
 def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
     """Disconnect and reconnect the WLAN profile for `ssid`.
 
@@ -168,7 +186,7 @@ def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
             current = m.group(1)
             continue
         m = re.match(r"\s*SSID\s*:\s*(.+?)\s*$", line)
-        if m and m.group(1) == ssid:
+        if m and _ssid_matches(m.group(1), ssid):
             iface = current
             break
 
@@ -228,7 +246,17 @@ def _wifi_bounce_macos(ssid: str) -> tuple[bool, str]:
         target = None
         for dev in devices:
             cur = run(["networksetup", "-getairportnetwork", dev])
-            if ssid in (cur.stdout or ""):
+            # Parse the NAME out, do not substring the whole reply. The output is
+            # "Current Wi-Fi Network: <name>" (or "You are not associated with an
+            # AirPort network."), so a raw `ssid in stdout` also matched the literal
+            # word appearing anywhere -- and would power-cycle the adapter carrying
+            # the user's house network.
+            name = ""
+            for ln in (cur.stdout or "").splitlines():
+                if ":" in ln and "network" in ln.split(":", 1)[0].lower():
+                    name = ln.split(":", 1)[1]
+                    break
+            if _ssid_matches(name, ssid):
                 target = dev
                 break
         if not target:

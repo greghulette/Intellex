@@ -103,6 +103,7 @@
       // exactly one complete line per frame, which is the contract its handler
       // already assumes.
       let pending = '';
+      const dec = new TextDecoder();
       this.writable = new WritableStream({
         write(chunk) {
           if (ws.readyState !== WebSocket.OPEN) {
@@ -111,7 +112,14 @@
             throw e;   // a failing write is the tool's ONLY liveness proof
           }
           const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-          pending += new TextDecoder().decode(bytes, { stream: true });
+          // ONE decoder for the life of the port. A fresh TextDecoder per write
+          // makes { stream: true } meaningless: the parked partial sequence dies
+          // with the discarded decoder and the continuation bytes come back as
+          // U+FFFD. sendLine() cuts at 512 BYTES, so any longer line can split a
+          // character mid-sequence -- SET_CMDLIB ships the whole command library as
+          // one ~10 KB line, and a corrupted copy is persisted to the droid and then
+          // adopted as "in sync", so it is never re-pushed.
+          pending += dec.decode(bytes, { stream: true });
           let nl;
           while ((nl = pending.indexOf('\n')) >= 0) {
             const line = pending.slice(0, nl + 1);   // keep the newline
