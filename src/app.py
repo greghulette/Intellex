@@ -82,6 +82,32 @@ def _serve(sock) -> None:
         _serve_error.append(e)
 
 
+def _tell_user(msg: str) -> None:
+    """Say something the user can actually see.
+
+    NaviLink.bat launches with pythonw, which has NO CONSOLE -- so a message on
+    stderr goes precisely nowhere. Refusing to start was therefore completely
+    silent: double-click, nothing appears, no explanation. Worse, the reason it
+    refuses is usually "an older copy is still running", so the user goes on using
+    a stale instance believing they restarted it. That is exactly how a two-day-old
+    host survived every restart, and how a launch flag can appear to have been
+    ignored.
+
+    A message box is the only channel that exists in a windowed process. Best
+    effort: if even this fails there is nothing further to try, and the stderr
+    print above still serves anyone running from a terminal.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        MB_OK, MB_ICONWARNING, MB_TOPMOST = 0x0, 0x30, 0x40000
+        ctypes.windll.user32.MessageBoxW(
+            None, msg, "NaviLink", MB_OK | MB_ICONWARNING | MB_TOPMOST)
+    except Exception:
+        pass
+
+
 def _wait_until_up(port: int, timeout: float = 10.0) -> bool:
     """Wait for OUR server, not merely for something listening.
 
@@ -148,10 +174,11 @@ def main() -> int:
     # "Access is denied".
     sock, bind_err = _bind(a.port)
     if sock is None:
-        print(f"NaviLink is already running on {hostmod.BIND_HOST}:{a.port}.",
-              file=sys.stderr)
-        print("  Close the existing NaviLink window and try again.", file=sys.stderr)
+        msg = (f"NaviLink is already running on {hostmod.BIND_HOST}:{a.port}.\n\n"
+               "Close the existing NaviLink window, then start this one again.")
+        print(msg, file=sys.stderr)
         print(f"  ({bind_err})", file=sys.stderr)
+        _tell_user(msg)
         return 1
 
     # A target given on the command line skips the chooser and lands on the tool.
@@ -170,6 +197,8 @@ def main() -> int:
     if not _wait_until_up(a.port):
         why = f": {_serve_error[0]}" if _serve_error else ""
         print(f"host did not start on {hostmod.BIND_HOST}:{a.port}{why}", file=sys.stderr)
+        _tell_user(f"NaviLink could not start its server on "
+                   f"{hostmod.BIND_HOST}:{a.port}.{why}")
         # Release anything the early attach opened, or it stays held by this dying
         # process and no other instance can have it.
         with contextlib.suppress(Exception):
