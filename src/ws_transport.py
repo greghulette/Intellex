@@ -62,10 +62,22 @@ class WebSocketTransport(Transport):
             # WebSocket ping/pong forces the question every few seconds. This is the
             # same lesson the config tool learned on serial, where a failing WRITE
             # became the only liveness proof because a parked read never returns.
+            # BUT NOT ON A 3 SECOND FUSE. The droid is a single ESP32 servicing
+            # SBUS at ~111 fps, an ESP-NOW mesh and this socket; it genuinely
+            # stalls for seconds at a time. A plain ICMP ping to it over ~220k
+            # packets measured a MAXIMUM round trip of 3.8 s against a 6 ms
+            # average, so a 3 s pong deadline was killing a perfectly healthy
+            # link roughly every 90 s -- "keepalive ping timeout", nothing wrong
+            # with the droid at all.
+            #
+            # 5 s between pings, 10 s to answer: still detects a vanished AP in
+            # ~15 s worst case rather than the ~34 s a dead socket takes to
+            # notice on its own, and the reconnect loop's idle-gated TCP probe
+            # covers the fast case anyway.
             self._ws = connect(self._url,
                                open_timeout=self._connect_timeout,
-                               ping_interval=3,   # ask...
-                               ping_timeout=3)    # ...and give up quickly
+                               ping_interval=5,    # ask...
+                               ping_timeout=10)    # ...but allow for a real stall
         except Exception as e:
             raise TransportError(f"cannot connect {self._url}: {type(e).__name__}: {e}") from e
 
