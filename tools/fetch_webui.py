@@ -36,6 +36,17 @@ WEBUI = pathlib.Path(__file__).resolve().parent.parent / "src" / "webui"
 # Frozen snapshots nothing loads (docs/CONFIG_TOOL.md) -- deliberately excluded.
 ROOT_FILES = ["index.html", "flasher.js", "serial-hub.js"]
 
+# Images live BESIDE config_tool/ in the NaviCore repo, and index.html reaches
+# them with "../Images/<name>". On Pages that resolves because the site root holds
+# both directories. Here index.html is served AT the root, so the browser clamps
+# the ".." and asks for "/Images/<name>" -- which works, but only if the files are
+# actually bundled. They were not, so both footer images were broken in the app
+# while looking fine on the published site.
+#
+# Named explicitly rather than discovered: Pages serves no directory index, and
+# the repo's Images/ folder also holds large logo art the tool never references.
+IMAGES = ["qr-code.png", "r2logo.png"]
+
 # The tool stamps this on every commit via NaviCore's pre-commit hook, so it is
 # the honest version handle -- no guessing, no separate manifest to drift.
 DTG_RE = re.compile(r'id="footer-dtg"[^>]*>([^<]+)<')
@@ -186,6 +197,19 @@ def main() -> int:
         for name in ROOT_FILES[1:]:
             (staged / name).write_bytes(get(f"{a.base}/{name}"))
             got += 1
+
+        # ".../config_tool" -> ".../Images"
+        img_base = a.base.rsplit("/", 1)[0] + "/Images"
+        (staged / "Images").mkdir()
+        for name in IMAGES:
+            try:
+                (staged / "Images" / name).write_bytes(get(f"{img_base}/{name}"))
+                got += 1
+            except Exception as e:
+                # Not fatal. A missing decoration must not block a tool update --
+                # but say so, because a silent skip is how they went missing in the
+                # first place.
+                print(f"  could not fetch Images/{name}: {type(e).__name__}")
 
         names = cmdlib_names(a.base)
         if not names:

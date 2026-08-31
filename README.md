@@ -25,9 +25,18 @@ Scaffold. Nothing runs yet.
 ```
 src/transport.py   the byte-pipe seam; read its docstring first
 src/webui/         bundled NaviCore config tool — fetched, never committed
+src/webui/Images/  footer art the tool loads as "../Images/<name>" (see below)
 docs/WIP_NOTES.md  firmware-side change tracker + removal recipe
 scripts/           cross-platform build scripts
 ```
+
+The tool reaches its footer images with `../Images/<name>`, which resolves on
+GitHub Pages because the site root holds `config_tool/` and `Images/` side by
+side. Here `index.html` is served **at** the root, so the browser clamps the
+`..` and asks for `/Images/<name>` — which works, but only because
+`fetch_webui.py` bundles them. Anything else the tool loads from outside
+`config_tool/` needs adding to `IMAGES` (or its own list) the same way, or it
+will 404 in the app while looking perfect on the published site.
 
 ## Running it
 
