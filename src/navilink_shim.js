@@ -45,6 +45,10 @@
   let linkOpen = false;
   let userClosed = false;
   let reconnectAt = 0;      // earliest next attempt (ms epoch), for backoff
+  // When the link was last lost underneath us. close() consults this to tell a
+  // TEARDOWN from a user pressing Disconnect -- see the note there.
+  let lastLossAt = 0;
+  const LOSS_GRACE_MS = 60000;
 
   class NaviLinkPort {
     constructor() {
@@ -124,6 +128,7 @@
             // the page socket deliberately on a drop so the tool re-handshakes
             // and picks up a new firmware version after an OTA.
             linkOpen = false;
+            lastLossAt = Date.now();
             const e = new Error('The device has been lost.');
             e.name = 'NetworkError';
             try { controller.error(e); } catch (_) {}
@@ -191,9 +196,21 @@
     }
 
     async close() {
-      // The TOOL asked to disconnect. Remember that, or watchLink() would helpfully
-      // reconnect the port the user just closed.
-      userClosed = true;
+      // Is this the user pressing Disconnect, or the tool tearing down after a
+      // loss? It calls close() for BOTH, so the flag cannot simply be set here.
+      //
+      // The cascade that matters: handleLinkLost() -> disconnect() -> close(),
+      // then its own one-shot tryAutoReconnect() fires immediately -- before the
+      // host has re-attached to the droid -- opens, sees no PONG, and calls
+      // disconnect() again ("Auto-reconnect found no board"), disarming itself.
+      // Marking either of those closes as user intent blocks watchLink() from
+      // ever retrying, which is exactly the "loses connection and never comes
+      // back" state.
+      //
+      // So: a close within LOSS_GRACE_MS of a loss is teardown, not intent. A
+      // deliberate Disconnect long after things are healthy still sticks, which
+      // is the case the flag exists for.
+      userClosed = (Date.now() - lastLossAt) > LOSS_GRACE_MS;
       linkOpen = false;
       const ws = this._ws;
       this._ws = null;
@@ -424,7 +441,13 @@
     // half-finished connects on top of each other.
     if (st.attached && !linkOpen && !userClosed && Date.now() >= reconnectAt) {
       reconnectAt = Date.now() + 5000;
-      console.info('[NaviLink] link dropped and the host is back — reconnecting the page');
+      console.info('[NaviLink] host is attached but the page is not — reconnecting');
+      // KEEP RETRYING. The tool's own auto-reconnect is deliberately one-shot and
+      // disarms after a single failure, which is the right call for real hardware
+      // (it must never grab the wrong serial device). Here the target is not
+      // ambiguous -- there is exactly one host and it has already told us it is
+      // attached -- so retrying is safe, and necessary: the first attempt usually
+      // lands while the droid is still rebooting and sees no PONG.
       autoConnect();
     }
 
