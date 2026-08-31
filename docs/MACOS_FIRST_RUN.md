@@ -10,20 +10,31 @@ That only becomes a question if you later hand someone a downloaded `.app`.
 
 ## Run it
 
+Double-click **`NaviLink.command`** at the repo root. That is the whole answer —
+it is the counterpart to `NaviLink.bat`, and `.gitattributes` pins `*.command` to
+LF so the shebang survives being authored on Windows (a CRLF one fails as
+`bad interpreter: /bin/bash^M`, which reads like a broken script).
+
+From a shell, if you prefer:
+
 ```bash
 cd ~/Documents/GitHub/NaviLink      # wherever you cloned it
-chmod +x scripts/run-macos.command  # once, if git did not carry the bit
-./scripts/run-macos.command
+./NaviLink.command
 ```
 
 First run builds the venv and installs dependencies, which takes a minute. It
-should then open a window on the chooser.
+should then open a window on the chooser. The Terminal window stays up while the
+app runs — there is no `pythonw` on macOS — and closing it quits NaviLink.
+
+If Finder refuses with "unidentified developer", this copy was **downloaded**
+rather than cloned: a download carries `com.apple.quarantine`, a clone does not.
+Right-click → Open once, or `xattr -d com.apple.quarantine NaviLink.command`.
 
 If the window is the part that fails, this still works and is the fastest way to
 find out whether everything *else* is fine:
 
 ```bash
-./scripts/run-macos.command --browser
+./NaviLink.command --browser
 ```
 
 ## What is most likely to break, in order
@@ -92,6 +103,7 @@ running before debugging the window.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-08-31 | _(uncommitted)_ | Added `NaviLink.command` at the repo root, so "how do I open it" has the same answer on both platforms — the Windows launcher was at the root while macOS users had to know `scripts/` existed. Added `.gitattributes` pinning `*.command`/`*.sh` to LF and `*.bat` to CRLF: these are authored on a Windows box with `core.autocrlf=true`, and a CRLF shebang fails on macOS as `bad interpreter: /bin/bash^M`, which does not look like a line-ending problem. Recorded the quarantine distinction (downloads carry it, clones do not) where someone hitting it will look. |
 | 2026-08-31 | _(uncommitted)_ | The chooser no longer guesses a product from the USB description. It reports the chip from the VID (platform-independent, so the old Windows-vs-macOS description matching is gone) and ASKS Espressif ports what they are. The old heuristic was wrong on half a normal bench: a NaviCore and an SBUS controller are both ESP32-S3 native USB and enumerate identically as 303A:1001 "USB Serial Device", so both read as "probably a NaviCore", while a CP210x dev board running the mgmt relay read as "probably a WCB bridge". |
 | 2026-08-30 | _(uncommitted)_ | Three of the four macOS risks on this page are now addressed in code rather than only described. The Wi-Fi bounce matched the SSID as a substring of the whole `networksetup` reply, so a house network called `NaviCore_Guest` would have power-cycled the wrong radio every ~10 s — it now parses the network name out and matches exactly, or as `<ssid>-<suffix>` for a default-named AP (the firmware derives `NaviCore-<deviceId>` when `wifiSsid` is blank, which the old exact-match Windows path never matched either). A window-backend failure falls back to the browser instead of killing the app. The chooser filters `/dev/tty.*`, whose open blocks on carrier detect. The parser logic is covered by a stubbed test; whether real `networksetup` output matches the stub is still unverified. |
 | 2026-08-30 | _(uncommitted)_ | Created. First-run test plan for macOS, written without a Mac to verify against: how to run it, the three things most likely to fail and what each costs, and the headless checks that isolate the app from the window. Records that no Apple Developer account is needed for a locally cloned repo, since Gatekeeper only acts on quarantined downloads. |

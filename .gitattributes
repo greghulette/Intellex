@@ -1,0 +1,12 @@
+# Shell scripts MUST reach macOS with LF endings.
+#
+# A CRLF shebang fails as "bad interpreter: /bin/bash^M", which reads like a
+# broken script rather than a line-ending problem and costs an hour to work out.
+# core.autocrlf is a per-machine setting (it is `true` on the Windows box these
+# are authored on), so without this the outcome depends on how each clone
+# happens to be configured. Pin it instead.
+*.command  text eol=lf
+*.sh       text eol=lf
+
+# The Windows launcher is the mirror image: a .bat wants CRLF.
+*.bat      text eol=crlf

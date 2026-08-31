@@ -26,6 +26,8 @@ Scaffold. Nothing runs yet.
 src/transport.py   the byte-pipe seam; read its docstring first
 src/webui/         bundled NaviCore config tool — fetched, never committed
 src/webui/Images/  footer art the tool loads as "../Images/<name>" (see below)
+NaviLink.bat       double-click launcher — Windows
+NaviLink.command   double-click launcher — macOS
 docs/WIP_NOTES.md  firmware-side change tracker + removal recipe
 scripts/           cross-platform build scripts
 ```
@@ -40,13 +42,28 @@ will 404 in the app while looking perfect on the published site.
 
 ## Running it
 
-Double-click **`NaviLink.bat`** (Windows) or **`scripts/run-macos.command`** (macOS).
-First run creates the venv and installs dependencies; after that it just opens.
+Double-click **`NaviLink.bat`** (Windows) or **`NaviLink.command`** (macOS), both at
+the repo root. First run creates the venv and installs dependencies; after that it
+just opens.
 
     NaviLink.bat                     window + chooser
     NaviLink.bat --ws 192.168.4.1    skip the chooser
     NaviLink.bat --serial COM5
     NaviLink.bat --browser           no window, use the default browser
+
+    ./NaviLink.command               same flags, macOS paths
+    ./NaviLink.command --serial /dev/cu.usbmodem1101
+
+On macOS there is no `pythonw`, so a double-click opens a Terminal window that
+stays up while the app runs — closing it quits NaviLink. That is the same
+relationship the `.bat` has with its console; here it is just visible.
+
+If Finder refuses with "unidentified developer", that copy was **downloaded**
+rather than cloned — a download carries `com.apple.quarantine` and a clone does
+not. Right-click → Open once, or `xattr -d com.apple.quarantine NaviLink.command`.
+
+`scripts/run-windows.bat` and `scripts/run-macos.command` still exist and do the
+same thing; the root launchers are the ones to hand somebody.
 
 To change connection later, click the transport label in the tool's status bar
 ("Connected · USB COM5 ▾") — that returns to the chooser.
