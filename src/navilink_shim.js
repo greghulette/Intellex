@@ -71,9 +71,8 @@
       this._ws = ws;
       linkOpen = true;
       userClosed = false;
-      // Not an error path: the host closes this socket on purpose when the droid
-      // goes away. Just record it, so watchLink() knows to bring the page back.
-      ws.addEventListener('close', () => { linkOpen = false; }, { once: true });
+      // (the stream's own close handler below clears linkOpen and reports the
+      //  loss to the tool; watchLink() then brings the page back)
 
       // REAL WHATWG streams, not duck-typed objects. The tool locks and releases
       // readers/writers and checks .locked; a hand-rolled stand-in without a real
@@ -92,7 +91,42 @@
             // here would mangle exactly those.
           });
           ws.addEventListener('close', () => {
-            try { controller.close(); } catch (_) {}
+            // ERROR IT, DO NOT CLOSE IT. This is the freeze.
+            //
+            // controller.close() ends the stream GRACEFULLY, so the tool's
+            // pending read() resolves {done:true} instead of rejecting. Its
+            // reader loop is:
+            //
+            //   while (port === myPort && myPort.readable && !disconnecting) {
+            //     r = myPort.readable.getReader();
+            //     while (true) { const {value,done} = await r.read();
+            //                    if (done) break; ... }
+            //     ... releaseLock()
+            //   }
+            //
+            // done:true breaks the inner loop, the lock is released, and the
+            // OUTER condition is still true -- port.readable is non-null, it is
+            // merely closed -- so it immediately acquires another reader, reads,
+            // and gets done:true again. No exception, so none of the error
+            // handling runs and none of its 50 ms backoff applies. It is a tight
+            // loop with nothing to await, and it pegs a core: measured at 103%
+            // with the JS heap thrashing 3-45 MB, layout frozen, and the window
+            // unresponsive until the app is killed. Three debugger samples all
+            // landed on the same two lines of that loop.
+            //
+            // A real serial port never does this. When a device disappears
+            // Web Serial REJECTS the read with a NetworkError, which the tool
+            // already classifies as fatal (_isFatalSerialError) and handles by
+            // tearing down and calling handleLinkLost() -- which reconnects.
+            // So report the loss the way the platform would.
+            //
+            // This fires on every ordinary droid drop, because the host closes
+            // the page socket deliberately on a drop so the tool re-handshakes
+            // and picks up a new firmware version after an OTA.
+            linkOpen = false;
+            const e = new Error('The device has been lost.');
+            e.name = 'NetworkError';
+            try { controller.error(e); } catch (_) {}
           });
           ws.addEventListener('error', () => {
             // Match Web Serial's vocabulary. The tool classifies fatal vs
