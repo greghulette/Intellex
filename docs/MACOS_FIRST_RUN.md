@@ -56,10 +56,16 @@ networksetup -getairportnetwork en0     # or whichever device the first lists
 A failure here costs you the automatic reconnect, not the connection. Everything
 else keeps working and the app reports a clear reason.
 
-**3. Serial port naming.** A NaviCore should appear as `/dev/cu.usbmodem*`, a
-bridge WCB as `/dev/cu.usbserial*` or `/dev/cu.wchusbserial*`. The chooser labels
-them "probably a NaviCore" / "probably a WCB bridge". If a port shows up unlabeled,
-send its path and description from:
+**3. Serial port naming.** The chooser labels ports by USB **vendor ID**, which is
+the same number on every platform, so nothing here depends on how macOS words a
+description: `303A` Espressif native USB, `1A86` CH9102, `10C4` CP210x, `0403` FTDI.
+
+It does not guess a product from that. Espressif ports are then **asked** — one
+`PING`, and only a direct `PONG` counts — so a real NaviCore reports its firmware
+version and anything else says it did not answer. That matters on a Mac for the
+same reason it does on Windows: a NaviCore and an SBUS controller are both
+ESP32-S3 with native USB and enumerate identically. If a port shows up unlabeled,
+send its path, VID and description from:
 
 ```bash
 .venv/bin/python3 -c "import sys;sys.path.insert(0,'src');import transport,json;print(json.dumps(transport.list_serial_ports(),indent=1))"
@@ -86,5 +92,6 @@ running before debugging the window.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-08-31 | _(uncommitted)_ | The chooser no longer guesses a product from the USB description. It reports the chip from the VID (platform-independent, so the old Windows-vs-macOS description matching is gone) and ASKS Espressif ports what they are. The old heuristic was wrong on half a normal bench: a NaviCore and an SBUS controller are both ESP32-S3 native USB and enumerate identically as 303A:1001 "USB Serial Device", so both read as "probably a NaviCore", while a CP210x dev board running the mgmt relay read as "probably a WCB bridge". |
 | 2026-08-30 | _(uncommitted)_ | Three of the four macOS risks on this page are now addressed in code rather than only described. The Wi-Fi bounce matched the SSID as a substring of the whole `networksetup` reply, so a house network called `NaviCore_Guest` would have power-cycled the wrong radio every ~10 s — it now parses the network name out and matches exactly, or as `<ssid>-<suffix>` for a default-named AP (the firmware derives `NaviCore-<deviceId>` when `wifiSsid` is blank, which the old exact-match Windows path never matched either). A window-backend failure falls back to the browser instead of killing the app. The chooser filters `/dev/tty.*`, whose open blocks on carrier detect. The parser logic is covered by a stubbed test; whether real `networksetup` output matches the stub is still unverified. |
 | 2026-08-30 | _(uncommitted)_ | Created. First-run test plan for macOS, written without a Mac to verify against: how to run it, the three things most likely to fail and what each costs, and the headless checks that isolate the app from the window. Records that no Apple Developer account is needed for a locally cloned repo, since Gatekeeper only acts on quarantined downloads. |

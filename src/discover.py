@@ -28,6 +28,7 @@ rather than merely finding something alive.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import socket
@@ -104,6 +105,91 @@ def identify(host: str, timeout: float = _PROBE_TIMEOUT_S) -> Optional[str]:
     except Exception:
         return None
     return None
+
+
+def identify_serial(port: str, timeout: float = 2.5) -> dict:
+    """PING a serial port; return the firmware version if a NaviCore answers.
+
+    WHY NOT JUST READ THE USB DESCRIPTOR
+    Because it cannot answer the question. A NaviCore and an SBUS controller are
+    the same silicon -- ESP32-S3 with native USB CDC -- so they enumerate
+    identically: VID:PID 303A:1001, description "USB Serial Device", nothing but
+    the MAC in the serial number to tell them apart, and that is per-board rather
+    than per-product. A descriptor match can honestly report the CHIP; naming the
+    PRODUCT from it is a guess, and on this bench it was wrong half the time.
+
+    ONLY A DIRECT PONG COUNTS. A USB-tethered mesh relay prints the telemetry it
+    receives over ESP-NOW straight out of its own USB port -- including rc_hb
+    heartbeats carrying a real NaviCore firmware version. Anything that matches
+    "looks like NaviCore JSON" therefore labels the relay as a droid. Observed
+    exactly that on COM16. A PONG is a reply to OUR ping; relayed traffic is not.
+
+    Returns {"version": str|None, "busy": bool}. "busy" matters: a port another
+    program is holding and a port that simply did not answer look identical from
+    here, but only one of them is fixed by closing the other program -- and "no
+    reply" sent people to check the board when the real problem was on this side.
+    """
+    import time
+    try:
+        import serial
+    except ImportError:
+        return {"version": None, "busy": False}
+
+    s = serial.Serial()
+    s.port = port
+    s.baudrate = 115200
+    s.timeout = 0.2
+    # Deassert on the CLOSED port. Opening with either line asserted pulses the
+    # ESP32 into reset, which is the whole reason SerialTransport.open() does the
+    # same dance -- a probe that reboots the droid would be worse than no probe.
+    with contextlib.suppress(Exception):
+        s.dtr = False
+        s.rts = False
+    try:
+        s.open()
+    except Exception as e:
+        # Distinguish "someone else has it" from "it said nothing". Windows raises
+        # PermissionError / "Access is denied"; POSIX gives EBUSY or EACCES.
+        txt = f"{type(e).__name__}: {e}".lower()
+        busy = ("permission" in txt or "access is denied" in txt
+                or "busy" in txt or "in use" in txt)
+        return {"version": None, "busy": busy}
+    try:
+        with contextlib.suppress(Exception):
+            s.dtr = False
+            s.rts = False
+        time.sleep(0.25)             # let the line settle before clearing
+        with contextlib.suppress(Exception):
+            s.reset_input_buffer()
+        s.write((json.dumps({"type": "PING"}) + "\n").encode())
+        s.flush()
+
+        buf = ""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            chunk = s.read(4096)
+            if not chunk:
+                continue
+            buf += chunk.decode("utf-8", "replace")
+            # A NaviCore is a firehose -- telemetry, MESH_STATS, CMDLIB_META all
+            # arrive unbidden -- so scan every complete line rather than assuming
+            # the reply is first or alone.
+            for line in buf.splitlines():
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") == "PONG":
+                    return {"version": str(obj.get("version", "unknown")), "busy": False}
+        return {"version": None, "busy": False}
+    except Exception:
+        return {"version": None, "busy": False}
+    finally:
+        with contextlib.suppress(Exception):
+            s.close()
 
 
 def scan(candidates: Optional[list[str]] = None) -> list[dict]:

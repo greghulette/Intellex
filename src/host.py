@@ -407,6 +407,33 @@ async def api_attach(req: web.Request) -> web.Response:
     return web.json_response({"ok": True, "target": bridge.target_label})
 
 
+async def api_identify(req: web.Request) -> web.Response:
+    """Ask a serial port whether it is a NaviCore. Briefly opens the port.
+
+    POST rather than GET because it touches hardware, which also puts it behind
+    the cross-origin guard.
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    port = body.get("port")
+    if not port or not isinstance(port, str):
+        return web.json_response({"ok": False, "error": "port required"}, status=400)
+
+    spec = bridge._spec or {}
+    if (bridge.attached and spec.get("kind") == "serial"
+            and spec.get("port") == port):
+        # We are holding it ourselves. Probing would fail with "Access is denied"
+        # and render as "in use by something else", which is misleading when the
+        # something else is this app.
+        return web.json_response({"ok": True, "attached": True, "version": None})
+
+    res = await asyncio.to_thread(discover.identify_serial, port)
+    return web.json_response({"ok": res["version"] is not None,
+                              "version": res["version"], "busy": res["busy"]})
+
+
 async def api_detach(_req: web.Request) -> web.Response:
     bridge.detach()
     return web.json_response({"ok": True})
@@ -774,6 +801,7 @@ def build_app() -> web.Application:
         web.post("/_api/wifi-bounce", api_wifi_bounce),
         web.post("/_api/attach", api_attach),
         web.post("/_api/detach", api_detach),
+        web.post("/_api/identify", api_identify),
         web.post("/_api/signals", api_signals),
         web.get("/_navilink.js", shim_js),
         web.get("/_link", ws_link),

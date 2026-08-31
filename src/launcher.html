@@ -108,21 +108,30 @@ async function scan() {
   try {
     const { ports } = await api('/_api/ports');
     const el = $('serial'); el.innerHTML = '';
-    // A NaviCore enumerates as native USB CDC; a bridge WCB sits behind a UART
-    // chip. Say which is which rather than making the user match COM numbers or
-    // /dev paths from memory.
+    // SAY WHAT THE DESCRIPTOR ACTUALLY PROVES, WHICH IS THE CHIP.
     //
-    // Matched on the PATH as well as the description, because the two platforms
-    // describe the same hardware differently: Windows says "USB Serial Device",
-    // macOS gives /dev/cu.usbmodem* for CDC and /dev/cu.usbserial* (or
-    // wchusbserial) for a bridge chip. Description-only matching worked on
-    // Windows and would have labelled everything blank on a Mac.
-    const likely = p => {
-      const s = `${p.path} ${p.description || ''}`;
-      if (/usbmodem|USB Serial Device|\bCDC\b/i.test(s))                 return 'probably a NaviCore';
-      if (/CP210|CH9102|FTDI|Silicon Labs|usbserial|wchusbserial/i.test(s)) return 'probably a WCB bridge';
-      return p.description || '';
+    // The old version guessed a PRODUCT from the descriptor and was wrong half the
+    // time on a normal bench: a NaviCore and an SBUS controller are the same
+    // silicon (ESP32-S3, native USB CDC) and enumerate identically as 303A:1001
+    // "USB Serial Device", so both were labelled "probably a NaviCore"; and a
+    // generic ESP32 dev board running the mgmt relay shows a CP210x, so it was
+    // labelled "probably a WCB bridge".
+    //
+    // The VID is reliable for what it says, so use it and stop there. The real
+    // identity comes from identify() below, which ASKS.
+    const chipLabel = p => {
+      switch (p.vid) {
+        case 0x303A: return 'Espressif native USB';
+        case 0x1A86: return 'CH9102 bridge';
+        case 0x10C4: return 'CP210x bridge';
+        case 0x0403: return 'FTDI bridge';
+        default:     return p.description || 'serial port';
+      }
     };
+    // Only native-USB Espressif ports can be a NaviCore (the build is
+    // USBMode=hwcdc / CDCOnBoot=cdc, so it never appears behind a bridge chip).
+    // Probing just those keeps the WCB and the relay untouched.
+    const worthAsking = p => p.vid === 0x303A;
     // Never the droid, on either platform: Bluetooth virtual ports, and macOS's
     // built-in debug/console serial devices.
     //
@@ -133,12 +142,42 @@ async function scan() {
     // pyserial lists both, so the chooser has to be the thing that hides one.
     const skip = p => /Bluetooth|\/dev\/tty\.|\/dev\/cu\.(debug|Bluetooth|wlan)/i.test(`${p.path} ${p.description || ''}`);
     if (!ports.length) el.innerHTML = '<div class="empty">no serial ports found</div>';
+    const asking = [];
     for (const p of ports) {
       if (skip(p)) continue;
-      el.appendChild(row(false, p.path, likely(p),
-        () => connect({kind:'serial', port:p.path}, p.path)));
+      const r = row(false, p.path, chipLabel(p),
+        () => connect({kind:'serial', port:p.path}, p.path));
+      el.appendChild(r);
+      if (worthAsking(p)) asking.push([p, r]);
     }
     if (!el.children.length) el.innerHTML = '<div class="empty">no likely ports found</div>';
+
+    // Render first, ASK second. Enumerating ports is instant; opening one and
+    // waiting for a reply is not, and a chooser that stalls for seconds on launch
+    // looks broken. So the honest chip label goes up immediately and upgrades in
+    // place if the board answers.
+    for (const [p, r] of asking) {
+      const sub = r.querySelector('small');
+      sub.textContent = chipLabel(p) + ' — asking…';
+      api('/_api/identify', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({port: p.path}),
+      }).then(res => {
+        if (res.attached) { sub.textContent = 'connected right now'; r.querySelector('.dot').classList.add('up'); return; }
+        if (res.ok && res.version) {
+          sub.textContent = 'NaviCore ' + res.version;
+          r.querySelector('.dot').classList.add('up');
+        } else if (res.busy) {
+          // Actionable, and a different problem entirely: the board may well be a
+          // NaviCore, we just could not ask it.
+          sub.textContent = chipLabel(p) + ' — in use by another program';
+        } else {
+          // No PONG. An SBUS controller, or any other Espressif board — all we
+          // honestly know is that it did not answer as a droid.
+          sub.textContent = chipLabel(p) + ' — did not answer as a NaviCore';
+        }
+      }).catch(() => { sub.textContent = chipLabel(p); });
+    }
   } catch (e) { $('serial').innerHTML = '<div class="empty">could not list ports</div>'; }
 
   try {
