@@ -103,6 +103,9 @@ def cmdlib_names(base: str) -> list[str]:
         for n in sorted(names):
             # Manifests may name a board bare or path-relative; normalise to the
             # vendor directory either way.
+            if not _safe_relname(n):
+                print(f"  skipping unsafe manifest entry: {n!r}")
+                continue
             out.append(n if n.startswith(f"{vendor}/") else f"{vendor}/{n}")
 
         for extra in CMDLIB_EXTRA:
@@ -119,6 +122,29 @@ def cmdlib_names(base: str) -> list[str]:
             seen.add(n)
             uniq.append(n)
     return uniq
+
+
+def _safe_relname(name: str) -> bool:
+    """Is this manifest entry safe to use as a path under the staging directory?
+
+    These names come from a manifest fetched over the network and are then joined
+    onto a real directory and written. lstrip("./") only neutralises LEADING
+    traversal, so "vendor/../../../evil.json" survived it intact.
+
+    The source is greghulette.github.io, so this is defence in depth rather than a
+    live hole -- but it is the one place in the app where remote data decides where
+    bytes land on disk, which is worth being strict about.
+    """
+    import ntpath
+    import posixpath
+    if not name or name.startswith(("/", "\\")):
+        return False
+    if ntpath.splitdrive(name)[0]:            # C:, \\server\share
+        return False
+    parts = name.replace("\\", "/").split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        return False
+    return not posixpath.isabs(name)
 
 
 def main() -> int:
@@ -169,6 +195,12 @@ def main() -> int:
         (staged / "cmdlib").mkdir()
         for n in names:
             dest = staged / "cmdlib" / n
+            # Belt and braces: even with _safe_relname above, assert the resolved
+            # path really is inside the staging tree before creating anything.
+            root = (staged / "cmdlib").resolve()
+            if not str(dest.resolve()).startswith(str(root)):
+                print(f"  refusing to write outside the bundle: {n!r}")
+                continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(get(f"{a.base}/cmdlib/{n}"))
             got += 1

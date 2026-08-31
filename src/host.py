@@ -738,8 +738,29 @@ async def _stop_bg(app: web.Application) -> None:
             await task
 
 
+@web.middleware
+async def _guard_origin(req: web.Request, handler):
+    """Refuse cross-origin state changes.
+
+    The Origin check on /_link is not enough on its own. A cross-origin fetch()
+    carrying JSON triggers a CORS preflight this server never answers, so those are
+    already blocked -- but a plain HTML form POST is a "simple request" and needs no
+    preflight, and the handlers that tolerate an unparseable body accept it anyway:
+    /_api/detach takes no body at all, and /_api/wifi-bounce falls back to
+    ssid="NaviCore" and bounces the adapter. So any page the user is visiting could
+    drop their droid link or cycle their Wi-Fi.
+
+    Applied to every POST rather than a list, so a handler added later is covered
+    without anyone having to remember. GETs are read-only and stay open.
+    """
+    if req.method == "POST" and not _origin_ok(req):
+        return web.json_response(
+            {"ok": False, "error": "cross-origin request refused"}, status=403)
+    return await handler(req)
+
+
 def build_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[_guard_origin])
     app.on_startup.append(_start_bg)
     app.on_cleanup.append(_stop_bg)
     app.add_routes([
