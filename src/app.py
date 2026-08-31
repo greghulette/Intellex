@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import pathlib
 import sys
 import threading
@@ -116,11 +117,29 @@ def main() -> int:
     ap.add_argument("--no-auto-bounce", action="store_true")
     ap.add_argument("--dev", action="store_true",
                     help="enable devtools and the right-click menu in the window")
+    ap.add_argument("--inspect", type=int, metavar="PORT", nargs="?", const=9333,
+                    help="open a DevTools protocol port on the window (default 9333) so a "
+                         "freeze can be profiled from outside while it is happening")
     ap.add_argument("--browser", action="store_true",
                     help="open the default browser instead of an app window")
     a = ap.parse_args()
 
     hostmod.auto_bounce = not a.no_auto_bounce
+
+    # WHY AN ENV VAR AND NOT A pywebview OPTION
+    # pywebview's debug flag turns on the F12 devtools UI, which is no use when the
+    # window is the thing that has stopped responding -- you cannot click it. The
+    # WebView2 runtime reads WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS at STARTUP, so
+    # it has to be set before the window is created and cannot be turned on later.
+    # That is the whole reason this is a launch flag: a freeze is only debuggable
+    # if you decided to make it debuggable before it happened.
+    #
+    # Loopback only, and off unless asked for -- it is an unauthenticated debug
+    # port into the page.
+    if a.inspect:
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+            f"--remote-debugging-port={a.inspect}")
+        print(f"devtools protocol on http://127.0.0.1:{a.inspect}/json")
 
     # BEFORE anything else. A failed bind here means another NaviLink owns the
     # port; carrying on would open a window onto that one and -- because the

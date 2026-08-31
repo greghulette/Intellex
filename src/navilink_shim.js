@@ -32,6 +32,20 @@
 
   const LINK_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/_link';
 
+  // ── Link state, so the page can get itself BACK ───────────────────────────
+  // The host deliberately closes the page socket whenever the droid link drops
+  // (that is what makes the tool re-handshake and pick up a new firmware version
+  // after an OTA). The tool then has no port, and autoConnect() only ever ran on
+  // `load` -- so the page sat dead until the whole app was closed and reopened.
+  // Every droid reboot, every config save that restarts, every transient did it.
+  //
+  // linkOpen tracks OUR socket. userClosed separates "the tool asked to
+  // disconnect", which must be respected, from "it dropped underneath us", which
+  // is the case worth recovering from.
+  let linkOpen = false;
+  let userClosed = false;
+  let reconnectAt = 0;      // earliest next attempt (ms epoch), for backoff
+
   class NaviLinkPort {
     constructor() {
       this._ws = null;
@@ -55,6 +69,11 @@
         ws.addEventListener('error', () => reject(new Error('cannot reach the NaviLink host')), { once: true });
       });
       this._ws = ws;
+      linkOpen = true;
+      userClosed = false;
+      // Not an error path: the host closes this socket on purpose when the droid
+      // goes away. Just record it, so watchLink() knows to bring the page back.
+      ws.addEventListener('close', () => { linkOpen = false; }, { once: true });
 
       // REAL WHATWG streams, not duck-typed objects. The tool locks and releases
       // readers/writers and checks .locked; a hand-rolled stand-in without a real
@@ -138,6 +157,10 @@
     }
 
     async close() {
+      // The TOOL asked to disconnect. Remember that, or watchLink() would helpfully
+      // reconnect the port the user just closed.
+      userClosed = true;
+      linkOpen = false;
       const ws = this._ws;
       this._ws = null;
       this.readable = null;
@@ -356,6 +379,21 @@
   async function watchLink() {
     let st;
     try { st = await (await fetch('/_api/status')).json(); } catch (_) { return; }
+
+    // GET THE PAGE BACK. The host is attached but our socket is not open, and the
+    // tool was not the one who closed it -- so the droid dropped and came back
+    // while the page stayed disconnected. autoConnect() only runs on `load`, which
+    // is why the only known cure used to be closing and reopening the app.
+    //
+    // Backed off, because connectDirect() is not instant and the tool needs a
+    // moment to finish tearing the old port down; retrying every 2 s would stack
+    // half-finished connects on top of each other.
+    if (st.attached && !linkOpen && !userClosed && Date.now() >= reconnectAt) {
+      reconnectAt = Date.now() + 5000;
+      console.info('[NaviLink] link dropped and the host is back — reconnecting the page');
+      autoConnect();
+    }
+
     if (st.attached || !st.wantsLink) { downSince = 0; banner(''); return; }
     if (!downSince) downSince = Date.now();
     const secs = Math.round((Date.now() - downSince) / 1000);
