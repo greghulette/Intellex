@@ -39,13 +39,40 @@ from transport import TransportError                      # noqa: E402
 _serve_error: list = []
 
 
-def _serve(port: int) -> None:
-    """Run the aiohttp app forever on this thread."""
+def _bind(port: int):
+    """Claim the port on the MAIN thread, before anything else happens.
+
+    _wait_until_up cannot tell our server from somebody else's: an older NaviLink
+    answers /_api/status exactly as ours would. And it could answer before our
+    background thread had even got as far as failing to bind -- measured returning
+    True against a two-day-old instance while our own server thread was already
+    dead, so every launch opened a window onto the OLD process. The app looked
+    like it restarted; the host never did, which meant no code change could ever
+    take effect and the port stayed occupied indefinitely.
+
+    Binding here makes ownership unambiguous and settles it before a window opens
+    or a serial port is claimed. Deliberately NO SO_REUSEADDR -- failing when
+    someone else holds the port is the entire point.
+    """
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((hostmod.BIND_HOST, port))
+        s.listen(128)
+        return s, None
+    except OSError as e:
+        with contextlib.suppress(Exception):
+            s.close()
+        return None, e
+
+
+def _serve(sock) -> None:
+    """Run the aiohttp app forever on this thread, on an already-bound socket."""
     from aiohttp import web
     import asyncio
     try:
         asyncio.set_event_loop(asyncio.new_event_loop())
-        web.run_app(hostmod.build_app(), host=hostmod.BIND_HOST, port=port,
+        web.run_app(hostmod.build_app(), sock=sock,
                     print=None, handle_signals=False)  # signals belong to the main thread
     except BaseException as e:                          # noqa: BLE001
         # Record it. This thread is a daemon and nothing joins it, so an exception
@@ -95,6 +122,19 @@ def main() -> int:
 
     hostmod.auto_bounce = not a.no_auto_bounce
 
+    # BEFORE anything else. A failed bind here means another NaviLink owns the
+    # port; carrying on would open a window onto that one and -- because the
+    # command-line attach below runs first -- would also grab the serial port the
+    # live instance is trying to use, which it then retries forever with
+    # "Access is denied".
+    sock, bind_err = _bind(a.port)
+    if sock is None:
+        print(f"NaviLink is already running on {hostmod.BIND_HOST}:{a.port}.",
+              file=sys.stderr)
+        print("  Close the existing NaviLink window and try again.", file=sys.stderr)
+        print(f"  ({bind_err})", file=sys.stderr)
+        return 1
+
     # A target given on the command line skips the chooser and lands on the tool.
     spec = ({"kind": "serial", "port": a.serial} if a.serial
             else {"kind": "ws", "host": a.ws, "ssid": a.ssid} if a.ws else None)
@@ -107,15 +147,12 @@ def main() -> int:
             # the chooser meanwhile rather than refusing to start.
             print(f"attach failed ({e}) — will keep retrying")
 
-    threading.Thread(target=_serve, args=(a.port,), daemon=True, name="navilink-host").start()
+    threading.Thread(target=_serve, args=(sock,), daemon=True, name="navilink-host").start()
     if not _wait_until_up(a.port):
         why = f": {_serve_error[0]}" if _serve_error else ""
         print(f"host did not start on {hostmod.BIND_HOST}:{a.port}{why}", file=sys.stderr)
-        if _serve_error and "10048" in str(_serve_error[0]):
-            print("  that port is already in use -- NaviLink may already be running.",
-                  file=sys.stderr)
         # Release anything the early attach opened, or it stays held by this dying
-        # process and the running instance cannot have it.
+        # process and no other instance can have it.
         with contextlib.suppress(Exception):
             hostmod.bridge.detach()
         return 1
