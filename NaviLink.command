@@ -67,6 +67,19 @@ if [ ! -x "$PY" ]; then
   echo "Done."
 fi
 
+# The config tool is NOT in the repo: src/webui/ is gitignored because the public
+# NaviCore repo is the single source of truth for the UI. So a fresh clone has no
+# UI at all, and without this the first thing anyone sees is the app explaining why
+# there is nothing to configure with -- accurate, and still the wrong first run.
+# Fetch it once, here.
+#
+# Never fatal. Offline is a legitimate state and the app is useful without the
+# bundle: the control API and the /_link byte pipe do not need it.
+if [ ! -f src/webui/index.html ]; then
+  echo "Fetching the config tool -- it is not in the repo, see README."
+  "$PY" tools/fetch_webui.py || echo "Could not fetch it. NaviLink will start and explain."
+fi
+
 # exec: the app becomes this process, so closing the Terminal window closes the
 # app and nothing is left holding a serial port or the droid's socket.
 exec "$PY" src/app.py "$@"

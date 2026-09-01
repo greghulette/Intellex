@@ -42,6 +42,19 @@ if not exist "%PY%" (
   echo Done.
 )
 
+REM The config tool is NOT in the repo: src\webui\ is gitignored because the public
+REM NaviCore repo is the single source of truth for the UI. A fresh clone therefore
+REM has no UI at all, and without this the first thing anyone sees is the app
+REM explaining why there is nothing to configure with. Fetch it once, here.
+REM
+REM Never fatal -- offline is legitimate, and the control API and the /_link byte
+REM pipe work without the bundle.
+if not exist "src\webui\index.html" (
+  echo Fetching the config tool -- it is not in the repo, see README.
+  "%PY%" tools\fetch_webui.py
+  if errorlevel 1 echo Could not fetch it. NaviLink will start and explain.
+)
+
 REM start "" detaches, so the launching console (if any) does not stay tied to it.
 if exist "%PYW%" (
   start "" "%PYW%" src\app.py %*
