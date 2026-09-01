@@ -12,6 +12,12 @@ aiohttp>=3.9
 # esptool binary — see the --run-esptool note in CLAUDE.md.
 esptool>=4.7
 
+# CA certificates. Not optional on macOS: the python.org framework build ships an
+# EMPTY trust store and expects you to run "Install Certificates.command" by hand,
+# so without this every fetch of the config tool dies with CERTIFICATE_VERIFY_FAILED
+# on a machine whose network is fine. See src/certs.py.
+certifi>=2024.2.2
+
 # Packaging (dev only)
 pyinstaller>=6.0
 

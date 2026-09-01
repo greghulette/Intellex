@@ -44,6 +44,8 @@ from typing import Optional
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import certs                                             # noqa: E402
+
 try:
     from aiohttp import web, WSMsgType                   # noqa: E402
 except ImportError:                                      # pragma: no cover
@@ -298,16 +300,26 @@ def _bundled_dtg() -> str:
     return m.group(1).strip() if m else ""
 
 
+# Why the last probe came back empty. Offline is the expected reason and needs no
+# fuss, but it is not the ONLY reason, and reporting every failure as "offline" is
+# how a stock macOS Python turns a one-line fix into an afternoon. See src/certs.py.
+_published_error = ""
+
+
 def _published_dtg() -> str:
+    global _published_error
     import urllib.request
     try:
         with urllib.request.urlopen(
                 "https://greghulette.github.io/NaviCore/config_tool/index.html",
-                timeout=10) as r:
+                timeout=10, context=certs.context()) as r:
             head = r.read(400_000).decode("utf-8", "replace")   # stamp is near the top
+        _published_error = ""
         m = _DTG_RE.search(head)
         return m.group(1).strip() if m else ""
-    except Exception:
+    except Exception as e:
+        _published_error = (certs.ADVICE if certs.is_cert_error(e)
+                            else f"{type(e).__name__}: {e}")
         return ""            # offline is normal and not an error
 
 
@@ -325,6 +337,7 @@ async def api_webui_version(_req: web.Request) -> web.Response:
         "published": published,
         "stale": bool(bundled and published and bundled != published),
         "checked": bool(published),
+        "reason": "" if published else _published_error,
     })
 
 
@@ -865,7 +878,11 @@ def main() -> int:
         print(f"ui        {_b}  ** OUT OF DATE ** published is {_p}")
         print("          refresh with: python tools/fetch_webui.py")
     else:
-        print(f"ui        {_b}" + ("" if _p else "  (could not reach Pages to compare)"))
+        print(f"ui        {_b}")
+        if not _p:
+            print("          could not compare with Pages:")
+            for _line in (_published_error or "offline").splitlines():
+                print(f"          {_line}")
     print("ctrl-c to stop")
     try:
         web.run_app(build_app(), host=BIND_HOST, port=a.port, print=None)

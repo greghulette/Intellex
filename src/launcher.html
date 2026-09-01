@@ -208,7 +208,15 @@ async function checkUi() {
   try {
     const v = await api('/_api/webui-version');
     if (!v.bundled) { $('uiver').textContent = 'no config tool bundled'; return; }
-    if (!v.checked)  { $('uiver').textContent = `config tool ${v.bundled} (offline — cannot compare)`; return; }
+    if (!v.checked)  {
+      // "offline" was the only story this told, and on a stock macOS Python it was
+      // the wrong one — the box was online and simply could not verify a
+      // certificate. Show the first line, keep the fix in the tooltip.
+      const why = (v.reason || '').split('\n')[0].trim();
+      $('uiver').textContent = `config tool ${v.bundled} — ${why ? 'cannot compare: ' + why : 'offline, cannot compare'}`;
+      $('uiver').title = v.reason || '';
+      return;
+    }
     if (v.stale) {
       $('uiver').innerHTML = `config tool <b>${v.bundled}</b> — <span class="stale">update available (${v.published})</span>`;
     } else {
