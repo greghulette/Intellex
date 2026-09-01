@@ -13,19 +13,53 @@ cd "$(dirname "$0")/.."
 
 PY=".venv/bin/python3"
 
+# The NEWEST python3 available, not merely the first on PATH. On a Mac the first
+# is very often the python.org 3.9 framework build even when a newer one sits
+# right beside it, and the venv it builds is then silently a version the project
+# does not develop on. That is exactly how asyncio.timeout (3.11+) ended up in a
+# 3.9 venv, breaking smoke_host.py with an AttributeError nothing had warned
+# about. Windows needs no equivalent: `py -3` already selects the newest.
+find_python() {
+  for c in python3.15 python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+    if command -v "$c" >/dev/null 2>&1 &&
+       "$c" -c 'import sys; raise SystemExit(sys.version_info < (3, 9))' 2>/dev/null; then
+      command -v "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Every run, not just at setup: the venv outlives the decision that made it, and a
+# 3.9 one built months ago is precisely the case worth surfacing. A note, not a
+# refusal -- 3.9 does run everything today, and blocking a working setup would be
+# worse than the silence it replaces.
+note_if_old() {
+  "$PY" -c 'import sys
+if sys.version_info < (3, 11):
+    print("")
+    print("Note: this venv is Python %d.%d. NaviLink is developed on 3.14 and only" % sys.version_info[:2])
+    print("      3.11+ is exercised. It works today, but nothing tests it -- to move")
+    print("      up, install a newer Python, delete .venv, and run this again.")
+    print("")
+' 2>/dev/null || true
+}
+
 if [ ! -x "$PY" ]; then
   echo "First run: creating the virtual environment..."
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -m venv .venv
-  else
+  if ! BOOTSTRAP=$(find_python); then
     echo
-    echo "python3 not found. Install Python 3.11+ (python.org, or: brew install python)"
+    echo "No usable python3 found (3.9+). Install Python 3.11+ (python.org, or: brew install python)"
     exit 1
   fi
+  echo "Using $BOOTSTRAP ($("$BOOTSTRAP" -V 2>&1))"
+  "$BOOTSTRAP" -m venv .venv
   echo "Installing dependencies..."
   "$PY" -m pip install --quiet --upgrade pip
   "$PY" -m pip install --quiet -r requirements.txt
 fi
+
+note_if_old
 
 # The config tool is NOT in the repo: src/webui/ is gitignored because the public
 # NaviCore repo is the single source of truth for the UI. So a fresh clone has no

@@ -42,6 +42,21 @@ if not exist "%PY%" (
   echo Done.
 )
 
+REM Say it on every run, not only at setup: the venv outlives the decision that
+REM made it, and one built months ago on an older Python is the case worth
+REM surfacing. A note, not a refusal -- 3.9 runs everything today, and blocking a
+REM working setup would be worse than the silence it replaces. No interpreter
+REM picking is needed here: `py -3` already selects the newest installed, which is
+REM the macOS launchers' actual problem, not this one's.
+"%PY%" -c "import sys; raise SystemExit(sys.version_info < (3,11))" >nul 2>&1
+if errorlevel 1 (
+  echo.
+  echo Note: this venv is older than Python 3.11. NaviLink is developed on 3.14
+  echo       and only 3.11+ is exercised. It works, but nothing tests it -- to
+  echo       move up, install a newer Python, delete .venv, and run this again.
+  echo.
+)
+
 REM The config tool is NOT in the repo: src\webui\ is gitignored because the public
 REM NaviCore repo is the single source of truth for the UI. A fresh clone therefore
 REM has no UI at all, and without this the first thing anyone sees is the app
