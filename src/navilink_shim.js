@@ -342,6 +342,30 @@
   // whole point of doing it from the shim.
   let flashBusy = false;
 
+  // ── Is the HOST new enough to flash? ──────────────────────────────────────
+  // This file is re-read from disk on every request; host.py is loaded once, at
+  // startup. So a NaviLink left running across an update serves a NEW page to an
+  // OLD host -- the page POSTs /_api/flash, that route does not exist yet, the
+  // static handler takes the request and answers 405, and the user is told "the
+  // host refused" when the true answer is "restart NaviLink". That happened, so
+  // ask first and say the useful thing instead.
+  //
+  // Only a positive result is cached: a failed probe may just be a host that is
+  // briefly busy, and the 3 s re-assert below will ask again.
+  let hostCanFlash = false;
+  async function hostSupportsFlash() {
+    if (hostCanFlash) return true;
+    try {
+      hostCanFlash = (await fetch('/_api/flash-status')).ok;
+    } catch (_) {
+      hostCanFlash = false;
+    }
+    return hostCanFlash;
+  }
+
+  const STALE_HOST_MSG = 'This page is newer than the running NaviLink host — '
+                       + 'quit and reopen NaviLink to enable flashing.';
+
   const FLASH_BTNS = [
     ['btn-fw-flash', false, 'Update Firmware',
      'Update via the host\'s native esptool. Saved configuration (NVS) is preserved.'],
@@ -349,10 +373,16 @@
      'Full wipe via the host\'s native esptool. ERASES saved configuration (NVS).'],
   ];
 
-  function wireNativeFlash() {
+  async function wireNativeFlash() {
+    const ok = await hostSupportsFlash();
     for (const [id, eraseNvs, label, title] of FLASH_BTNS) {
       const b = document.getElementById(id);
       if (!b) continue;
+      if (!ok) {
+        // Leave them disabled rather than wired to a route that is not there.
+        if (!flashBusy) { b.disabled = true; b.title = STALE_HOST_MSG; }
+        continue;
+      }
       if (!b.__navilinkWired) {
         b.__navilinkWired = true;
         b.addEventListener('click', ev => {
@@ -400,6 +430,11 @@
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ eraseNvs }),
       });
+      if (r.status === 404 || r.status === 405) {
+        // The route is absent, so aiohttp's static handler answered instead.
+        hostCanFlash = false;
+        throw new Error(STALE_HOST_MSG);
+      }
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) throw new Error(j.error || `the host refused (HTTP ${r.status})`);
 
