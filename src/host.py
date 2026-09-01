@@ -45,6 +45,7 @@ from typing import Optional
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import certs                                             # noqa: E402
+import flash                                             # noqa: E402
 
 try:
     from aiohttp import web, WSMsgType                   # noqa: E402
@@ -375,6 +376,106 @@ async def api_update_webui(_req: web.Request) -> web.Response:
             status=502)
     return web.json_response({"ok": True, "version": _bundled_dtg(),
                               "log": (r.stdout or "").strip()[-400:]})
+
+
+# ── Native flashing ─────────────────────────────────────────────────────────
+# The page CANNOT flash through this app: navilink_shim.js presents the host's byte
+# pipe as a Web Serial port, and esptool-js needs real DTR/RTS to walk the board
+# into download mode. Over a WebSocket there are no control lines, so it waits
+# forever. The host has the actual port and esptool as a Python package, which is
+# both the approach ESP-Flasher-Companion takes and strictly better than the
+# browser's -- so do it here and let the shim drive the tool's own buttons.
+_flash_lock  = threading.Lock()
+_flash_state: dict = {"running": False, "ok": None, "error": "", "version": "",
+                      "percent": 0, "log": []}
+
+
+def _flash_log(msg: str) -> None:
+    with _flash_lock:
+        _flash_state["log"].append(msg)
+        del _flash_state["log"][:-400]      # a full esptool run is chatty
+    print(f"flash     {msg}")
+
+
+def _flash_progress(pct: int) -> None:
+    with _flash_lock:
+        # Monotonic: esptool restarts its percentage for every region, and a bar
+        # that jumps backwards four times reads as a stall, not as progress.
+        _flash_state["percent"] = max(_flash_state["percent"], min(99, pct))
+
+
+async def api_flash(req: web.Request) -> web.Response:
+    """Start a native flash. Returns immediately; poll /_api/flash-status.
+
+    Not synchronous: a full write is a minute or more, and holding an HTTP request
+    open across a board reset is how you get a timeout that looks like a failure
+    while the flash is still running and must not be started twice.
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    erase_nvs = bool(body.get("eraseNvs"))
+
+    with _flash_lock:
+        if _flash_state["running"]:
+            return web.json_response({"ok": False, "error": "a flash is already running"},
+                                     status=409)
+
+    # Refuse over WiFi rather than failing obscurely three steps later. esptool needs
+    # the USB line; a remote board is what "Update over WCB (OTA)" is for.
+    spec = dict(bridge._spec or {})
+    if spec.get("kind") != "serial" or not spec.get("port"):
+        return web.json_response({"ok": False, "error": (
+            "Flashing needs a direct USB serial connection. This session is "
+            + (_label_for(spec) if spec else "not attached")
+            + " — attach the board over USB and try again.")}, status=409)
+    port = spec["port"]
+
+    with _flash_lock:
+        _flash_state.update(running=True, ok=None, error="", version="",
+                            percent=0, log=[])
+
+    async def run_flash() -> None:
+        try:
+            # esptool opens the device itself, so the port has to be ours to give.
+            _flash_log(f"Releasing {port} so esptool can open it...")
+            bridge.detach()
+            await asyncio.sleep(0.4)          # let the OS finish closing it
+            version = await asyncio.to_thread(
+                flash.flash, port, erase_nvs, _flash_log, _flash_progress)
+            with _flash_lock:
+                _flash_state.update(ok=True, version=version, percent=100)
+            _flash_log(f"Done — board is running {version}.")
+        except Exception as e:                # noqa: BLE001 - reported, never raised at a user
+            with _flash_lock:
+                _flash_state.update(ok=False, error=str(e))
+            _flash_log(f"FAILED: {e}")
+        finally:
+            # ALWAYS hand the port back, success or not. set_target first so the
+            # reconnect loop keeps trying on its own: the board reboots as esptool
+            # lets go, so the first attach here often lands before it has finished
+            # coming up, and that is normal rather than a failure worth reporting.
+            try:
+                bridge.set_target(spec)
+                await asyncio.to_thread(
+                    lambda: bridge.attach(bridge.rebuild(), _label_for(spec), spec))
+                _flash_log("Reattached.")
+            except Exception as e:            # noqa: BLE001
+                _flash_log(f"not reattached yet ({e}); the reconnect loop will retry")
+            with _flash_lock:
+                _flash_state["running"] = False
+
+    asyncio.create_task(run_flash())
+    return web.json_response({"ok": True, "started": True,
+                              "target": _label_for(spec), "eraseNvs": erase_nvs})
+
+
+async def api_flash_status(_req: web.Request) -> web.Response:
+    with _flash_lock:
+        st = dict(_flash_state)
+        st["log"] = list(st["log"])
+    return web.json_response(st)
 
 
 async def api_status(_req: web.Request) -> web.Response:
@@ -816,6 +917,8 @@ def build_app() -> web.Application:
         web.get("/_api/discover", api_discover),
         web.get("/_api/webui-version", api_webui_version),
         web.post("/_api/update-webui", api_update_webui),
+        web.post("/_api/flash", api_flash),
+        web.get("/_api/flash-status", api_flash_status),
         web.get("/_launcher", launcher),
         web.post("/_api/wifi-bounce", api_wifi_bounce),
         web.post("/_api/attach", api_attach),

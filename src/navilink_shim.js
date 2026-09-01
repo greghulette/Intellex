@@ -16,13 +16,16 @@
 //  here, which is the same property the host itself is built around.
 //
 //  ── WHAT THIS DELIBERATELY DOES NOT DO ────────────────────────────────────
-//  Flashing. esptool-js drives a real port hard: it polls readable.locked /
-//  writable.locked in waitForUnlock(), cancels readers mid-stream, and needs
-//  setSignals() to toggle DTR/RTS in a timing-sensitive reset dance. Faking that
-//  well enough to flash over a WebSocket is a bad trade when the native host can
-//  already run esptool directly. setSignals() below is therefore a real call to
-//  the host, not a lie -- but flashing is not wired up, and the tool's flash
-//  buttons should stay disabled in the app.
+//  Flash through the port it fakes. esptool-js drives a real one hard: it polls
+//  readable.locked / writable.locked in waitForUnlock(), cancels readers
+//  mid-stream, and needs setSignals() to toggle DTR/RTS in a timing-sensitive
+//  reset dance. Faking that well enough over a WebSocket is a bad trade when the
+//  native host can run esptool directly. setSignals() below is therefore a real
+//  call to the host, not a lie.
+//
+//  So the flash buttons are NOT dead here: they are intercepted (capture phase)
+//  and routed to the host's /_api/flash, which owns the real device and runs
+//  esptool as a Python package. See "Flashing: hand it to the host" below.
 // =============================================================================
 (() => {
   'use strict';
@@ -321,32 +324,115 @@
     }
   }
 
-  // ── Disable esptool flashing ──────────────────────────────────────────────
-  // Flashing genuinely CANNOT work through this shim, and letting it try wastes
-  // minutes on a sync that can never succeed.
+  // ── Flashing: hand it to the host ─────────────────────────────────────────
+  // esptool-js genuinely CANNOT work through this shim. It drives a real port:
+  // toggling DTR/RTS in a timing-sensitive reset dance to enter the bootloader,
+  // polling readable.locked / writable.locked, cancelling readers mid-stream. Over
+  // a WebSocket there are no control lines at all (set_signals is a documented
+  // no-op on that transport), so the board never enters download mode and esptool
+  // sits printing "... ___ ..." forever. These buttons used to be disabled for
+  // exactly that reason.
   //
-  // esptool-js drives a real port: it toggles DTR/RTS in a timing-sensitive reset
-  // dance to enter the bootloader, polls readable.locked / writable.locked, and
-  // cancels readers mid-stream. Over a WebSocket there are no control lines at all
-  // (set_signals is a documented no-op on that transport), so the board never
-  // enters download mode and esptool sits printing "... ___ ..." forever.
-  //
-  // Not a gap to close later either: the native host runs esptool directly, the
-  // same Python package ESP-Flasher-Companion already ships. Doing it through the
-  // browser would be strictly worse. So disable the buttons and say why, rather
-  // than leaving a trap that looks like a hardware fault.
-  function disableFlashButtons() {
-    const ids = ['btn-fw-flash', 'btn-fw-wipe'];
-    const why = 'Flashing is not available through the NaviLink app — '
-              + 'use the web tool over USB, or ESP-Flasher-Companion.';
-    for (const id of ids) {
+  // But the HOST can flash, and better: it holds the real serial device and has
+  // esptool as a Python package -- the same one ESP-Flasher-Companion ships, and
+  // the approach CLAUDE.md specifies. So intercept the tool's own buttons and run
+  // it there. Capture phase + stopImmediatePropagation, so the page's esptool-js
+  // handler never fires; same buttons, same wording, same progress elements, only
+  // the engine underneath changes. Nothing in index.html is touched, which is the
+  // whole point of doing it from the shim.
+  let flashBusy = false;
+
+  const FLASH_BTNS = [
+    ['btn-fw-flash', false, 'Update Firmware',
+     'Update via the host\'s native esptool. Saved configuration (NVS) is preserved.'],
+    ['btn-fw-wipe',  true,  'Full Wipe & Flash',
+     'Full wipe via the host\'s native esptool. ERASES saved configuration (NVS).'],
+  ];
+
+  function wireNativeFlash() {
+    for (const [id, eraseNvs, label, title] of FLASH_BTNS) {
       const b = document.getElementById(id);
       if (!b) continue;
-      b.disabled = true;
-      b.title = why;
+      if (!b.__navilinkWired) {
+        b.__navilinkWired = true;
+        b.addEventListener('click', ev => {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();   // the page's esptool-js path must not run
+          startNativeFlash(eraseNvs, label);
+        }, true);
+      }
+      // Re-asserted on a timer because the tool rewrites this whenever its
+      // transport state changes -- but never while we are mid-flash, or its
+      // bookkeeping would re-enable a button the flash is deliberately holding.
+      if (!flashBusy) { b.disabled = false; b.title = title; }
     }
-    // OTA is different: it is just commands on the line, so it works over either
-    // transport. Left enabled deliberately.
+  }
+
+  const FLASH_POLL_MS = 700;
+
+  async function startNativeFlash(eraseNvs, label) {
+    if (flashBusy) return;
+    if (eraseNvs && !window.confirm(
+          'Full Wipe & Flash will ERASE all saved settings on the board (NVS) '
+        + 'and write a factory-fresh firmware image.\n\nContinue?')) return;
+
+    const $ = id => document.getElementById(id);
+    const statusEl = $('fw-status'), logEl = $('fw-log');
+    const wrap = $('fw-progress-wrap'), bar = $('fw-progress-bar'), pct = $('fw-progress-pct');
+    const setStatus = m => { if (statusEl) statusEl.textContent = m; };
+    const seen = new Set();
+
+    // Everything that could seize the port or the board while esptool owns it.
+    const locked = ['btn-fw-flash', 'btn-fw-wipe', 'btn-fw-ota', 'btn-fw-ota-wcb', 'btn-connect']
+      .map($).filter(Boolean);
+
+    flashBusy = true;
+    locked.forEach(b => { b.disabled = true; });
+    if (logEl) logEl.textContent = '';
+    if (wrap) wrap.style.display = 'block';
+    if (bar)  bar.style.width = '0%';
+    if (pct)  pct.textContent = '0%';
+    setStatus(label + ': starting…');
+
+    try {
+      const r = await fetch('/_api/flash', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ eraseNvs }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || `the host refused (HTTP ${r.status})`);
+
+      // Poll rather than stream: a flash outlives any request held open across the
+      // board reset that ends it, and the log is small enough that re-reading it is
+      // cheaper than another socket.
+      for (;;) {
+        await new Promise(res => setTimeout(res, FLASH_POLL_MS));
+        let st;
+        try {
+          st = await (await fetch('/_api/flash-status')).json();
+        } catch (_) {
+          continue;                    // the host is briefly busy; keep waiting
+        }
+        for (const line of (st.log || [])) {
+          if (seen.has(line)) continue;
+          seen.add(line);
+          if (logEl) { logEl.textContent += line + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+        }
+        const p = st.percent || 0;
+        if (bar) bar.style.width = p + '%';
+        if (pct) pct.textContent = p + '%';
+        if (st.running) { setStatus(`${label}: ${p}%`); continue; }
+        if (st.ok) setStatus(`${label} complete ✓ — board is running ${st.version}`);
+        else       setStatus(`${label} failed: ${st.error || 'see the log'}`);
+        break;
+      }
+    } catch (e) {
+      setStatus(label + ' failed: ' + ((e && e.message) || e));
+    } finally {
+      flashBusy = false;
+      locked.forEach(b => { b.disabled = false; });
+    }
   }
 
   // ── Say which transport is actually in use ────────────────────────────────
@@ -467,10 +553,10 @@
   // After load, so the tool has defined its functions and wired its UI. The delay
   // is for its own connect-modal setup, not the socket.
   window.addEventListener('load', () => setTimeout(() => {
-    disableFlashButtons();
+    wireNativeFlash();
     autoConnect();
   }, 400), { once: true });
-  // The tool re-enables these whenever the transport changes, so re-assert after
-  // any connect settles rather than only once at load.
-  setInterval(disableFlashButtons, 3000);
+  // The tool rewrites these buttons whenever the transport changes, so re-assert
+  // after any connect settles rather than only once at load.
+  setInterval(wireNativeFlash, 3000);
 })();

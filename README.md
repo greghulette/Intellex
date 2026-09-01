@@ -18,13 +18,15 @@ Scaffold. Nothing runs yet.
 | Local HTTP + WS host | **Verified on hardware** — same client code reaches the droid over serial AND WiFi |
 | App shell (window + chooser) | **Working on Windows and macOS** — pywebview opens a window on both; picks a droid or port, updates the tool |
 | UI bundling + update-from-Pages | Working — `tools/fetch_webui.py`, verified byte-identical to Pages; fetched automatically on first run |
-| Flashing (Update Firmware / Full Wipe) | **Not written** — deliberately disabled in the app by `navilink_shim.js`; esptool-js cannot drive DTR/RTS over the WebSocket. Native `esptool` is the planned answer (CLAUDE.md §5) and is already a dependency, but nothing imports it yet. OTA over USB works today. |
+| Flashing (Update Firmware / Full Wipe) | **Written, not yet run against a board** — `src/flash.py` drives native `esptool` (CLAUDE.md §5); the shim intercepts the tool's own buttons and posts to `/_api/flash`. Image selection, flash map and NVS rules verified against the real `firmware/` listing; the write itself is untested on hardware. |
 | Packaging | Not written — port ESP-Flasher-Companion's proven pipeline |
 
 ## Layout
 
 ```
 src/transport.py   the byte-pipe seam; read its docstring first
+src/certs.py       TLS trust, because a stock macOS Python has none
+src/flash.py       native esptool flashing — what the browser cannot do here
 src/webui/         bundled NaviCore config tool — fetched, never committed
 src/webui/Images/  footer art the tool loads as "../Images/<name>" (see below)
 NaviLink.bat       double-click launcher — Windows
