@@ -16,8 +16,9 @@ Scaffold. Nothing runs yet.
 | Transport contracts | Defined and honoured — **the DTR-on-open reset is fixed** (no board reboot when the port opens) |
 | Serial / WebSocket transports | **Both verified on hardware** — `tools/smoke_transport.py serial|ws` |
 | Local HTTP + WS host | **Verified on hardware** — same client code reaches the droid over serial AND WiFi |
-| App shell (window + chooser) | **Working** — `scripts/run-windows.bat` opens a pywebview window; picks a droid or port, updates the tool |
-| UI bundling + update-from-Pages | Working — `tools/fetch_webui.py`, verified byte-identical to Pages |
+| App shell (window + chooser) | **Working on Windows and macOS** — pywebview opens a window on both; picks a droid or port, updates the tool |
+| UI bundling + update-from-Pages | Working — `tools/fetch_webui.py`, verified byte-identical to Pages; fetched automatically on first run |
+| Flashing (Update Firmware / Full Wipe) | **Not written** — deliberately disabled in the app by `navilink_shim.js`; esptool-js cannot drive DTR/RTS over the WebSocket. Native `esptool` is the planned answer (CLAUDE.md §5) and is already a dependency, but nothing imports it yet. OTA over USB works today. |
 | Packaging | Not written — port ESP-Flasher-Companion's proven pipeline |
 
 ## Layout
@@ -43,8 +44,10 @@ will 404 in the app while looking perfect on the published site.
 ## Running it
 
 Double-click **`NaviLink.bat`** (Windows) or **`NaviLink.command`** (macOS), both at
-the repo root. First run creates the venv and installs dependencies; after that it
-just opens.
+the repo root. First run creates the venv, installs dependencies **and fetches the
+config tool** — `src/webui/` is gitignored, so a fresh clone has no UI until that
+runs. After that it just opens. If the fetch cannot reach Pages the app still starts
+and explains itself; `.venv/bin/python3 tools/fetch_webui.py` retries it.
 
     NaviLink.bat                     window + chooser
     NaviLink.bat --ws 192.168.4.1    skip the chooser
@@ -78,16 +81,21 @@ To change connection later, click the transport label in the tool's status bar
 |---|---|---|
 | App, chooser, transports, OTA | **verified on hardware** | written, **never run** |
 | Serial port naming | `COM*` | `/dev/cu.*` — pyserial handles it; labels match both |
-| Auto re-associate after a droid reboot | `netsh`, measured | `networksetup`, **unverified** |
+| Auto re-associate after a droid reboot | `netsh`, measured | `networksetup`, **broken — see MACOS_FIRST_RUN** |
 | Window | WebView2 | WKWebView (needs pyobjc, installed by marker) |
 
 First run on a Mac: [docs/MACOS_FIRST_RUN.md](docs/MACOS_FIRST_RUN.md).
 
-**No Mac has run any of this.** The macOS paths are written from documentation, not
-from a session at a machine. Expect the first run to need fixes — most likely in
-`_wifi_bounce_macos()` and in whether pywebview picks up WKWebView cleanly. The app
-itself does not depend on either: `--browser` skips the window, and the auto-bounce
-is a convenience that reports a clear error when it cannot run.
+**A Mac has now run this** (macOS 15.4.1, 2026-09-01). pywebview picked up WKWebView
+cleanly on the first try, and serial enumeration behaves. Two things did need fixes —
+a fresh clone had no UI, and python.org's Python ships an empty CA store, so every
+HTTPS fetch failed while claiming to be offline — and both are handled now.
+
+`_wifi_bounce_macos()` is the prediction that came true: it is **confirmed broken**
+on real hardware, for two reasons neither the code nor its stubbed test anticipated.
+It is diagnosed but not yet fixed — see
+[docs/MACOS_FIRST_RUN.md](docs/MACOS_FIRST_RUN.md). The app does not depend on it:
+the auto-bounce is a convenience, and it reports a clear error when it cannot run.
 
 ## After a code change — reload or restart?
 
