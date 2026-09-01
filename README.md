@@ -54,6 +54,10 @@ just opens.
     ./NaviLink.command               same flags, macOS paths
     ./NaviLink.command --serial /dev/cu.usbmodem1101
 
+The chooser also has **Open the tool anyway** — the config tool does not need a
+board to be useful. Panels, saved configs and editing all work offline; attach
+later from the status line at the top of the tool.
+
 On macOS there is no `pythonw`, so a double-click opens a Terminal window that
 stays up while the app runs — closing it quits NaviLink. That is the same
 relationship the `.bat` has with its console; here it is just visible.

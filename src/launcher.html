@@ -36,7 +36,7 @@
 </style>
 
 <h1>Navi<span>Link</span></h1>
-<div class="sub">Pick a droid, or a cable.</div>
+<div class="sub">Pick a droid, or a cable &mdash; or open the tool on its own.</div>
 
 <div class="card">
   <h2>Over WiFi</h2>
@@ -53,6 +53,7 @@
     <span class="grow" id="uiver">checking the config tool version…</span>
     <button id="update">Update tool</button>
     <button id="rescan">Rescan</button>
+    <button id="offline">Open the tool anyway</button>
     <button id="back" class="primary" style="display:none">Back to tool</button>
   </div>
 </div>
@@ -199,6 +200,8 @@ async function scan() {
     }
     if (!el.children.length) el.innerHTML = '<div class="empty">no droid found</div>';
   } catch (e) { $('wifi').innerHTML = '<div class="empty">scan failed</div>'; }
+
+  offerOfflineIfEmpty();
 }
 
 async function checkUi() {
@@ -241,6 +244,31 @@ async function showBackIfConnected() {
 }
 
 $('back').onclick = () => { location.href = '/'; };
+
+// THE CHOOSER MUST NOT BE A DEAD END.
+//
+// With no droid on the WiFi and no cable plugged in, both lists come back empty
+// and there was no way past this screen at all -- the tool could not be opened to
+// look at a panel, load a saved config, or edit one for later. It does not need a
+// board for any of that; it is the same page the published site serves before you
+// press Connect.
+//
+// Nothing is attached, so the shim's autoConnect() sees st.attached === false and
+// deliberately does nothing, and watchLink() likewise stays quiet. The tool comes
+// up disconnected, which is exactly right. Come back here from the status line
+// when a droid is available.
+$('offline').onclick = () => { location.href = '/'; };
+
+// If a scan finds nothing, point at that button rather than leaving the user
+// staring at two empty lists wondering whether the app is broken.
+function offerOfflineIfEmpty() {
+  const noWifi = !$('wifi').querySelector('.row');
+  const noSer  = !$('serial').querySelector('.row');
+  if (noWifi && noSer) {
+    setStatus('No droid found. You can still open the tool on its own — '
+            + 'panels, saved configs and editing all work without a board.');
+  }
+}
 
 scan();
 checkUi();
