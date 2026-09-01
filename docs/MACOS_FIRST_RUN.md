@@ -86,8 +86,8 @@ than killing the app — pywebview chooses its toolkit inside `start()`, and rai
 If it does fail, the useful detail is whatever pywebview prints about which backend
 it tried.
 
-**3. `_wifi_bounce_macos()` — CONFIRMED BROKEN on this machine. Not yet fixed.**
-The stubbed test was checking the right logic against the wrong world. Run for real:
+**3. `_wifi_bounce_macos()` — was CONFIRMED BROKEN here; now rewritten.**
+The stubbed test was checking the right logic against the wrong world. As first run:
 
 ```
 >>> discover.wifi_bounce('NaviCore')
@@ -142,9 +142,28 @@ $ networksetup -setnetworkserviceenabled "802.11ac NIC" off
 $ networksetup -setnetworkserviceenabled "802.11ac NIC" on
 ```
 
-Until that lands, **a failure here costs you the automatic reconnect, not the
-connection.** Everything else keeps working; after a droid reboot, toggle the
-adapter by hand.
+That is what it now does. Detection asks the routing table first and only falls
+back to the SSID scan when no interface specifically carries the droid; the bounce
+uses `-setairportpower` where macOS allows it and the service toggle where it does
+not. On this machine it now resolves correctly:
+
+```
+>>> discover.wifi_bounce('NaviCore')
+(True, 'en6 (carrying 192.168.4.1): service "802.11ac NIC" cycled, reconnecting')
+```
+
+**The safety property matters more than the fix.** `route -n get` *always*
+answers — with no route to the droid it hands back the **default gateway**, which
+is the user's real network. Bouncing that to fix the droid link is the exact
+failure this module scopes to one interface to avoid, and it is the normal state
+whenever the droid is simply switched off. So the default route is rejected
+outright, and the adapter must additionally hold an address in the droid's own
+`/24`. Verified: `8.8.8.8`, `1.1.1.1` and an unused `192.168.99.1` all resolve to
+`None` and issue no commands at all.
+
+Still unverified: whether `-setnetworkserviceenabled` needs admin rights on your
+machine. The decision path was exercised with the mutating commands intercepted,
+so the adapter has never actually been cycled — run it once for real to confirm.
 
 **4. Serial port naming — VERIFIED.** The chooser labels ports by USB **vendor ID**, which is
 the same number on every platform, so nothing here depends on how macOS words a

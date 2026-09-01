@@ -296,17 +296,88 @@ def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
         return False, "netsh timed out"
 
 
-def _wifi_bounce_macos(ssid: str) -> tuple[bool, str]:
-    """Power-cycle only the Wi-Fi interface that is on `ssid`.
+def _mac_iface_for_ip(ip: str, run) -> Optional[str]:
+    """Which interface actually carries traffic to `ip`, if any specifically does.
 
-    UNTESTED — written without a Mac to run it on. The shape mirrors the Windows
-    path, which was measured: find the interface actually associated with the
-    droid's SSID and touch only that one, so a machine with a second adapter on
-    the house network keeps it.
+    The routing table is the decision the packets themselves follow. It needs no
+    entitlement and does not care what macOS has decided to call the adapter --
+    both of which the SSID route gets wrong on a modern Mac (see below).
 
-    A power cycle rather than `networksetup -setairportnetwork`, because that
-    wants the passphrase on the command line; cycling lets macOS reconnect from
-    its own keychain. Needs no sudo for -setairportpower on current macOS.
+    REJECTS THE DEFAULT ROUTE, which is the whole safety of this. `route -n get`
+    always answers: with no specific route to the droid it hands back the default
+    gateway, i.e. the user's real network. Bouncing THAT to fix the droid link is
+    precisely the failure this module scopes to one interface to avoid, and it is
+    the normal state whenever the droid is simply switched off.
+
+    Belt and braces: also require the adapter to hold an address in the droid's
+    own /24, so an unrelated host route cannot volunteer the wrong radio either.
+    """
+    r = run(["route", "-n", "get", ip])
+    dest = iface = ""
+    for ln in (r.stdout or "").splitlines():
+        k, _, v = ln.partition(":")
+        k, v = k.strip(), v.strip()
+        if k == "interface":
+            iface = v
+        elif k == "destination":
+            dest = v
+    if not iface or dest == "default":
+        return None
+
+    want = ip.rsplit(".", 1)[0] + "."
+    cfg = run(["ifconfig", iface])
+    for ln in (cfg.stdout or "").splitlines():
+        parts = ln.split()
+        if len(parts) >= 2 and parts[0] == "inet" and parts[1].startswith(want):
+            return iface
+    return None
+
+
+def _mac_service_for_device(dev: str, run) -> Optional[str]:
+    """The network SERVICE name for a device — en6 -> "802.11ac NIC".
+
+    Needed because `-setairportpower` only works on ports macOS itself considers
+    Wi-Fi, and a USB 802.11 adapter is very often not one of them: it answers
+    "en6 is not a Wi-Fi interface" to every airport verb. Toggling its service is
+    then the only way to cycle it that still needs no sudo.
+
+    The listing pairs a "(N) Name" line with the "(Hardware Port: ..., Device: enX)"
+    line that follows it.
+    """
+    import re
+    r = run(["networksetup", "-listnetworkserviceorder"])
+    name = None
+    for ln in (r.stdout or "").splitlines():
+        ln = ln.strip()
+        m = re.match(r"^\(\d+\)\s+(.*\S)\s*$", ln)
+        if m:
+            name = m.group(1)
+            continue
+        if ln.startswith("(Hardware Port:") and ln.rstrip(")").endswith(f"Device: {dev}"):
+            return name
+    return None
+
+
+def _wifi_bounce_macos(ssid: str, ip: str = "") -> tuple[bool, str]:
+    """Power-cycle only the interface that is actually carrying the droid.
+
+    VERIFIED BROKEN, then rewritten — the original was written without a Mac, and
+    the first real run found two independent reasons it could never have worked.
+
+    1. NOT EVERY 802.11 ADAPTER IS A "Wi-Fi" HARDWARE PORT. The droid was on en6,
+       which `-listallhardwareports` names "802.11ac NIC". The old name filter
+       ("wi-fi"/"airport") never considered it, and it would not have helped:
+       macOS answers "en6 is not a Wi-Fi interface" to -getairportnetwork AND to
+       -setairportpower, so both the detect and the bounce were unavailable there.
+
+    2. SSID LOOKUP IS GATED ON LOCATION SERVICES from macOS 14. Even the genuine
+       built-in Wi-Fi port answers "You are not associated with an AirPort
+       network" to an unprivileged process while plainly associated. So ANY design
+       keyed on reading the SSID is unreliable on a current Mac, whatever the
+       hardware.
+
+    Hence: ask the routing table first, and fall back to the SSID scan only when
+    it declines to name an interface (droid off, so nothing to bounce anyway).
     """
     import subprocess
 
@@ -314,22 +385,23 @@ def _wifi_bounce_macos(ssid: str) -> tuple[bool, str]:
         return subprocess.run(args, capture_output=True, text=True,
                               timeout=timeout, check=False)
 
+    ip = ip or DEFAULT_CANDIDATES[0]
+
     try:
-        # Hardware ports -> the device names (en0, en1, ...) that are Wi-Fi.
-        hw = run(["networksetup", "-listallhardwareports"])
+        target = _mac_iface_for_ip(ip, run)
+        how = f"carrying {ip}" if target else ""
+        # Fallback only. Kept because it is still correct on the machines it was
+        # written for -- a built-in Wi-Fi port, on a macOS that will answer -- and
+        # costs nothing when the routing table has already answered.
+        hw = run(["networksetup", "-listallhardwareports"]) if not target else None
         devices, want = [], False
-        for line in (hw.stdout or "").splitlines():
+        for line in ((hw.stdout if hw else "") or "").splitlines():
             line = line.strip()
             if line.startswith("Hardware Port:"):
                 want = "wi-fi" in line.lower() or "airport" in line.lower()
             elif line.startswith("Device:") and want:
                 devices.append(line.split(":", 1)[1].strip())
 
-        if not devices:
-            return False, "no Wi-Fi hardware port found"
-
-        # Only the one actually on the droid's network.
-        target = None
         for dev in devices:
             cur = run(["networksetup", "-getairportnetwork", dev])
             # Parse the NAME out, do not substring the whole reply. The output is
@@ -344,16 +416,36 @@ def _wifi_bounce_macos(ssid: str) -> tuple[bool, str]:
                     break
             if _ssid_matches(name, ssid):
                 target = dev
+                how = f'associated with "{ssid}"'
                 break
         if not target:
-            return False, (f'no Wi-Fi interface is on "{ssid}" — '
-                           "join it once by hand so macOS remembers it")
+            return False, (f'nothing is carrying {ip}, and no Wi-Fi interface '
+                           f'reports being on "{ssid}" — join it once by hand, and '
+                           "note that macOS 14+ hides the SSID unless Location "
+                           "Services is granted, so the routing check is the one "
+                           "that normally answers")
 
-        run(["networksetup", "-setairportpower", target, "off"])
-        r = run(["networksetup", "-setairportpower", target, "on"])
+        # Cycle it the only way this particular adapter allows. -setairportpower is
+        # preferred where it works (it is what the Wi-Fi menu does), but it is
+        # refused outright on a port macOS does not classify as Wi-Fi -- which is
+        # exactly the USB adapter this rewrite exists for. Probe, do not assume:
+        # a failed "off" followed by a failed "on" would otherwise report success
+        # while having done nothing at all.
+        if run(["networksetup", "-getairportpower", target]).returncode == 0:
+            run(["networksetup", "-setairportpower", target, "off"])
+            r = run(["networksetup", "-setairportpower", target, "on"])
+            did = "power-cycled"
+        else:
+            svc = _mac_service_for_device(target, run)
+            if not svc:
+                return False, (f"{target} ({how}) is not a Wi-Fi interface and has "
+                               "no network service to cycle")
+            run(["networksetup", "-setnetworkserviceenabled", svc, "off"])
+            r = run(["networksetup", "-setnetworkserviceenabled", svc, "on"])
+            did = f'service "{svc}" cycled'
         if r.returncode != 0:
             return False, (r.stderr or r.stdout or f"exited {r.returncode}").strip()
-        return True, f"{target}: power-cycled, reconnecting to {ssid}"
+        return True, f"{target} ({how}): {did}, reconnecting"
     except FileNotFoundError:
         return False, "networksetup not found"
     except subprocess.TimeoutExpired:

@@ -81,7 +81,7 @@ To change connection later, click the transport label in the tool's status bar
 |---|---|---|
 | App, chooser, transports, OTA | **verified on hardware** | written, **never run** |
 | Serial port naming | `COM*` | `/dev/cu.*` — pyserial handles it; labels match both |
-| Auto re-associate after a droid reboot | `netsh`, measured | `networksetup`, **broken — see MACOS_FIRST_RUN** |
+| Auto re-associate after a droid reboot | `netsh`, measured | route-based, **rewritten after failing on real hardware** |
 | Window | WebView2 | WKWebView (needs pyobjc, installed by marker) |
 
 First run on a Mac: [docs/MACOS_FIRST_RUN.md](docs/MACOS_FIRST_RUN.md).
