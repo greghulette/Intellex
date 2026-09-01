@@ -33,6 +33,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import appicon                                            # noqa: E402
 import host as hostmod                                    # noqa: E402
 from transport import TransportError                      # noqa: E402
 
@@ -251,6 +252,15 @@ def main() -> int:
     # WebViewException. Guarding only the import above therefore killed the app on
     # exactly the platform this fallback exists for, contradicting the comment on
     # it. Anything that goes wrong here falls through to the browser.
+    # BEFORE the window exists, which matters on Windows: the taskbar identity is
+    # read when the window is created and ignored afterwards. On macOS this is the
+    # entire job. Window mode only -- in --browser mode there is nothing to put an
+    # icon on, and on macOS asking for one would give this process a Dock presence
+    # it has deliberately not got.
+    _icon_msg = appicon.prepare()
+    if _icon_msg:
+        print(_icon_msg)
+
     try:
         webview.create_window("NaviLink", url, width=1280, height=880,
                               min_size=(900, 640), text_select=True)
@@ -269,8 +279,15 @@ def main() -> int:
     # the point of running it in-process.
     # debug=True gives devtools and a context menu — worth having when a reload
     # is not enough and you need to see what the page is actually doing.
+    def _window_up() -> None:
+        # Runs on pywebview's worker thread once the GUI is up -- the first moment a
+        # window handle exists to hang an icon on. No-op on macOS.
+        msg = appicon.attach()
+        if msg:
+            print(msg)
+
     try:
-        webview.start(debug=a.dev)
+        webview.start(_window_up, debug=a.dev)
     except Exception as e:
         print(f"the window backend failed ({type(e).__name__}: {e}) "
               "-- falling back to the browser.")

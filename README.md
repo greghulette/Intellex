@@ -25,6 +25,8 @@ Scaffold. Nothing runs yet.
 
 ```
 src/transport.py   the byte-pipe seam; read its docstring first
+src/appicon.py     Dock / taskbar icon — pywebview cannot do this for us
+src/assets/        app icon, copied from NaviCore (see tools/make_icon.py)
 src/certs.py       TLS trust, because a stock macOS Python has none
 src/flash.py       native esptool flashing — what the browser cannot do here
 src/webui/         bundled NaviCore config tool — fetched, never committed
