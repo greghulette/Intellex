@@ -100,6 +100,68 @@ async function connect(body, label) {
   location.href = '/';
 }
 
+// ── Keep looking while a droid is still coming up ─────────────────────────
+// This page used to scan exactly ONCE, on load. A NaviCore that is merely still
+// BOOTING -- its AP up and answering ping, but its WS endpoint not started yet --
+// therefore rendered as "routed via 192.168.4.2 but no TCP ... the AP is down"
+// and STAYED that way, because nothing ever looked again. The board finished
+// coming up a few seconds later and the page never noticed; the only way out was
+// to know the Rescan button existed. That is a bad first impression of a board
+// that is working perfectly.
+//
+// So keep watching -- but ONLY in that exact state: a candidate that is routable
+// and not yet answering. Deliberately NOT "whenever nothing was found", because a
+// machine with no droid on WiFi at all would then probe forever for something
+// that is never coming.
+//
+// Only the WiFi panel is redrawn, so the serial list does not flicker or move
+// under the cursor while someone is reaching for it.
+const WATCH_EVERY_MS = 4000;
+const WATCH_FOR_MS   = 120000;   // not booting any more, just broken
+let watchTimer = null, watchUntil = 0;
+
+// Returns true while something is there but not yet answering — i.e. worth
+// another look.
+async function scanWifi() {
+  let comingUp = false;
+  try {
+    const { candidates } = await api('/_api/discover');
+    const el = $('wifi'); el.innerHTML = '';
+    for (const c of candidates) {
+      if (c.isNaviCore) {
+        el.appendChild(row(true, `NaviCore at ${c.host}`,
+          `${c.version} · via ${c.via}`,
+          () => connect({kind:'ws', host:c.host}, c.host)));
+      } else {
+        // Say what is actually wrong. "Not found" sends people to check the droid
+        // when the real problem is usually this machine's adapter.
+        const d = document.createElement('div');
+        d.className = 'empty';
+        // Routable means the adapter is fine and something IS there, so this is
+        // very likely a board mid-boot. Say that the page is still looking, or it
+        // reads as a verdict rather than a snapshot.
+        d.textContent = c.hint + (c.routable && Date.now() < watchUntil
+          ? ' — still watching…' : '');
+        el.appendChild(d);
+        if (c.routable) comingUp = true;
+      }
+    }
+    if (!el.children.length) el.innerHTML = '<div class="empty">no droid found</div>';
+  } catch (e) {
+    $('wifi').innerHTML = '<div class="empty">scan failed</div>';
+  }
+  return comingUp;
+}
+
+function watchForDroid() {
+  clearTimeout(watchTimer);
+  if (Date.now() >= watchUntil) { scanWifi(); return; }   // final pass, plain text
+  watchTimer = setTimeout(async () => {
+    if (await scanWifi()) watchForDroid();
+    else offerOfflineIfEmpty();
+  }, WATCH_EVERY_MS);
+}
+
 async function scan() {
   $('wifi').innerHTML = '<div class="empty">scanning…</div>';
   $('serial').innerHTML = '<div class="empty">looking for ports…</div>';
@@ -181,25 +243,9 @@ async function scan() {
     }
   } catch (e) { $('serial').innerHTML = '<div class="empty">could not list ports</div>'; }
 
-  try {
-    const { candidates } = await api('/_api/discover');
-    const el = $('wifi'); el.innerHTML = '';
-    for (const c of candidates) {
-      if (c.isNaviCore) {
-        el.appendChild(row(true, `NaviCore at ${c.host}`,
-          `${c.version} · via ${c.via}`,
-          () => connect({kind:'ws', host:c.host}, c.host)));
-      } else {
-        // Say what is actually wrong. "Not found" sends people to check the droid
-        // when the real problem is usually this machine's adapter.
-        const d = document.createElement('div');
-        d.className = 'empty';
-        d.textContent = c.hint;
-        el.appendChild(d);
-      }
-    }
-    if (!el.children.length) el.innerHTML = '<div class="empty">no droid found</div>';
-  } catch (e) { $('wifi').innerHTML = '<div class="empty">scan failed</div>'; }
+  clearTimeout(watchTimer);
+  watchUntil = Date.now() + WATCH_FOR_MS;
+  if (await scanWifi()) watchForDroid();
 
   offerOfflineIfEmpty();
 }
