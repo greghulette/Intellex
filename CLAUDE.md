@@ -11,6 +11,21 @@ Ecosystem context: [`../NaviCore/CLAUDE.md`](../NaviCore/CLAUDE.md) and
 
 ---
 
+## This repo is worked on from more than one machine
+
+**`git fetch` and check for incoming commits BEFORE making any change.** The same repo is
+worked on from a Windows box and a Mac, so the local clone may be behind even when nothing
+here has changed. Editing on top of a stale checkout produces conflicts at push time at
+best, and silently reverts the other machine's work at worst.
+
+```bash
+git fetch origin && git status -sb          # "behind N" means stop and pull first
+git log --oneline HEAD..origin/main         # what arrived while you were away
+```
+
+Pull before you start, not when the push is rejected. If a push IS rejected, rebase onto
+what arrived and re-read anything you were about to edit — do not force.
+
 ## The one idea this whole thing rests on
 
 **The page talks to one WebSocket. The host process decides what's on the other end.**
