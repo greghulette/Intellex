@@ -20,7 +20,7 @@ app never uses. So:
              This is what stops the taskbar filing NaviLink under "Python", and it
              is ignored if the window is already up.
           2. WM_SETICON on the window once it exists, which needs a real .ico --
-             LoadImage cannot read a PNG. src/assets/navicore-badge.ico carries
+             LoadImage cannot read a PNG. src/assets/navicore-icon.ico carries
              seven sizes so Windows picks rather than smears.
 
 NOTHING HERE IS ALLOWED TO BREAK THE APP. An icon is decoration; every failure is
@@ -36,11 +36,16 @@ import sys
 # forked": the config tool is NaviCore's and must never diverge, whereas an app
 # icon is NaviLink's own chrome and has to exist before any network does -- the
 # Dock icon is wanted at startup, offline, on a first run. Copied from
-# NaviCore/assets-navicore/navicore-badge-512.png; navicore-badge.ico is generated
-# from it (7 sizes, 16..256, PNG-compressed entries) by tools/make_icon.py.
+# NaviCore/assets-navicore/navicore-icon.svg, and BOTH raster files are generated
+# from that .svg by tools/make_icon.py (7 sizes, 16..256, PNG-compressed entries).
+#
+# They are NOT a plain rasterisation of the drawing: the generator drops the side
+# ticks and closes the frame onto the hexagon, because at taskbar sizes those ticks
+# cost the logo a quarter of its width while rendering as specks. Read that script's
+# header before regenerating either file by any other means.
 ASSETS = pathlib.Path(__file__).resolve().parent / "assets"
-BADGE_PNG = ASSETS / "navicore-badge-512.png"
-BADGE_ICO = ASSETS / "navicore-badge.ico"
+ICON_PNG = ASSETS / "navicore-icon-512.png"
+ICON_ICO = ASSETS / "navicore-icon.ico"
 
 # Reverse-DNS-ish, stable, and NOT the executable name: Windows keys taskbar
 # pinning and grouping to this string, so changing it later orphans anyone's
@@ -80,14 +85,14 @@ def attach(_window=None) -> str:
 
 
 def _mac_dock_icon() -> str:
-    if not BADGE_PNG.is_file():
-        return f"icon: missing {BADGE_PNG}"
+    if not ICON_PNG.is_file():
+        return f"icon: missing {ICON_PNG}"
     from AppKit import NSApplication, NSImage    # pyobjc, already required on macOS
-    img = NSImage.alloc().initWithContentsOfFile_(str(BADGE_PNG))
+    img = NSImage.alloc().initWithContentsOfFile_(str(ICON_PNG))
     if img is None:
-        return f"icon: could not decode {BADGE_PNG.name}"
+        return f"icon: could not decode {ICON_PNG.name}"
     NSApplication.sharedApplication().setApplicationIconImage_(img)
-    return f"icon      Dock icon set from {BADGE_PNG.name}"
+    return f"icon      Dock icon set from {ICON_PNG.name}"
 
 
 def _win_app_id() -> str:
@@ -118,8 +123,8 @@ def _win_window_icon(attempts: int = 12, gap: float = 0.25) -> str:
     import time
     from ctypes import wintypes
 
-    if not BADGE_ICO.is_file():
-        return f"icon: missing {BADGE_ICO}"
+    if not ICON_ICO.is_file():
+        return f"icon: missing {ICON_ICO}"
 
     user32 = ctypes.windll.user32
     IMAGE_ICON, LR_LOADFROMFILE = 1, 0x0010
@@ -138,7 +143,7 @@ def _win_window_icon(attempts: int = 12, gap: float = 0.25) -> str:
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
 
     def load(px: int):
-        return user32.LoadImageW(None, str(BADGE_ICO), IMAGE_ICON, px, px,
+        return user32.LoadImageW(None, str(ICON_ICO), IMAGE_ICON, px, px,
                                  LR_LOADFROMFILE)
 
     # Ask for the exact pixel sizes Windows wants, so it picks the right entry out
@@ -148,7 +153,7 @@ def _win_window_icon(attempts: int = 12, gap: float = 0.25) -> str:
     big   = load(user32.GetSystemMetrics(SM_CXICON) or 32)
     if not small and not big:
         err = ctypes.get_last_error() if hasattr(ctypes, "get_last_error") else 0
-        return f"icon: LoadImage could not read {BADGE_ICO.name} (GetLastError={err})"
+        return f"icon: LoadImage could not read {ICON_ICO.name} (GetLastError={err})"
 
     ENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     user32.EnumWindows.argtypes = [ENUMPROC, wintypes.LPARAM]

@@ -18,3 +18,9 @@
 # the icon", on a machine the author is not sitting at. Pin it, like the rest.
 *.png      binary
 *.ico      binary
+
+# The .svg is a COPY of NaviCore's, kept so this repo can rebuild its icons alone.
+# Left to autocrlf it would land with CRLF, making it byte-different from the file
+# it was copied from -- and then the only cheap way to ask "has the source art
+# changed?", comparing the two, reports every line as changed instead.
+*.svg      text eol=lf
