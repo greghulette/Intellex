@@ -10,3 +10,11 @@
 
 # The Windows launcher is the mirror image: a .bat wants CRLF.
 *.bat      text eol=crlf
+
+# Icon assets are binary. Git's own detection would almost certainly get this
+# right on its own, but core.autocrlf is `true` on the box these are authored on
+# and it acts on anything Git thinks is text -- and a PNG whose 0x0A bytes have
+# been rewritten is corrupt in a way that surfaces only as "Windows will not load
+# the icon", on a machine the author is not sitting at. Pin it, like the rest.
+*.png      binary
+*.ico      binary
