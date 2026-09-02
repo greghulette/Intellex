@@ -203,8 +203,13 @@ async function scan() {
         // A bridge, not a droid. Everything through it rides the mesh, so say so
         // here rather than letting it look like a second, equivalent droid.
         const who = c.alias || 'Mgmt relay';
+        // Name what is actually reachable through it. "A bridge" is abstract; "sees
+        // NaviCore v0.2.0_…" is the thing you are deciding about.
+        const behind = (c.peers || []).filter(p => p.alias)
+          .map(p => p.alias + (p.fw ? ' ' + p.fw : '')).join(', ');
         el.appendChild(row(true, `${who} at ${c.host}`,
-          `bridges to the whole mesh${c.relayId ? ` · WCB #${c.relayId}` : ''} · via ${c.via}`,
+          `bridges to the mesh${c.relayId ? ` · WCB #${c.relayId}` : ''}`
+          + (behind ? ` · sees ${behind}` : ' · no boards seen yet'),
           () => connect({kind:'ws', host:c.host, role:'relay', ssid:netSsid}, c.host)));
       }
     }

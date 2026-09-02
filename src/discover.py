@@ -226,32 +226,54 @@ def _read_lines(ws, seconds: float):
             yield line.strip()
 
 
+def _wdp_fields(line: str) -> dict:
+    """Parse one [WDP:k=v,k=v,...] row. ALIAS may contain spaces."""
+    body = line[line.index(":") + 1:].rstrip("]")
+    out = {}
+    for part in body.split(","):
+        if "=" in part:
+            k, _, v = part.partition("=")
+            out[k.strip()] = v.strip()
+    return out
+
+
 def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
     """Ask a host what it is. One socket, two questions.
 
     WHY TWO
     A NaviCore answers a JSON PING with a PONG carrying its firmware version. A
-    MgmtRelay never will -- it is not a droid, it is a bridge -- so the old
-    PONG-only test reported it as "answers on port 80 but did not PONG" and the
-    chooser offered nothing to click.
+    MgmtRelay never will -- it is a bridge, not a droid -- so a PONG-only test
+    reported it as "answers on port 80 but is neither" and the chooser had nothing
+    to offer.
 
-    The relay answers "?version" with the block it already serves the WCB Wizard,
-    and that block contains "?RELAY,1", which the firmware comment describes as
-    marking the device a management relay. So we ask the RELAY what it is rather
-    than bouncing a ping off a droid behind it -- which also means discovery still
-    identifies the relay when no droid is powered at all.
+    WHY ?WDP,DUMP AND NOT ?version OR ?backup
+    ?version returns only "Software Version: 1.2", which identifies nothing. The
+    "?RELAY,1" marker lives in ?backup -- but that dumps the whole config
+    INCLUDING ?EPASS, the mesh password in clear, and a discovery probe has no
+    business pulling that across the wire on every scan.
+    ?WDP,DUMP carries no secrets and says more: its SELF row (PEER=3) gives the
+    relay's id and alias, and the rows after it are the boards it can actually
+    reach. Verified against the hardware:
 
-    Returns {"kind": "navicore"|"relay"|"unknown", "version", "relayId", "alias"}.
+        [WDP:N=19,CLIENT=0,ALIAS=Mgmt Relay,HW=32,...,PEER=3]
+        [WDP:N=20,CLIENT=1,ALIAS=NaviCore,HWREV=NaviCore v2,FW=v0.2.0_...]
+        [WDP:END,count=1]
+
+    Asking the RELAY what it is, rather than bouncing a ping off a droid behind
+    it, also means it is identified when no droid is powered at all.
+
+    Returns {"kind", "version", "relayId", "alias", "peers"}.
     """
-    info = {"kind": "unknown", "version": None, "relayId": None, "alias": None}
+    info = {"kind": "unknown", "version": None, "relayId": None,
+            "alias": None, "peers": []}
     try:
         from websockets.sync.client import connect
     except ImportError:
         return info
     try:
         with connect(f"ws://{host}/ws", open_timeout=timeout, close_timeout=0.5) as ws:
-            # Q1 - a NaviCore. TRAILING NEWLINE IS REQUIRED (both firmwares frame
-            # on it; a bare message is buffered forever waiting for a terminator).
+            # Q1 - a NaviCore. TRAILING NEWLINE IS REQUIRED: both firmwares frame on
+            # it, so a bare message is buffered forever waiting for a terminator.
             ws.send(json.dumps({"type": "PING"}) + "\n")
             for line in _read_lines(ws, timeout):
                 if not line.startswith("{"):
@@ -266,25 +288,24 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
                     return info
 
             # Q2 - a management relay.
-            ws.send("?version\n")
-            saw_relay = False
-            for line in _read_lines(ws, timeout):
-                # NEVER read, keep or log this one. ?version includes ?EPASS,<pw> --
-                # the mesh password in clear -- because the WCB Wizard wants it. It
-                # is no business of ours, and anything we captured would end up in a
-                # log or an API response.
-                if line.startswith("?EPASS,"):
+            ws.send("?WDP,DUMP\n")
+            for line in _read_lines(ws, timeout * 2):
+                if line.startswith("[WDP:END"):
+                    break
+                if not line.startswith("[WDP:"):
                     continue
-                if line == "?RELAY,1":
-                    saw_relay = True
-                elif line.startswith("?WCB,"):
-                    info["relayId"] = line[len("?WCB,"):].strip() or None
-                elif line.startswith("?ALIAS,"):
-                    info["alias"] = line[len("?ALIAS,"):].strip() or None
-                elif line.startswith("?CMDCHAR,"):
-                    break                      # last line of the block
-            if saw_relay:
-                info["kind"] = "relay"
+                f = _wdp_fields(line)
+                if f.get("PEER") == "3":              # SELF - this is the bridge
+                    info["kind"] = "relay"
+                    info["relayId"] = f.get("N")
+                    info["alias"] = f.get("ALIAS")
+                else:
+                    info["peers"].append({
+                        "id": f.get("N"),
+                        "alias": f.get("ALIAS"),
+                        "fw": f.get("FW"),
+                        "hwrev": f.get("HWREV"),
+                    })
     except Exception:
         return info
     return info
@@ -297,7 +318,8 @@ def scan(candidates: Optional[list[str]] = None) -> list[dict]:
         via = local_ip_for(host)
         reachable = tcp_open(host) if via else False
         info = probe(host) if reachable else {"kind": "unknown", "version": None,
-                                              "relayId": None, "alias": None}
+                                              "relayId": None, "alias": None,
+                                              "peers": []}
         out.append({
             "host": host,
             "via": via,                     # our source address = which adapter
@@ -309,6 +331,7 @@ def scan(candidates: Optional[list[str]] = None) -> list[dict]:
             "version": info["version"],
             "relayId": info["relayId"],
             "alias": info["alias"],
+            "peers": info.get("peers", []),
             "hint": _hint(via, reachable, info),
         })
     return out
@@ -470,7 +493,11 @@ def _hint(via: Optional[str], reachable: bool, info: dict) -> str:
     if kind == "relay":
         who = info.get("alias") or "mgmt relay"
         rid = info.get("relayId")
-        return f"{who}" + (f" (WCB #{rid})" if rid else "") + " — bridges to the mesh"
+        seen = [p for p in info.get("peers", []) if p.get("alias")]
+        behind = (" — sees " + ", ".join(
+            f"{p['alias']}" + (f" {p['fw']}" if p.get("fw") else "") for p in seen[:3])
+        ) if seen else " — no boards seen yet"
+        return f"{who}" + (f" (WCB #{rid})" if rid else "") + behind
     if reachable:
         return ("something answers on port 80, but it is neither a NaviCore "
                 "nor a management relay")

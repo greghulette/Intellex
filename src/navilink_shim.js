@@ -355,11 +355,37 @@
   // when it stops responding differs completely — check the cable, or check the
   // adapter and whether the AP came back after a reboot.
   //
-  // Appended to the tool's own text rather than replacing it, and re-applied on a
-  // timer because the tool rewrites that span on every state change. Guarded by a
-  // marker so it cannot stack up.
-  const MARK = ' · ';
+  // IN OUR OWN ELEMENT, NOT THE TOOL'S TEXT.
+  //
+  // This used to append to #status-text and re-apply on a 2 s timer, because the
+  // tool rewrites that span on every state change. On a direct link you never
+  // notice. Through the relay you get the whole mesh mirror, and the tool
+  // unconditionally rewrites the span on EVERY rc_hb heartbeat (index.html, the
+  // rc_hb branch of handleBoardMessage) -- which arrive about every 2 s, beating
+  // against our own 2 s re-apply. The label appeared and vanished, over and over.
+  //
+  // Fighting a timer with a timer cannot win. Own a sibling span instead: the tool
+  // can rewrite its element as often as it likes and never touches ours.
   let lastTarget = '';
+
+  function labelEl() {
+    let el = document.getElementById('navilink-transport');
+    if (el) return el;
+    const host = document.getElementById('status-text');
+    if (!host || !host.parentNode) return null;
+    el = document.createElement('span');
+    el.id = 'navilink-transport';
+    // Inherit, so it reads as part of the status line rather than a bolt-on.
+    el.style.cssText = 'font:inherit;color:inherit;opacity:.85;cursor:pointer';
+    el.title = 'Change connection (USB / WiFi)';
+    // THE WAY BACK. The window has no browser chrome, so once a transport is
+    // picked there is otherwise no route to the chooser -- you would have to close
+    // and relaunch to switch from USB to WiFi. The label naming the current
+    // connection is where you look when you want to change it.
+    el.addEventListener('click', () => { location.href = '/_launcher'; });
+    host.parentNode.insertBefore(el, host.nextSibling);
+    return el;
+  }
 
   async function refreshTarget() {
     try {
@@ -377,28 +403,19 @@
   }
 
   function annotateStatus() {
-    const el = document.getElementById('status-text');
-    if (!el) return;
+    const host = document.getElementById('status-text');
+    const el = labelEl();
+    if (!host || !el) return;
     const label = labelFor(lastTarget);
-    const base = el.textContent.split(MARK)[0];
-    // Only annotate once the tool itself says it is connected — decorating
+    // Only show it once the tool itself says it is connected — labelling
     // "Disconnected" or "Waiting for board…" would be actively misleading.
+    const base = host.textContent || '';
     const want = (label && /connect/i.test(base) && !/disconnect/i.test(base))
-      ? base + MARK + label + ' ▾'
-      : base;
+      ? ' · ' + label + ' ▾'
+      : '';
+    // Write only on change: this runs every 2 s and the element is in the layout
+    // path of a status bar that is already being repainted by telemetry.
     if (el.textContent !== want) el.textContent = want;
-
-    // THE WAY BACK. The window has no browser chrome, so once you have picked a
-    // transport there is otherwise no route to the chooser at all — you would have
-    // to close and relaunch the app to switch from USB to WiFi. Make the label you
-    // are already reading the control: it is the one thing on screen that names
-    // the current connection, so it is where you look when you want to change it.
-    if (!el.dataset.navilinkClick) {
-      el.dataset.navilinkClick = '1';
-      el.style.cursor = 'pointer';
-      el.title = 'Change connection (USB / WiFi)';
-      el.addEventListener('click', () => { location.href = '/_launcher'; });
-    }
   }
 
   setInterval(() => { refreshTarget().then(annotateStatus); }, 2000);
