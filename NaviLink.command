@@ -45,16 +45,49 @@ trap on_error EXIT
 
 PY=".venv/bin/python3"
 
+# The NEWEST python3 available, not merely the first on PATH. On a Mac the first
+# is very often the python.org 3.9 framework build even when a newer one sits
+# right beside it, and the venv it builds is then silently a version the project
+# does not develop on. That is exactly how asyncio.timeout (3.11+) ended up in a
+# 3.9 venv, breaking smoke_host.py with an AttributeError nothing had warned
+# about. Windows needs no equivalent: `py -3` already selects the newest.
+find_python() {
+  for c in python3.15 python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+    if command -v "$c" >/dev/null 2>&1 &&
+       "$c" -c 'import sys; raise SystemExit(sys.version_info < (3, 9))' 2>/dev/null; then
+      command -v "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Every run, not just at setup: the venv outlives the decision that made it, and a
+# 3.9 one built months ago is precisely the case worth surfacing. A note, not a
+# refusal -- 3.9 does run everything today, and blocking a working setup would be
+# worse than the silence it replaces.
+note_if_old() {
+  "$PY" -c 'import sys
+if sys.version_info < (3, 11):
+    print("")
+    print("Note: this venv is Python %d.%d. NaviLink is developed on 3.14 and only" % sys.version_info[:2])
+    print("      3.11+ is exercised. It works today, but nothing tests it -- to move")
+    print("      up, install a newer Python, delete .venv, and run this again.")
+    print("")
+' 2>/dev/null || true
+}
+
 if [ ! -x "$PY" ]; then
   echo "First run: setting up. This takes a minute."
-  if ! command -v python3 >/dev/null 2>&1; then
+  if ! BOOTSTRAP=$(find_python); then
     echo
-    echo "python3 was not found."
+    echo "No usable python3 was found (3.9 or newer is required)."
     echo "Install Python 3.11+ from https://www.python.org/downloads/"
     echo "  (or: brew install python), then try again."
     exit 1
   fi
-  python3 -m venv .venv
+  echo "Using $BOOTSTRAP ($("$BOOTSTRAP" -V 2>&1))"
+  "$BOOTSTRAP" -m venv .venv
   if [ ! -x "$PY" ]; then
     echo
     echo "Could not create a virtual environment in .venv"
@@ -65,6 +98,21 @@ if [ ! -x "$PY" ]; then
   # sys_platform == "darwin", so this is the same file Windows installs from.
   "$PY" -m pip install --quiet -r requirements.txt
   echo "Done."
+fi
+
+note_if_old
+
+# The config tool is NOT in the repo: src/webui/ is gitignored because the public
+# NaviCore repo is the single source of truth for the UI. So a fresh clone has no
+# UI at all, and without this the first thing anyone sees is the app explaining why
+# there is nothing to configure with -- accurate, and still the wrong first run.
+# Fetch it once, here.
+#
+# Never fatal. Offline is a legitimate state and the app is useful without the
+# bundle: the control API and the /_link byte pipe do not need it.
+if [ ! -f src/webui/index.html ]; then
+  echo "Fetching the config tool -- it is not in the repo, see README."
+  "$PY" tools/fetch_webui.py || echo "Could not fetch it. NaviLink will start and explain."
 fi
 
 # exec: the app becomes this process, so closing the Terminal window closes the

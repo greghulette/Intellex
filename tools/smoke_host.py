@@ -50,20 +50,29 @@ async def run(base: str, attach: str, port: str | None, host_ip: str,
                 import codecs
                 dec = codecs.getincrementaldecoder("utf-8")()
                 buf = ""
+                # asyncio.timeout() is 3.11+, and the launchers build their venv
+                # from whatever python3 is first on PATH -- on a stock Mac that is
+                # the 3.9 framework build. wait_for is the same fence and works
+                # everywhere, so the smoke test still runs on the interpreter the
+                # app itself is running on. It raising AttributeError here would
+                # break the one check you reach for when nothing else works.
+                async def drain():
+                    nonlocal buf
+                    async for msg in ws:
+                        chunk = msg.data if isinstance(msg.data, bytes) \
+                            else str(msg.data).encode()
+                        buf += dec.decode(chunk)
+                        while "\n" in buf:
+                            line, buf = buf.split("\n", 1)
+                            line = line.strip()
+                            if not line or "PWM_UPDATE" in line:
+                                continue
+                            got.append(line)
+                            print(f"  <<< {line}")
+
                 try:
-                    async with asyncio.timeout(wait):
-                        async for msg in ws:
-                            chunk = msg.data if isinstance(msg.data, bytes) \
-                                else str(msg.data).encode()
-                            buf += dec.decode(chunk)
-                            while "\n" in buf:
-                                line, buf = buf.split("\n", 1)
-                                line = line.strip()
-                                if not line or "PWM_UPDATE" in line:
-                                    continue
-                                got.append(line)
-                                print(f"  <<< {line}")
-                except TimeoutError:
+                    await asyncio.wait_for(drain(), wait)
+                except (asyncio.TimeoutError, TimeoutError):
                     pass
         finally:
             async with s.post(f"{base}/_api/detach") as r:

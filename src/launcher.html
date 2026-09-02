@@ -100,6 +100,96 @@ async function connect(body, label) {
   location.href = '/';
 }
 
+// ── Keep looking while a droid is still coming up ─────────────────────────
+// This page used to scan exactly ONCE, on load. A NaviCore that is merely still
+// BOOTING -- its AP up and answering ping, but its WS endpoint not started yet --
+// therefore rendered as "routed via 192.168.4.2 but no TCP ... the AP is down"
+// and STAYED that way, because nothing ever looked again. The board finished
+// coming up a few seconds later and the page never noticed; the only way out was
+// to know the Rescan button existed. That is a bad first impression of a board
+// that is working perfectly.
+//
+// So keep watching -- but ONLY in that exact state: a candidate that is routable
+// and not yet answering. Deliberately NOT "whenever nothing was found", because a
+// machine with no droid on WiFi at all would then probe forever for something
+// that is never coming.
+//
+// Only the WiFi panel is redrawn, so the serial list does not flicker or move
+// under the cursor while someone is reaching for it.
+const WATCH_EVERY_MS = 4000;
+const WATCH_FOR_MS   = 120000;   // not booting any more, just broken
+let watchTimer = null, watchUntil = 0;
+
+// Returns true while something is there but not yet answering — i.e. worth
+// another look.
+async function scanWifi() {
+  let comingUp = false;
+  try {
+    const { candidates } = await api('/_api/discover');
+    const el = $('wifi'); el.innerHTML = '';
+
+    // WHICH NETWORK ARE WE ON? It decides what to re-associate after a drop, and
+    // the address alone cannot tell us: the relay holds 192.168.4.19 whether it is
+    // hosting the AP itself or has joined NaviCore's. Seeing a NaviCore at .1 too
+    // means we are on NaviCore's network; seeing only the relay means we are on its
+    // own AP. (Both firmwares derive "<name>-<id>" and the bounce matches that
+    // prefix, so the bare name is the right thing to pass.)
+    const sawCore = candidates.some(c => c.isNaviCore);
+    const netSsid = sawCore ? 'NaviCore' : 'MgmtRelay';
+
+    for (const c of candidates) {
+      if (c.isNaviCore) {
+        el.appendChild(row(true, `NaviCore at ${c.host}`,
+          `${c.version} · direct · via ${c.via}`,
+          () => connect({kind:'ws', host:c.host, role:'navicore', ssid:'NaviCore'}, c.host)));
+      } else if (c.isRelay) {
+        // A bridge, not a droid. Everything through it rides the mesh, so say so
+        // rather than letting it look like a second, equivalent droid — and name
+        // what is reachable through it. "A bridge" is abstract; "sees NaviCore
+        // v0.2.0_…" is the thing you are actually deciding about.
+        const who = c.alias || 'Mgmt relay';
+        const behind = (c.peers || []).filter(p => p.alias)
+          .map(p => p.alias + (p.fw ? ' ' + p.fw : '')).join(', ');
+        el.appendChild(row(true, `${who} at ${c.host}`,
+          `bridges to the mesh${c.relayId ? ` · WCB #${c.relayId}` : ''}`
+          + (behind ? ` · sees ${behind}` : ' · no boards seen yet'),
+          () => connect({kind:'ws', host:c.host, role:'relay', ssid:netSsid}, c.host)));
+      } else if (c.routable) {
+        // The adapter is fine and something IS there — very likely a board
+        // mid-boot, so tell watchForDroid() to keep looking.
+        comingUp = true;
+      }
+    }
+
+    if (!el.children.length) {
+      // ONE explanation, from the most informative candidate. Two probes means two
+      // hints, and a wall of them reads as two separate faults rather than one
+      // situation. Still says it is watching, or it reads as a verdict rather than
+      // a snapshot.
+      const best = candidates.find(c => c.reachable) || candidates.find(c => c.routable)
+                || candidates[0];
+      const d = document.createElement('div');
+      d.className = 'empty';
+      d.textContent = best
+        ? best.hint + (best.routable && Date.now() < watchUntil ? ' — still watching…' : '')
+        : 'no droid found';
+      el.appendChild(d);
+    }
+  } catch (e) {
+    $('wifi').innerHTML = '<div class="empty">scan failed</div>';
+  }
+  return comingUp;
+}
+
+function watchForDroid() {
+  clearTimeout(watchTimer);
+  if (Date.now() >= watchUntil) { scanWifi(); return; }   // final pass, plain text
+  watchTimer = setTimeout(async () => {
+    if (await scanWifi()) watchForDroid();
+    else offerOfflineIfEmpty();
+  }, WATCH_EVERY_MS);
+}
+
 async function scan() {
   $('wifi').innerHTML = '<div class="empty">scanning…</div>';
   $('serial').innerHTML = '<div class="empty">looking for ports…</div>';
@@ -181,47 +271,9 @@ async function scan() {
     }
   } catch (e) { $('serial').innerHTML = '<div class="empty">could not list ports</div>'; }
 
-  try {
-    const { candidates } = await api('/_api/discover');
-    const el = $('wifi'); el.innerHTML = '';
-
-    // WHICH NETWORK ARE WE ON? It decides what to re-associate after a drop, and
-    // the address alone cannot tell us: the relay holds 192.168.4.19 whether it
-    // hosts the AP itself or has joined NaviCore's. Seeing a NaviCore at .1 too
-    // means we are on NaviCore's network; seeing only the relay means we are on
-    // its own AP. (Both firmwares derive "<name>-<id>", and the bounce matches
-    // that prefix, so the bare name is the right thing to pass.)
-    const sawCore  = candidates.some(c => c.isNaviCore);
-    const netSsid  = sawCore ? 'NaviCore' : 'MgmtRelay';
-
-    for (const c of candidates) {
-      if (c.isNaviCore) {
-        el.appendChild(row(true, `NaviCore at ${c.host}`,
-          `${c.version} · direct · via ${c.via}`,
-          () => connect({kind:'ws', host:c.host, role:'navicore', ssid:'NaviCore'}, c.host)));
-      } else if (c.isRelay) {
-        // A bridge, not a droid. Everything through it rides the mesh, so say so
-        // here rather than letting it look like a second, equivalent droid.
-        const who = c.alias || 'Mgmt relay';
-        // Name what is actually reachable through it. "A bridge" is abstract; "sees
-        // NaviCore v0.2.0_…" is the thing you are deciding about.
-        const behind = (c.peers || []).filter(p => p.alias)
-          .map(p => p.alias + (p.fw ? ' ' + p.fw : '')).join(', ');
-        el.appendChild(row(true, `${who} at ${c.host}`,
-          `bridges to the mesh${c.relayId ? ` · WCB #${c.relayId}` : ''}`
-          + (behind ? ` · sees ${behind}` : ' · no boards seen yet'),
-          () => connect({kind:'ws', host:c.host, role:'relay', ssid:netSsid}, c.host)));
-      }
-    }
-    if (!el.children.length) {
-      // Only ONE explanation, from the most informative candidate — two probes
-      // means two hints, and a wall of them reads as two separate faults.
-      const best = candidates.find(c => c.reachable) || candidates.find(c => c.routable)
-                || candidates[0];
-      el.innerHTML = '<div class="empty"></div>';
-      el.firstChild.textContent = best ? best.hint : 'no droid found';
-    }
-  } catch (e) { $('wifi').innerHTML = '<div class="empty">scan failed</div>'; }
+  clearTimeout(watchTimer);
+  watchUntil = Date.now() + WATCH_FOR_MS;
+  if (await scanWifi()) watchForDroid();
 
   offerOfflineIfEmpty();
 }
@@ -230,7 +282,15 @@ async function checkUi() {
   try {
     const v = await api('/_api/webui-version');
     if (!v.bundled) { $('uiver').textContent = 'no config tool bundled'; return; }
-    if (!v.checked)  { $('uiver').textContent = `config tool ${v.bundled} (offline — cannot compare)`; return; }
+    if (!v.checked)  {
+      // "offline" was the only story this told, and on a stock macOS Python it was
+      // the wrong one — the box was online and simply could not verify a
+      // certificate. Show the first line, keep the fix in the tooltip.
+      const why = (v.reason || '').split('\n')[0].trim();
+      $('uiver').textContent = `config tool ${v.bundled} — ${why ? 'cannot compare: ' + why : 'offline, cannot compare'}`;
+      $('uiver').title = v.reason || '';
+      return;
+    }
     if (v.stale) {
       $('uiver').innerHTML = `config tool <b>${v.bundled}</b> — <span class="stale">update available (${v.published})</span>`;
     } else {

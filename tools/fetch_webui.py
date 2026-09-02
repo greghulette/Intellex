@@ -25,10 +25,21 @@ import argparse
 import pathlib
 import re
 import shutil
+import socket
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
+
+# The app's own TLS handling rather than a second copy of it: this and the
+# launcher's "is there an update" probe hit the same host and must fail the same
+# way, with the same explanation. See src/certs.py for why a stock macOS Python
+# cannot verify anything at all.
+# append, not insert(0): this is a tool, and it has no business shadowing an
+# installed package with a same-named file from src/.
+sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import certs                                                        # noqa: E402
 
 BASE = "https://greghulette.github.io/NaviCore/config_tool"
 WEBUI = pathlib.Path(__file__).resolve().parent.parent / "src" / "webui"
@@ -52,9 +63,45 @@ IMAGES = ["qr-code.png", "r2logo.png"]
 DTG_RE = re.compile(r'id="footer-dtg"[^>]*>([^<]+)<')
 
 
-def get(url: str, timeout: float = 30.0) -> bytes:
-    with urllib.request.urlopen(url, timeout=timeout) as r:
-        return r.read()
+class FetchError(Exception):
+    """A fetch that did not survive its retries, carrying the URL that failed.
+
+    The bare traceback this used to raise named urlopen but not the file, and
+    "HTTP Error 503" thirty files into a thirty-five file update is not actionable
+    without knowing which one.
+    """
+
+    def __init__(self, url: str, cause: BaseException):
+        super().__init__(f"{url} -- {type(cause).__name__}: {cause}")
+        self.url = url
+        self.cause = cause
+
+
+# Pages throttles a burst, and this fetches ~35 files back to back. The first real
+# Mac run died on a 503 partway through cmdlib and aborted the whole update -- yet
+# every one of those files fetched fine individually seconds later. So the failure
+# was pacing, not availability, and retrying is the honest response to it.
+RETRY_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def get(url: str, timeout: float = 30.0, attempts: int = 4) -> bytes:
+    last: BaseException = RuntimeError("no attempt made")
+    for i in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout,
+                                        context=certs.context()) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            last = e
+            if e.code not in RETRY_STATUS:
+                break                     # a 404 will still be a 404 in two seconds
+        except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
+            last = e
+            if certs.is_cert_error(e):
+                break                     # no amount of retrying grows a CA store
+        if i < attempts - 1:
+            time.sleep(0.5 * 2 ** i)      # 0.5s, 1s, 2s -- ~3.5s of patience in all
+    raise FetchError(url, last)
 
 
 def dtg_of(html: str) -> str:
@@ -175,9 +222,13 @@ def main() -> int:
         # whole approach depends on. Decode only to read the version stamp.
         index_bytes = get(f"{a.base}/index.html")
         index_html = index_bytes.decode("utf-8", errors="replace")
-    except (urllib.error.URLError, TimeoutError) as e:
-        print(f"cannot reach {a.base}: {e}")
-        print("(offline is fine -- the bundled copy keeps working)")
+    except FetchError as e:
+        print(f"cannot reach {a.base}")
+        print(f"  {e}")
+        if certs.is_cert_error(e.cause):
+            print(certs.ADVICE)
+        else:
+            print("(offline is fine -- the bundled copy keeps working)")
         return 1
 
     remote = dtg_of(index_html)
@@ -231,15 +282,31 @@ def main() -> int:
 
         # Swap only now that everything arrived.
         backup = WEBUI.with_suffix(".prev")
+        kept = False
         if WEBUI.exists():
             if backup.exists():
                 shutil.rmtree(backup)
             WEBUI.rename(backup)
+            kept = True
         shutil.move(str(staged), str(WEBUI))
         staged = None
         print(f"updated to {remote}  ({got} files)")
-        print(f"previous kept at {backup}")
+        # Only claim a backup that actually exists. On a fresh clone there is no
+        # previous bundle to keep, and pointing at a directory that was never
+        # created is exactly the wrong thing to have believed if the new one is bad.
+        if kept:
+            print(f"previous kept at {backup}")
         return 0
+    except FetchError as e:
+        # Atomic by design: the swap happens only once every file has arrived, so
+        # failing here leaves src/webui/ exactly as it was. Say so -- "update
+        # failed" on its own reads like the bundle might now be half-written, which
+        # is the one outcome this function is built to make impossible.
+        print(f"update failed: {e}")
+        if certs.is_cert_error(e.cause):
+            print(certs.ADVICE)
+        print("nothing was changed -- the bundled copy is still in place")
+        return 1
     finally:
         if staged and staged.exists():
             shutil.rmtree(staged, ignore_errors=True)

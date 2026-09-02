@@ -136,6 +136,17 @@ def _wait_until_up(port: int, timeout: float = 10.0) -> bool:
 
 
 def main() -> int:
+    # BEFORE argparse, and before anything else starts. A frozen build cannot spawn
+    # `python -m esptool`: there is no python on the machine and the interpreter IS
+    # this app, so flash.py re-invokes THIS executable with --run-esptool and we
+    # hand the rest of argv straight to esptool. Exactly ESP-Flasher-Companion's
+    # trick, and the reason CLAUDE.md calls it out. Harmless unfrozen, where
+    # flash.py uses `-m esptool` instead and this never fires.
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-esptool":
+        import esptool
+        sys.argv = ["esptool"] + sys.argv[2:]
+        return esptool.main(sys.argv[1:]) or 0
+
     ap = argparse.ArgumentParser(description="NaviLink desktop app")
     ap.add_argument("--port", type=int, default=hostmod.DEFAULT_PORT)
     ap.add_argument("--serial", help="attach this port at launch and skip the chooser")
