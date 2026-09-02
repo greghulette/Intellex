@@ -34,9 +34,22 @@ import sys
 import socket
 from typing import Optional
 
-# The ESP32 SoftAP gateway. Fixed unless the firmware calls softAPConfig(), which
-# it does not.
-DEFAULT_CANDIDATES = ["192.168.4.1"]
+# WHERE THE TWO BOXES LIVE
+#
+# NaviCore never calls softAPConfig(), so its SoftAP is the ESP32 default .1.
+#
+# The MgmtRelay DOES call it: with RELAY_STATIC_IP (on by default) it pins itself
+# to 192.168.4.<DEVICE_ID> -- .19 out of the box -- and holds that address whether
+# it is hosting the AP itself or has joined NaviCore's. So one fixed pair covers
+# both deployments:
+#
+#   relay hosts the AP   -> nothing at .1 (the relay IS the gateway, at .19)
+#   relay joined NaviCore-> NaviCore at .1 AND relay at .19, both reachable
+#
+# Probing both and reporting what answered is what lets the user pick.
+NAVICORE_IP  = "192.168.4.1"
+RELAY_IP     = "192.168.4.19"          # 192.168.4.<relay DEVICE_ID>
+DEFAULT_CANDIDATES = [NAVICORE_IP, RELAY_IP]
 
 _PROBE_TIMEOUT_S = 1.5
 
@@ -192,21 +205,111 @@ def identify_serial(port: str, timeout: float = 2.5) -> dict:
             s.close()
 
 
+def _read_lines(ws, seconds: float):
+    """Yield complete lines for `seconds`.
+
+    Both endpoints are CONSOLE MIRRORS, not request/response: the answer arrives
+    somewhere inside a stream that is also carrying telemetry and board chatter.
+    So read for a window and sift, rather than expecting the reply first.
+    """
+    import time as _t
+    buf, end = "", _t.monotonic() + seconds
+    while _t.monotonic() < end:
+        try:
+            msg = ws.recv(timeout=max(0.05, end - _t.monotonic()))
+        except Exception:
+            return
+        buf += (msg.decode("utf-8", "replace")
+                if isinstance(msg, (bytes, bytearray)) else str(msg))
+        while "\n" in buf:
+            line, buf = buf.split("\n", 1)
+            yield line.strip()
+
+
+def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
+    """Ask a host what it is. One socket, two questions.
+
+    WHY TWO
+    A NaviCore answers a JSON PING with a PONG carrying its firmware version. A
+    MgmtRelay never will -- it is not a droid, it is a bridge -- so the old
+    PONG-only test reported it as "answers on port 80 but did not PONG" and the
+    chooser offered nothing to click.
+
+    The relay answers "?version" with the block it already serves the WCB Wizard,
+    and that block contains "?RELAY,1", which the firmware comment describes as
+    marking the device a management relay. So we ask the RELAY what it is rather
+    than bouncing a ping off a droid behind it -- which also means discovery still
+    identifies the relay when no droid is powered at all.
+
+    Returns {"kind": "navicore"|"relay"|"unknown", "version", "relayId", "alias"}.
+    """
+    info = {"kind": "unknown", "version": None, "relayId": None, "alias": None}
+    try:
+        from websockets.sync.client import connect
+    except ImportError:
+        return info
+    try:
+        with connect(f"ws://{host}/ws", open_timeout=timeout, close_timeout=0.5) as ws:
+            # Q1 - a NaviCore. TRAILING NEWLINE IS REQUIRED (both firmwares frame
+            # on it; a bare message is buffered forever waiting for a terminator).
+            ws.send(json.dumps({"type": "PING"}) + "\n")
+            for line in _read_lines(ws, timeout):
+                if not line.startswith("{"):
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") == "PONG":
+                    info["kind"] = "navicore"
+                    info["version"] = str(obj.get("version", "unknown"))
+                    return info
+
+            # Q2 - a management relay.
+            ws.send("?version\n")
+            saw_relay = False
+            for line in _read_lines(ws, timeout):
+                # NEVER read, keep or log this one. ?version includes ?EPASS,<pw> --
+                # the mesh password in clear -- because the WCB Wizard wants it. It
+                # is no business of ours, and anything we captured would end up in a
+                # log or an API response.
+                if line.startswith("?EPASS,"):
+                    continue
+                if line == "?RELAY,1":
+                    saw_relay = True
+                elif line.startswith("?WCB,"):
+                    info["relayId"] = line[len("?WCB,"):].strip() or None
+                elif line.startswith("?ALIAS,"):
+                    info["alias"] = line[len("?ALIAS,"):].strip() or None
+                elif line.startswith("?CMDCHAR,"):
+                    break                      # last line of the block
+            if saw_relay:
+                info["kind"] = "relay"
+    except Exception:
+        return info
+    return info
+
+
 def scan(candidates: Optional[list[str]] = None) -> list[dict]:
     """Probe each candidate and report what was found, and via which adapter."""
     out = []
     for host in (candidates or DEFAULT_CANDIDATES):
         via = local_ip_for(host)
         reachable = tcp_open(host) if via else False
-        version = identify(host) if reachable else None
+        info = probe(host) if reachable else {"kind": "unknown", "version": None,
+                                              "relayId": None, "alias": None}
         out.append({
             "host": host,
             "via": via,                     # our source address = which adapter
             "routable": via is not None,
             "reachable": reachable,         # TCP 80 answered
-            "isNaviCore": version is not None,
-            "version": version,
-            "hint": _hint(via, reachable, version),
+            "kind": info["kind"],           # navicore | relay | unknown
+            "isNaviCore": info["kind"] == "navicore",
+            "isRelay": info["kind"] == "relay",
+            "version": info["version"],
+            "relayId": info["relayId"],
+            "alias": info["alias"],
+            "hint": _hint(via, reachable, info),
         })
     return out
 
@@ -360,11 +463,17 @@ def _wifi_bounce_macos(ssid: str) -> tuple[bool, str]:
         return False, "networksetup timed out"
 
 
-def _hint(via: Optional[str], reachable: bool, version: Optional[str]) -> str:
-    if version:
-        return f"NaviCore {version}"
+def _hint(via: Optional[str], reachable: bool, info: dict) -> str:
+    kind = info.get("kind")
+    if kind == "navicore":
+        return f"NaviCore {info.get('version')}"
+    if kind == "relay":
+        who = info.get("alias") or "mgmt relay"
+        rid = info.get("relayId")
+        return f"{who}" + (f" (WCB #{rid})" if rid else "") + " — bridges to the mesh"
     if reachable:
-        return "something answers on port 80, but it did not PONG — not a NaviCore"
+        return ("something answers on port 80, but it is neither a NaviCore "
+                "nor a management relay")
     if via:
         # The exact state seen on this machine: a route exists and looks right, but
         # no traffic passes. Disabling and re-enabling the adapter cleared it.

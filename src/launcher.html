@@ -184,21 +184,38 @@ async function scan() {
   try {
     const { candidates } = await api('/_api/discover');
     const el = $('wifi'); el.innerHTML = '';
+
+    // WHICH NETWORK ARE WE ON? It decides what to re-associate after a drop, and
+    // the address alone cannot tell us: the relay holds 192.168.4.19 whether it
+    // hosts the AP itself or has joined NaviCore's. Seeing a NaviCore at .1 too
+    // means we are on NaviCore's network; seeing only the relay means we are on
+    // its own AP. (Both firmwares derive "<name>-<id>", and the bounce matches
+    // that prefix, so the bare name is the right thing to pass.)
+    const sawCore  = candidates.some(c => c.isNaviCore);
+    const netSsid  = sawCore ? 'NaviCore' : 'MgmtRelay';
+
     for (const c of candidates) {
       if (c.isNaviCore) {
         el.appendChild(row(true, `NaviCore at ${c.host}`,
-          `${c.version} · via ${c.via}`,
-          () => connect({kind:'ws', host:c.host}, c.host)));
-      } else {
-        // Say what is actually wrong. "Not found" sends people to check the droid
-        // when the real problem is usually this machine's adapter.
-        const d = document.createElement('div');
-        d.className = 'empty';
-        d.textContent = c.hint;
-        el.appendChild(d);
+          `${c.version} · direct · via ${c.via}`,
+          () => connect({kind:'ws', host:c.host, role:'navicore', ssid:'NaviCore'}, c.host)));
+      } else if (c.isRelay) {
+        // A bridge, not a droid. Everything through it rides the mesh, so say so
+        // here rather than letting it look like a second, equivalent droid.
+        const who = c.alias || 'Mgmt relay';
+        el.appendChild(row(true, `${who} at ${c.host}`,
+          `bridges to the whole mesh${c.relayId ? ` · WCB #${c.relayId}` : ''} · via ${c.via}`,
+          () => connect({kind:'ws', host:c.host, role:'relay', ssid:netSsid}, c.host)));
       }
     }
-    if (!el.children.length) el.innerHTML = '<div class="empty">no droid found</div>';
+    if (!el.children.length) {
+      // Only ONE explanation, from the most informative candidate — two probes
+      // means two hints, and a wall of them reads as two separate faults.
+      const best = candidates.find(c => c.reachable) || candidates.find(c => c.routable)
+                || candidates[0];
+      el.innerHTML = '<div class="empty"></div>';
+      el.firstChild.textContent = best ? best.hint : 'no droid found';
+    }
   } catch (e) { $('wifi').innerHTML = '<div class="empty">scan failed</div>'; }
 
   offerOfflineIfEmpty();

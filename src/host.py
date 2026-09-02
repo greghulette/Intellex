@@ -387,7 +387,22 @@ async def api_attach(req: web.Request) -> web.Response:
             return web.json_response({"ok": False, "error": "port required"}, status=400)
         spec = {"kind": "serial", "port": port}
     elif kind == "ws":
+        # role/ssid ride along with the target.
+        #   role  "navicore" (default) or "relay" — the relay is a BRIDGE, so the
+        #         tool auto-switches itself to Via WCB once it gets no direct PONG.
+        #         Recorded so the label and the UI can say which one you picked.
+        #   ssid  which network to re-associate if the link drops. It is not
+        #         derivable from the address: on the relay's own AP that is
+        #         MgmtRelay-<id>, but with the relay JOINED to NaviCore's AP the
+        #         very same relay address sits on the NaviCore network. The
+        #         chooser knows which case it saw, so it tells us.
         spec = {"kind": "ws", "host": body.get("host", "192.168.4.1")}
+        role = body.get("role")
+        if role in ("navicore", "relay"):
+            spec["role"] = role
+        ssid = body.get("ssid")
+        if isinstance(ssid, str) and ssid.strip():
+            spec["ssid"] = ssid.strip()
     else:
         return web.json_response({"ok": False, "error": "kind must be serial|ws"}, status=400)
 
@@ -750,7 +765,13 @@ def _label_for(spec: Optional[dict]) -> str:
         return "link"
     if spec.get("kind") == "serial":
         return f"serial {spec.get('port')}"
-    return f"ws://{spec.get('host', '192.168.4.1')}/ws"
+    host = spec.get("host", "192.168.4.1")
+    if spec.get("role") == "relay":
+        # Say so. Through a relay everything rides the mesh -- 187-byte payloads,
+        # fragmented config, the slower OTA path -- and that is worth seeing in the
+        # status line rather than inferring from a bare address.
+        return f"relay {host} → mesh"
+    return f"ws://{host}/ws"
 
 
 async def _start_bg(app: web.Application) -> None:
