@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
-"""Refresh the bundled config tool from GitHub Pages.
+"""Refresh a bundled browser tool from GitHub Pages.
 
-    python tools/fetch_webui.py            # check + update if newer
-    python tools/fetch_webui.py --check    # report only, change nothing
-    python tools/fetch_webui.py --force    # re-fetch even if unchanged
+    python tools/fetch_webui.py                  # NaviCore config tool
+    python tools/fetch_webui.py --tool wcb       # WCB Wizard
+    python tools/fetch_webui.py --tool all       # both
+    python tools/fetch_webui.py --check          # report only, change nothing
+    python tools/fetch_webui.py --force          # re-fetch even if unchanged
 
-This is what the app's Update button will call. The public NaviCore repo stays
-the single source of truth for the UI; this copies it, never edits it, so the
-bundled file hashes identical to the published one and there is no fork.
+This is what the app's Update button calls. The public NaviCore and WCB repos
+stay the single source of truth for their own UI; this copies, never edits, so
+each bundled file hashes identical to the published one and there is no fork.
 
-THE TOOL IS NOT ONE FILE. index.html loads flasher.js, serial-hub.js and ~27
-files under cmdlib/ at RELATIVE paths at runtime. Fetching only index.html
-leaves a stale command library silently mismatched against a newer UI -- broken
-in a way that looks like a tool bug rather than a bad update. So the whole set
+NEITHER TOOL IS ONE FILE. The NaviCore tool's index.html loads flasher.js,
+serial-hub.js and ~27 files under cmdlib/; the Wizard loads parser.js,
+flasher.js, device-labels.js, serial-hub.js, app.js, a stylesheet and two
+vendored flash libraries. All at RELATIVE paths at runtime, so fetching only
+index.html leaves a stale library silently mismatched against a newer UI --
+broken in a way that looks like a tool bug rather than a bad update. Each set
 moves together, or not at all.
 
 ATOMIC AND REVERTIBLE. Everything lands in a temp directory first and is only
 swapped in once every file has arrived. A half-applied update would leave no way
 to configure the droid, which is the one thing this app must never do.
+
+THE TWO TOOLS UPDATE INDEPENDENTLY. They come from different repos with
+different release cadences, so a Wizard fetch failing offline must not roll back
+a NaviCore tool that updated fine seconds earlier -- and vice versa. --tool all
+runs them as two separate atomic swaps for exactly that reason.
 """
 from __future__ import annotations
 
@@ -42,10 +51,57 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import certs                                                        # noqa: E402
 
 BASE = "https://greghulette.github.io/NaviCore/config_tool"
-WEBUI = pathlib.Path(__file__).resolve().parent.parent / "src" / "webui"
+SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
+WEBUI = SRC / "webui"
 
 # Frozen snapshots nothing loads (docs/CONFIG_TOOL.md) -- deliberately excluded.
 ROOT_FILES = ["index.html", "flasher.js", "serial-hub.js"]
+
+# ── The WCB Wizard ──────────────────────────────────────────────────────────
+WCB_BASE  = "https://greghulette.github.io/Wireless_Communication_Board-WCB/Wizard"
+WEBUI_WCB = SRC / "webui_wcb"
+
+# STAGED UNDER Wizard/, NOT AT THE ROOT. index.html reaches its logos with
+# "../Images/<name>", which on Pages resolves because /Wizard/ and /Images/ are
+# siblings. Reproducing that pair here is what lets host.py mount the lot at
+# /wcb/ and serve the published file untouched -- flattening it would mean
+# rewriting paths inside index.html, i.e. forking it.
+WCB_SUBDIR = "Wizard"
+WCB_FILES = [
+    "index.html",
+    "app.js",              # carries UI_VERSION -- the Wizard's version stamp
+    "parser.js",
+    "flasher.js",
+    "device-labels.js",
+    "serial-hub.js",
+    "styles.css",
+    "favicon.png",
+    "manifest.json",
+]
+# Vendored flash libraries. Bundled even though NaviLink flashes natively and
+# never loads them: the whole contract is that the bundled copy is the published
+# copy, and a deliberately incomplete one is a fork with extra steps. They also
+# cost 227 KB and make the bundle work unchanged if it is ever opened directly.
+# esptool-js's bundle is self-contained (vendor/README.md) -- no chunk files to
+# chase.
+WCB_VENDOR = [
+    "vendor/README.md",
+    "vendor/crypto-js/crypto-js-4.2.0.min.js",
+    "vendor/esptool-js/esptool-js-0.4.7.bundle.js",
+]
+# Siblings of Wizard/ on gh-pages, same as NaviCore's Images. Named explicitly
+# because Pages serves no directory index and the repo's Images/ also holds
+# large art the Wizard never references.
+WCB_IMAGES = ["r2logo.png", "navicore-icon.png", "kyberLogo.png", "qr-code.png"]
+
+# The Wizard has no footer-dtg. Its stamp is a JS constant in app.js, written by
+# the WCB repo's pre-commit hook and by Wizard/watch-version.js -- the same role
+# footer-dtg plays for the NaviCore tool, so it is the honest version handle here.
+WCB_VER_RE = re.compile(r"""\bUI_VERSION\s*=\s*['"]([^'"]+)['"]""")
+
+# Firmware binaries are deliberately NOT bundled. The Wizard pulls them from the
+# GitHub Contents API at flash time (flasher.js), and so does src/wcb_flash.py,
+# so a bundled copy would be a third source of truth that ages silently.
 
 # Images live BESIDE config_tool/ in the NaviCore repo, and index.html reaches
 # them with "../Images/<name>". On Pages that resolves because the site root holds
@@ -205,13 +261,142 @@ def _safe_relname(name: str) -> bool:
     return not posixpath.isabs(name)
 
 
+def _swap_in(staged: pathlib.Path, dest: pathlib.Path) -> bool:
+    """Move staged over dest, keeping the old one as <dest>.prev.
+
+    Returns whether a previous bundle was actually kept -- on a fresh clone there
+    is none, and pointing at a backup directory that was never created is exactly
+    the wrong thing to believe if the new bundle turns out to be bad.
+    """
+    backup = dest.with_suffix(".prev")
+    kept = False
+    if dest.exists():
+        if backup.exists():
+            shutil.rmtree(backup)
+        dest.rename(backup)
+        kept = True
+    shutil.move(str(staged), str(dest))
+    return kept
+
+
+def wcb_local_version() -> str:
+    f = WEBUI_WCB / WCB_SUBDIR / "app.js"
+    if not f.is_file():
+        return "(none bundled)"
+    m = WCB_VER_RE.search(f.read_text(encoding="utf-8", errors="replace"))
+    return m.group(1).strip() if m else "unknown"
+
+
+def fetch_wcb(base: str, check: bool, force: bool) -> int:
+    """Refresh the bundled WCB Wizard. Same shape as the NaviCore path above."""
+    have = wcb_local_version()
+    print(f"[wcb] bundled  : {have}")
+
+    try:
+        # app.js first: it carries the version stamp, so fetching it up front
+        # answers "is there anything to do" before pulling the other ~1 MB.
+        app_bytes = get(f"{base}/app.js")
+    except FetchError as e:
+        print(f"[wcb] cannot reach {base}")
+        print(f"  {e}")
+        if certs.is_cert_error(e.cause):
+            print(certs.ADVICE)
+        else:
+            print("(offline is fine -- the bundled copy keeps working)")
+        return 1
+
+    m = WCB_VER_RE.search(app_bytes.decode("utf-8", errors="replace"))
+    remote = m.group(1).strip() if m else "unknown"
+    print(f"[wcb] published: {remote}")
+
+    # "unknown" on either side is not a match to act on: a stamp we could not read
+    # says nothing about whether the copies differ, and treating two unknowns as
+    # equal would wedge the bundle at whatever it happens to be. --force still works.
+    if remote == have and remote != "unknown" and not force:
+        print("[wcb] up to date")
+        return 0
+    if check:
+        print("[wcb] update available (run without --check to apply)")
+        return 0
+
+    staged = pathlib.Path(tempfile.mkdtemp(prefix="navilink-wcbui-"))
+    try:
+        wiz = staged / WCB_SUBDIR
+        wiz.mkdir(parents=True)
+        # Bytes, never text. write_text() on Windows turns every \n into \r\n,
+        # which silently breaks the byte-identical guarantee this depends on --
+        # it added 20,558 stray CR bytes to the NaviCore index.html once already.
+        (wiz / "app.js").write_bytes(app_bytes)
+        got = 1
+        for name in WCB_FILES:
+            if name == "app.js":
+                continue                    # already have it
+            (wiz / name).write_bytes(get(f"{base}/{name}"))
+            got += 1
+
+        for rel in WCB_VENDOR:
+            dest = wiz / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(get(f"{base}/{rel}"))
+            got += 1
+
+        # ".../Wizard" -> ".../Images", the sibling the page reaches with "..".
+        img_base = base.rsplit("/", 1)[0] + "/Images"
+        (staged / "Images").mkdir()
+        for name in WCB_IMAGES:
+            try:
+                (staged / "Images" / name).write_bytes(get(f"{img_base}/{name}"))
+                got += 1
+            except Exception as e:
+                # Not fatal, but say so. A missing decoration must not block a tool
+                # update -- and a silent skip is how the NaviCore images went
+                # missing from the bundle in the first place.
+                print(f"  could not fetch Images/{name}: {type(e).__name__}")
+
+        kept = _swap_in(staged, WEBUI_WCB)
+        staged = None
+        print(f"[wcb] updated to {remote}  ({got} files)")
+        if kept:
+            print(f"[wcb] previous kept at {WEBUI_WCB.with_suffix('.prev')}")
+        return 0
+    except FetchError as e:
+        print(f"[wcb] update failed: {e}")
+        if certs.is_cert_error(e.cause):
+            print(certs.ADVICE)
+        print("[wcb] nothing was changed -- the bundled copy is still in place")
+        return 1
+    finally:
+        if staged and staged.exists():
+            shutil.rmtree(staged, ignore_errors=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default=BASE)
+    ap.add_argument("--base", default=None,
+                    help="override the Pages base URL for the selected tool")
+    ap.add_argument("--tool", choices=["navicore", "wcb", "all"], default="navicore",
+                    help="which bundled tool to refresh (default: navicore)")
     ap.add_argument("--check", action="store_true", help="report only")
     ap.add_argument("--force", action="store_true", help="fetch even if unchanged")
     a = ap.parse_args()
 
+    if a.tool == "wcb":
+        return fetch_wcb(a.base or WCB_BASE, a.check, a.force)
+    if a.tool == "all":
+        if a.base:
+            # One --base cannot mean two different sites, and quietly applying it
+            # to whichever tool ran first is worse than refusing.
+            return ap.error("--base applies to one tool; use --tool navicore or --tool wcb") or 2
+        # SEPARATE swaps, and the NaviCore result does not gate the WCB one. Each
+        # tool is independently atomic; a Wizard fetch that fails offline must not
+        # undo or skip a NaviCore update that already succeeded.
+        rc_nc = _fetch_navicore(BASE, a.check, a.force)
+        rc_wcb = fetch_wcb(WCB_BASE, a.check, a.force)
+        return rc_nc or rc_wcb
+    return _fetch_navicore(a.base or BASE, a.check, a.force)
+
+
+def _fetch_navicore(base: str, check: bool, force: bool) -> int:
     have = local_dtg()
     print(f"bundled : {have}")
 
@@ -220,10 +405,10 @@ def main() -> int:
         # on Windows write_text() turns every \n into \r\n, which added 20,558 stray
         # CR bytes to index.html and silently broke the byte-identical guarantee this
         # whole approach depends on. Decode only to read the version stamp.
-        index_bytes = get(f"{a.base}/index.html")
+        index_bytes = get(f"{base}/index.html")
         index_html = index_bytes.decode("utf-8", errors="replace")
     except FetchError as e:
-        print(f"cannot reach {a.base}")
+        print(f"cannot reach {base}")
         print(f"  {e}")
         if certs.is_cert_error(e.cause):
             print(certs.ADVICE)
@@ -234,10 +419,10 @@ def main() -> int:
     remote = dtg_of(index_html)
     print(f"published: {remote}")
 
-    if remote == have and not a.force:
+    if remote == have and not force:
         print("up to date")
         return 0
-    if a.check:
+    if check:
         print("update available (run without --check to apply)")
         return 0
 
@@ -246,11 +431,11 @@ def main() -> int:
         (staged / "index.html").write_bytes(index_bytes)   # bytes, never text
         got = 1
         for name in ROOT_FILES[1:]:
-            (staged / name).write_bytes(get(f"{a.base}/{name}"))
+            (staged / name).write_bytes(get(f"{base}/{name}"))
             got += 1
 
         # ".../config_tool" -> ".../Images"
-        img_base = a.base.rsplit("/", 1)[0] + "/Images"
+        img_base = base.rsplit("/", 1)[0] + "/Images"
         (staged / "Images").mkdir()
         for name in IMAGES:
             try:
@@ -262,7 +447,7 @@ def main() -> int:
                 # first place.
                 print(f"  could not fetch Images/{name}: {type(e).__name__}")
 
-        names = cmdlib_names(a.base)
+        names = cmdlib_names(base)
         if not names:
             # Refuse rather than ship a UI with a stale library beside it.
             print("could not read the cmdlib manifest -- refusing a partial update")
@@ -277,7 +462,7 @@ def main() -> int:
                 print(f"  refusing to write outside the bundle: {n!r}")
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(get(f"{a.base}/cmdlib/{n}"))
+            dest.write_bytes(get(f"{base}/cmdlib/{n}"))
             got += 1
 
         # Swap only now that everything arrived.

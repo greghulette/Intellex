@@ -279,6 +279,23 @@ def main() -> int:
     # the point of running it in-process.
     # debug=True gives devtools and a context menu — worth having when a reload
     # is not enough and you need to see what the page is actually doing.
+    # ── Let the shell open a second window ────────────────────────────────────
+    # The two tools can be shown as tabs or side by side inside one window, but
+    # sometimes you want the Wizard on a second monitor while the config tool
+    # keeps the first. window.open() from inside a webview is unreliable -- it may
+    # be blocked, or hand the page to the system browser, where it is a DIFFERENT
+    # ORIGIN as far as nothing, but a different window with no app chrome.
+    # pywebview can make a real one, so offer that and let the shell fall back.
+    #
+    # Registered only in window mode: under --browser or a bare host there is no
+    # backend, and host.py answers 501 so the shell uses window.open() instead.
+    def _open_window(title: str, path: str) -> None:
+        webview.create_window(title, f"http://{hostmod.BIND_HOST}:{a.port}{path}",
+                              width=1280, height=880, min_size=(900, 640),
+                              text_select=True)
+
+    hostmod.open_window_hook = _open_window
+
     def _window_up() -> None:
         # Runs on pywebview's worker thread once the GUI is up -- the first moment a
         # window handle exists to hang an icon on. No-op on macOS.

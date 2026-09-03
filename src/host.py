@@ -4,12 +4,22 @@
     python src/host.py --serial COM5         # attach a port at startup
     python src/host.py --ws 192.168.4.1      # attach the droid's AP at startup
 
-                    ┌─ GET /            → the bundled config tool
-  browser/webview ──┼─ GET /_api/*      → control (list ports, attach, detach)
-                    └─ WS  /_link       → the byte pipe
+                    ┌─ GET /             → the bundled NaviCore config tool
+                    ├─ GET /wcb/Wizard/  → the bundled WCB Wizard
+                    ├─ GET /_shell       → the window that holds one or both
+  browser/webview ──┼─ GET /_api/*       → control (list ports, attach, detach)
+                    └─ WS  /_link        → the byte pipe (one per open page)
                                               │
                                               ├─ SerialTransport  → COM port
                                               └─ WebSocketTransport → ws://<droid>/ws
+                                                                      ws://<relay>/ws
+
+WHY TWO TOOLS SHARE ONE PIPE
+MgmtRelay's endpoint was built to NaviCore's transport contract deliberately —
+same URI, same newline-delimited UTF-8, same console-mirror semantics, differing
+only in payload grammar (mgmt_wsserver.h). So one transport carries both tools,
+and Bridge fans the far end's bytes to EVERY attached page. See
+docs/WCB_WIZARD.md before changing the /wcb/ mount or the fan-out.
 
 WHY THE PAGE AND THE SOCKET SHARE ONE ORIGIN
 Everything is served from one aiohttp app on one port, so the page's WebSocket is
@@ -46,6 +56,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import certs                                             # noqa: E402
 import flash                                             # noqa: E402
+import wcb_flash                                         # noqa: E402
 
 try:
     from aiohttp import web, WSMsgType                   # noqa: E402
@@ -69,6 +80,23 @@ from ws_transport import WebSocketTransport              # noqa: E402
 import discover                                          # noqa: E402
 
 WEBUI_DIR = pathlib.Path(__file__).resolve().parent / "webui"
+
+# The WCB Wizard, bundled the same way and for the same reasons as the NaviCore
+# tool: a copy, never a fork.
+#
+# MIRRORS THE PUBLISHED LAYOUT ON PURPOSE. On gh-pages the Wizard sits at
+# /Wizard/ with /Images/ as its SIBLING, and index.html reaches the logos with
+# "../Images/<name>". Bundling the pair under one directory and mounting it at
+# /wcb/ puts the Wizard at /wcb/Wizard/, so that ".." resolves to /wcb/Images/
+# with no path rewriting at all -- which is the difference between serving the
+# same file and serving our edit of it.
+#
+# It also keeps the two tools' images apart. Both ship a qr-code.png and an
+# r2logo.png; a single flat /Images/ would have had one silently overwrite the
+# other depending on which update ran last.
+WEBUI_WCB_DIR = pathlib.Path(__file__).resolve().parent / "webui_wcb"
+WCB_INDEX = WEBUI_WCB_DIR / "Wizard" / "index.html"
+
 DEFAULT_PORT = 8765
 # Loopback only, always. This exposes an unauthenticated command channel to the
 # droid; binding it to a routable address would put that on the network.
@@ -81,7 +109,18 @@ class Bridge:
     def __init__(self) -> None:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._transport: Optional[Transport] = None
-        self._ws: Optional[web.WebSocketResponse] = None
+        # EVERY attached page, not one. Two tools now share this link -- the NaviCore
+        # config tool and the WCB Wizard -- and either may be open, both may be, and
+        # each may reload underneath the other. A single slot made the second page
+        # silently steal the pipe from the first, which reads as one tool going deaf
+        # for no visible reason.
+        #
+        # Fanning out is not a compromise here, it is what the far end already does:
+        # MgmtRelay's own endpoint accepts 3 clients and mirrors its console to all of
+        # them (mgmt_wsserver.h, WS_MAX_CLIENTS), and NaviCore's /ws is a console
+        # mirror too. Several listeners on one droid link is the normal shape of this
+        # protocol, not an abuse of it.
+        self._pages: "set[web.WebSocketResponse]" = set()
         self.target_label = ""     # human-readable label for /_api/status
         self.last_error = ""
         # What to reconnect to, and whether we should be trying. Set by attach()
@@ -111,19 +150,28 @@ class Bridge:
 
     # -- page side ---------------------------------------------------------------
     def bind_page(self, ws: web.WebSocketResponse, loop: asyncio.AbstractEventLoop) -> None:
-        self._ws, self._loop = ws, loop
+        with self._lock:
+            self._pages.add(ws)
+            self._loop = loop
 
     def unbind_page(self, ws: Optional[web.WebSocketResponse] = None) -> None:
-        """Clear the page binding, but only if this ws is still the bound one.
+        """Drop ONE page. Never the others.
 
-        Every /_link handler unbinds in its finally. With two overlapping page
-        sockets (a second tab, a reload racing its predecessor's teardown, or
-        tools/smoke_host.py) the OLD handler's finally would otherwise clear the
-        NEW socket, and _on_transport_data then drops every byte on the floor with
-        nothing left to re-bind it: the page shows Connected and receives nothing.
+        Every /_link handler unbinds in its finally, and those finallys interleave:
+        a reload races its predecessor's teardown, a second tool opens while the
+        first is still closing. Removing only the socket that actually ended is what
+        keeps a live page attached while a dead one is cleaned up -- the earlier
+        single-slot version could have an old handler's finally clear the NEW page,
+        after which _on_transport_data dropped every byte on the floor and the tool
+        showed Connected while receiving nothing.
+
+        ws=None still means "forget them all", which is what shutdown wants.
         """
-        if ws is None or self._ws is ws:
-            self._ws = None
+        with self._lock:
+            if ws is None:
+                self._pages.clear()
+            else:
+                self._pages.discard(ws)
 
     # -- transport side ----------------------------------------------------------
     def attach(self, t: Transport, label: str, spec: Optional[dict] = None) -> None:
@@ -187,13 +235,21 @@ class Bridge:
         self._close_page()
 
     def _close_page(self) -> None:
-        loop, ws = self._loop, self._ws
-        if loop is None or ws is None:
+        """Drop EVERY page socket. The droid went away for all of them equally.
+
+        Closing only some would leave one tool re-handshaking while the other sat on
+        a socket whose far end had changed underneath it -- the stale-version problem
+        described above, but harder to spot because one pane looks right.
+        """
+        loop = self._loop
+        with self._lock:
+            pages, self._pages = list(self._pages), set()
+        if loop is None or not pages:
             return
-        self._ws = None
         async def shut():
-            with contextlib.suppress(Exception):
-                await ws.close()
+            for ws in pages:
+                with contextlib.suppress(Exception):
+                    await ws.close()
         with contextlib.suppress(Exception):
             loop.call_soon_threadsafe(lambda: asyncio.ensure_future(shut()))
 
@@ -234,18 +290,31 @@ class Bridge:
         """Called on a READER THREAD. Must not touch aiohttp directly."""
         import time as _t
         self.last_rx = _t.monotonic()     # cheap, and it gates the liveness probe
-        loop, ws = self._loop, self._ws
-        if loop is None or ws is None:
+        loop = self._loop
+        with self._lock:
+            pages = list(self._pages)     # snapshot: the set can change under us
+        if loop is None or not pages:
             return                    # no page attached; drop rather than buffer forever
         # Bytes stay bytes all the way to the page. A str here would decode
         # per-chunk and mangle any multi-byte character split across a read.
-        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._push(ws, chunk)))
+        #
+        # EVERY page gets the SAME chunk, and gets it whole. Both tools read this
+        # link as a console mirror, so seeing each other's traffic is correct rather
+        # than leakage -- the Wizard already expects to watch mesh lines it did not
+        # ask for. What would NOT be correct is splitting the stream between them:
+        # each keeps its own streaming TextDecoder, so a chunk delivered to one page
+        # and not another desynchronises a multi-byte character for whoever missed it.
+        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._push(pages, chunk)))
 
-    async def _push(self, ws: web.WebSocketResponse, chunk: bytes) -> None:
-        if ws.closed:
-            return
-        with contextlib.suppress(Exception):
-            await ws.send_bytes(chunk)
+    async def _push(self, pages: "list[web.WebSocketResponse]", chunk: bytes) -> None:
+        for ws in pages:
+            if ws.closed:
+                continue
+            # Suppressed PER PAGE. One page dying mid-send must not cost the others
+            # the rest of the chunk -- that is a decode desync for a page that is
+            # perfectly healthy, caused entirely by a neighbour going away.
+            with contextlib.suppress(Exception):
+                await ws.send_bytes(chunk)
 
     def _on_transport_lost(self, why: str) -> None:
         # A drop is NOT a decision to stop. Keep the target so the reconnect loop
@@ -324,25 +393,79 @@ def _published_dtg() -> str:
         return ""            # offline is normal and not an error
 
 
-async def api_webui_version(_req: web.Request) -> web.Response:
-    """Is the bundled config tool behind what is published?
+# The Wizard's stamp is a JS constant, not a footer element -- it has no
+# footer-dtg. Written by the WCB repo's pre-commit hook, so it plays exactly the
+# same role, and tools/fetch_webui.py reads it with this same pattern.
+_WCB_VER_RE = __import__("re").compile(r"""\bUI_VERSION\s*=\s*['"]([^'"]+)['"]""")
+_wcb_published_error = ""
 
-    Worth surfacing rather than leaving to be noticed: the bundle is a COPY, so it
-    silently ages every time the tool is updated. Drifting three hours behind while
+
+def _wcb_bundled_ver() -> str:
+    f = WEBUI_WCB_DIR / "Wizard" / "app.js"
+    if not f.is_file():
+        return ""
+    m = _WCB_VER_RE.search(f.read_text(encoding="utf-8", errors="replace"))
+    return m.group(1).strip() if m else ""
+
+
+def _wcb_published_ver() -> str:
+    global _wcb_published_error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                "https://greghulette.github.io/Wireless_Communication_Board-WCB"
+                "/Wizard/app.js", timeout=10, context=certs.context()) as r:
+            # app.js is ~650 KB and UI_VERSION sits in its first hundred lines, so
+            # read a head rather than the whole file for a version check.
+            head = r.read(200_000).decode("utf-8", "replace")
+        _wcb_published_error = ""
+        m = _WCB_VER_RE.search(head)
+        return m.group(1).strip() if m else ""
+    except Exception as e:
+        _wcb_published_error = (certs.ADVICE if certs.is_cert_error(e)
+                                else f"{type(e).__name__}: {e}")
+        return ""            # offline is normal and not an error
+
+
+async def api_webui_version(_req: web.Request) -> web.Response:
+    """Are the bundled tools behind what is published?
+
+    Worth surfacing rather than leaving to be noticed: each bundle is a COPY, so it
+    silently ages every time its tool is updated. Drifting three hours behind while
     debugging the tool's own behaviour is a genuinely confusing place to be.
+
+    The two probes run CONCURRENTLY and independently. They hit different repos with
+    different release cadences, and one being unreachable must not hide the other's
+    answer -- nor make the launcher wait twice over for two ten-second timeouts.
+
+    The top-level keys stay exactly as they were, describing the NaviCore tool. The
+    launcher reads them, and so may an older page served by a newer host during an
+    update; the Wizard's answer is additive under "wcb".
     """
+    published, wcb_published = await asyncio.gather(
+        asyncio.to_thread(_published_dtg),
+        asyncio.to_thread(_wcb_published_ver),
+    )
     bundled = _bundled_dtg()
-    published = await asyncio.to_thread(_published_dtg)
+    wcb_bundled = _wcb_bundled_ver()
     return web.json_response({
         "bundled": bundled,
         "published": published,
         "stale": bool(bundled and published and bundled != published),
         "checked": bool(published),
         "reason": "" if published else _published_error,
+        "wcb": {
+            "bundled": wcb_bundled,
+            "published": wcb_published,
+            "stale": bool(wcb_bundled and wcb_published and wcb_bundled != wcb_published),
+            "checked": bool(wcb_published),
+            "reason": "" if wcb_published else _wcb_published_error,
+        },
     })
 
 
 LAUNCHER_FILE = pathlib.Path(__file__).resolve().parent / "launcher.html"
+SHELL_FILE = pathlib.Path(__file__).resolve().parent / "shell.html"
 
 
 async def launcher(_req: web.Request) -> web.StreamResponse:
@@ -352,19 +475,78 @@ async def launcher(_req: web.Request) -> web.StreamResponse:
     })
 
 
-async def api_update_webui(_req: web.Request) -> web.Response:
-    """Run the fetcher, so refreshing the tool is a button rather than a command.
+async def shell(_req: web.Request) -> web.StreamResponse:
+    """The two-tool window: tabs, side-by-side, and the way between them."""
+    return web.FileResponse(SHELL_FILE, headers={
+        "Content-Type": "text/html",
+        "Cache-Control": "no-store, must-revalidate",
+    })
+
+
+# Set by app.py once a pywebview window exists. host.py deliberately does NOT
+# import webview: it runs standalone too (`python src/host.py`, the smoke tools),
+# and a hard dependency on a GUI toolkit for a route that is pure convenience
+# would break the headless case for no benefit. app.py already imports this
+# module, so the dependency runs the way round it should.
+open_window_hook = None
+
+
+async def api_open_window(req: web.Request) -> web.Response:
+    """Open a second app window on a local path, when there is a window backend.
+
+    The shell falls back to window.open() on a negative answer, so "no" is a
+    normal response here rather than an error -- under --browser, or a bare host
+    process, there is no pywebview to ask.
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    url = body.get("url", "/")
+    title = body.get("title", "NaviLink")
+    # LOCAL PATHS ONLY. This opens a window in the user's app on whatever it is
+    # given; accepting an absolute URL would let any page that gets a POST past
+    # the origin guard render an arbitrary site inside NaviLink's own window,
+    # wearing NaviLink's title.
+    if not isinstance(url, str) or not url.startswith("/") or url.startswith("//"):
+        return web.json_response({"ok": False, "error": "url must be a local path"},
+                                 status=400)
+    if open_window_hook is None:
+        return web.json_response({"ok": False, "error": "no window backend"}, status=501)
+    try:
+        # In a thread: creating a window is a blocking GUI call and must not be
+        # made to wait on -- or block -- the event loop serving both tools.
+        await asyncio.to_thread(open_window_hook, str(title), url)
+    except Exception as e:                    # noqa: BLE001
+        return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"},
+                                 status=500)
+    return web.json_response({"ok": True})
+
+
+async def api_update_webui(req: web.Request) -> web.Response:
+    """Run the fetcher, so refreshing a tool is a button rather than a command.
 
     Shelled out rather than imported: it is a script with its own argument
     handling and atomic-swap logic, and duplicating that here would be a second
     implementation to keep in step.
+
+    ?tool=navicore|wcb|all, defaulting to ALL. Both tools are bundled copies that
+    age the same way, and a button labelled "Update tool" that quietly refreshed
+    only one of two would leave the other stale with nothing on screen saying so.
+    The fetcher keeps them as separate atomic swaps, so one failing offline still
+    leaves the other correctly updated -- which is why a partial success below is
+    reported as a failure with the log attached rather than swallowed.
     """
     import subprocess
+    tool = req.query.get("tool", "all")
+    if tool not in ("navicore", "wcb", "all"):
+        return web.json_response({"ok": False, "error": "tool must be navicore|wcb|all"},
+                                 status=400)
     script = pathlib.Path(__file__).resolve().parent.parent / "tools" / "fetch_webui.py"
 
     def run():
-        return subprocess.run([sys.executable, str(script)],
-                              capture_output=True, text=True, timeout=300)
+        return subprocess.run([sys.executable, str(script), "--tool", tool],
+                              capture_output=True, text=True, timeout=600)
 
     try:
         r = await asyncio.to_thread(run)
@@ -372,10 +554,15 @@ async def api_update_webui(_req: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
     if r.returncode != 0:
         return web.json_response(
-            {"ok": False, "error": (r.stdout or r.stderr or "fetch failed").strip()[-300:]},
+            {"ok": False, "error": (r.stdout or r.stderr or "fetch failed").strip()[-300:],
+             # Report what DID land even on a failure. With two independent swaps,
+             # "the update failed" alone leaves you unable to tell whether either
+             # tool moved -- and one of them usually has.
+             "version": _bundled_dtg(), "wcbVersion": _wcb_bundled_ver()},
             status=502)
     return web.json_response({"ok": True, "version": _bundled_dtg(),
-                              "log": (r.stdout or "").strip()[-400:]})
+                              "wcbVersion": _wcb_bundled_ver(),
+                              "log": (r.stdout or "").strip()[-600:]})
 
 
 # ── Native flashing ─────────────────────────────────────────────────────────
@@ -404,46 +591,57 @@ def _flash_progress(pct: int) -> None:
         _flash_state["percent"] = max(_flash_state["percent"], min(99, pct))
 
 
-async def api_flash(req: web.Request) -> web.Response:
-    """Start a native flash. Returns immediately; poll /_api/flash-status.
+def _claim_port_for_flash() -> tuple[dict, str, Optional[web.Response]]:
+    """Common pre-flight for every native flash: is one running, and is it USB?
 
-    Not synchronous: a full write is a minute or more, and holding an HTTP request
-    open across a board reset is how you get a timeout that looks like a failure
-    while the flash is still running and must not be started twice.
+    Both flash routes need the identical two checks and the identical wording, and
+    a second copy of them is a second place for the two to drift apart.
+
+    ONE FLASH AT A TIME, ACROSS BOTH TOOLS. There is one serial port, so a NaviCore
+    flash and a WCB flash contend for the same device -- and now that both tools can
+    be open at once, that is reachable by simply clicking in the other pane. The
+    shared _flash_state is what makes the second click a clean 409 rather than two
+    esptools fighting over one port.
     """
-    try:
-        body = await req.json()
-    except Exception:
-        body = {}
-    erase_nvs = bool(body.get("eraseNvs"))
-
+    # ONE lock acquisition for check-and-claim. Split across two, a second request
+    # can pass the "is one running" test before the first has set the flag, and two
+    # esptools then race for one port. Nothing awaits inside here, so on the event
+    # loop alone this was already atomic -- but relying on that is relying on a
+    # reader noticing there is no await, in a function that now has two callers and
+    # two reachable buttons in two panes. Claim it properly instead.
     with _flash_lock:
         if _flash_state["running"]:
-            return web.json_response({"ok": False, "error": "a flash is already running"},
-                                     status=409)
+            return {}, "", web.json_response(
+                {"ok": False, "error": "a flash is already running"}, status=409)
 
-    # Refuse over WiFi rather than failing obscurely three steps later. esptool needs
-    # the USB line; a remote board is what "Update over WCB (OTA)" is for.
-    spec = dict(bridge._spec or {})
-    if spec.get("kind") != "serial" or not spec.get("port"):
-        return web.json_response({"ok": False, "error": (
-            "Flashing needs a direct USB serial connection. This session is "
-            + (_label_for(spec) if spec else "not attached")
-            + " — attach the board over USB and try again.")}, status=409)
-    port = spec["port"]
+        # Refuse over WiFi rather than failing obscurely three steps later. esptool
+        # needs the USB line; a remote board is what "Update over WCB (OTA)" is for.
+        spec = dict(bridge._spec or {})
+        if spec.get("kind") != "serial" or not spec.get("port"):
+            return {}, "", web.json_response({"ok": False, "error": (
+                "Flashing needs a direct USB serial connection. This session is "
+                + (_label_for(spec) if spec else "not attached")
+                + " — attach the board over USB and try again.")}, status=409)
 
-    with _flash_lock:
         _flash_state.update(running=True, ok=None, error="", version="",
                             percent=0, log=[])
+    return spec, spec["port"], None
 
-    async def run_flash() -> None:
+
+def _start_flash_job(spec: dict, port: str, do_flash) -> None:
+    """Run do_flash(port, log, progress) with the port released, then give it back.
+
+    do_flash is whichever module owns the board -- flash.flash for a NaviCore,
+    wcb_flash.flash for a WCB. Everything around it is identical and fiddly enough
+    that both routes must share exactly one copy of it.
+    """
+    async def run() -> None:
         try:
             # esptool opens the device itself, so the port has to be ours to give.
             _flash_log(f"Releasing {port} so esptool can open it...")
             bridge.detach()
             await asyncio.sleep(0.4)          # let the OS finish closing it
-            version = await asyncio.to_thread(
-                flash.flash, port, erase_nvs, _flash_log, _flash_progress)
+            version = await asyncio.to_thread(do_flash, port, _flash_log, _flash_progress)
             with _flash_lock:
                 _flash_state.update(ok=True, version=version, percent=100)
             _flash_log(f"Done — board is running {version}.")
@@ -466,9 +664,57 @@ async def api_flash(req: web.Request) -> web.Response:
             with _flash_lock:
                 _flash_state["running"] = False
 
-    asyncio.create_task(run_flash())
+    asyncio.create_task(run())
+
+
+async def api_flash(req: web.Request) -> web.Response:
+    """Start a native NaviCore flash. Returns immediately; poll /_api/flash-status.
+
+    Not synchronous: a full write is a minute or more, and holding an HTTP request
+    open across a board reset is how you get a timeout that looks like a failure
+    while the flash is still running and must not be started twice.
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    erase_nvs = bool(body.get("eraseNvs"))
+
+    spec, port, refused = _claim_port_for_flash()
+    if refused is not None:
+        return refused
+
+    _start_flash_job(spec, port, lambda p, log, prog: flash.flash(p, erase_nvs, log, prog))
     return web.json_response({"ok": True, "started": True,
                               "target": _label_for(spec), "eraseNvs": erase_nvs})
+
+
+async def api_flash_wcb(req: web.Request) -> web.Response:
+    """Start a native WCB flash, for the Wizard. Same status endpoint as above.
+
+    appOnly maps to the Wizard's "Update FW" and eraseNvs to its "Factory Reset";
+    neither set is a full flash. The chip family and flash size are NOT taken from
+    the page: wcb_flash.detect() asks the board, because the Wizard's HW-version
+    dropdown is a pre-fetch guess and its own flasher.js says detection is
+    authoritative. Sending the guess here would let a wrong dropdown pick the wrong
+    image, which the host is in a position to simply not do.
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    app_only  = bool(body.get("appOnly"))
+    erase_nvs = bool(body.get("eraseNvs"))
+
+    spec, port, refused = _claim_port_for_flash()
+    if refused is not None:
+        return refused
+
+    _start_flash_job(
+        spec, port,
+        lambda p, log, prog: wcb_flash.flash(p, app_only, erase_nvs, log, prog))
+    return web.json_response({"ok": True, "started": True, "target": _label_for(spec),
+                              "appOnly": app_only, "eraseNvs": erase_nvs})
 
 
 async def api_flash_status(_req: web.Request) -> web.Response:
@@ -479,12 +725,21 @@ async def api_flash_status(_req: web.Request) -> web.Response:
 
 
 async def api_status(_req: web.Request) -> web.Response:
+    spec = bridge._spec or {}
     return web.json_response({
         "attached": bridge.attached,
         "target": bridge.target_label,
         "lastError": bridge.last_error,
         "reconnecting": bridge.wants_link and not bridge.attached,
         "wantsLink": bridge.wants_link,
+        # WHAT is on the far end, not just whether something is. The Wizard has two
+        # completely different setups depending on the answer -- a directly-cabled
+        # WCB is a board it configures, a MgmtRelay is a conduit whose mesh boards it
+        # manages remotely -- and it cannot tell them apart from a byte pipe. The
+        # chooser already knows, so say so rather than making the page guess.
+        "kind": spec.get("kind", ""),
+        "role": spec.get("role", ""),
+        "relayId": spec.get("relayId"),
     })
 
 
@@ -517,6 +772,15 @@ async def api_attach(req: web.Request) -> web.Response:
         ssid = body.get("ssid")
         if isinstance(ssid, str) and ssid.strip():
             spec["ssid"] = ssid.strip()
+        # The relay's WCB id, straight from the WDP self-row discovery already read.
+        # Carried because the WIZARD needs it and cannot work it out: a MgmtRelay is
+        # not a configurable board, it is a conduit, and the Wizard files it under
+        # its DEVICE_ID (19 by default) rather than the slot it landed on. Knowing
+        # the id up front is what lets the shim drive the Wizard's own
+        # relayRouteAll(<id>) instead of leaving every mesh board unmanaged.
+        rid = body.get("relayId")
+        if isinstance(rid, int) and 1 <= rid <= 20:
+            spec["relayId"] = rid
     else:
         return web.json_response({"ok": False, "error": "kind must be serial|ws"}, status=400)
 
@@ -709,6 +973,30 @@ async def index(_req: web.Request) -> web.StreamResponse:
             "The control API and the /_link byte pipe work without it."
         ))
     return web.FileResponse(f)
+
+
+async def wcb_index(_req: web.Request) -> web.StreamResponse:
+    """The WCB Wizard, shimmed exactly like the NaviCore tool.
+
+    Same treatment, same reason: the file on disk stays byte-identical to the copy
+    published on Pages and the shim tag is added at SERVE time. The Wizard's own
+    scripts (parser, flasher, device-labels, serial-hub, app) all load at relative
+    paths from /wcb/Wizard/, which the static mount below serves untouched.
+    """
+    if WCB_INDEX.is_file():
+        return web.Response(
+            text=_inject_shim(WCB_INDEX.read_text(encoding="utf-8", errors="replace")),
+            content_type="text/html",
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+    return web.Response(status=503, content_type="text/plain", text=(
+        "No bundled WCB Wizard.\n\n"
+        f"Expected: {WCB_INDEX}\n\n"
+        "src/webui_wcb/ is gitignored for the same reason src/webui/ is — the public\n"
+        "WCB repo is the single source of truth for the Wizard. Fetch it with:\n\n"
+        "    python tools/fetch_webui.py --tool wcb\n\n"
+        "The NaviCore tool, the control API and the /_link byte pipe work without it."
+    ))
 
 
 # How long the link may stay down before we suspect the routing problem rather than
@@ -939,8 +1227,11 @@ def build_app() -> web.Application:
         web.get("/_api/webui-version", api_webui_version),
         web.post("/_api/update-webui", api_update_webui),
         web.post("/_api/flash", api_flash),
+        web.post("/_api/flash-wcb", api_flash_wcb),
         web.get("/_api/flash-status", api_flash_status),
         web.get("/_launcher", launcher),
+        web.get("/_shell", shell),
+        web.post("/_api/open-window", api_open_window),
         web.post("/_api/wifi-bounce", api_wifi_bounce),
         web.post("/_api/attach", api_attach),
         web.post("/_api/detach", api_detach),
@@ -948,6 +1239,23 @@ def build_app() -> web.Application:
         web.post("/_api/signals", api_signals),
         web.get("/_navilink.js", shim_js),
         web.get("/_link", ws_link),
+        # THREE spellings, because all three are reachable and only two of them
+        # would work by accident.
+        #
+        # "/wcb/Wizard/" is what the shell's iframe and the launcher use.
+        # "/wcb/Wizard/index.html" is what a person types, or a bookmark keeps.
+        # Both must go through wcb_index() rather than the static mount, or the
+        # RAW index.html is served with no shim -- and the Wizard then opens
+        # against real Web Serial and asks for a COM port the host is holding.
+        #
+        # "/wcb/Wizard" without the slash reaches the static mount as a DIRECTORY
+        # request and, with show_index=False, answers 403 with the body "Forbidden".
+        # Measured, not assumed. That is a dead end for a perfectly reasonable URL,
+        # so redirect it rather than leaving someone staring at a permissions error
+        # for a page that is right there.
+        web.get("/wcb/Wizard/", wcb_index),
+        web.get("/wcb/Wizard/index.html", wcb_index),
+        web.get("/wcb/Wizard", lambda _r: web.HTTPMovedPermanently("/wcb/Wizard/")),
     ])
     # Create it, then register UNCONDITIONALLY. src/webui/ is gitignored, so on a
     # fresh clone it does not exist, the static route was never added, and aiohttp
@@ -958,6 +1266,11 @@ def build_app() -> web.Application:
     # Silently: the page renders, the flasher fails only when used, the command
     # library is simply empty. index() already explains an empty directory itself.
     WEBUI_DIR.mkdir(parents=True, exist_ok=True)
+    WEBUI_WCB_DIR.mkdir(parents=True, exist_ok=True)
+    # /wcb/ BEFORE /. aiohttp resolves resources in registration order and the "/"
+    # static mount matches every path, so registering it first would swallow
+    # /wcb/Wizard/app.js and answer 404 from the NaviCore bundle instead.
+    app.router.add_static("/wcb/", WEBUI_WCB_DIR, show_index=False)
     app.router.add_static("/", WEBUI_DIR, show_index=False)
     return app
 

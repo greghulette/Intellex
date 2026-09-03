@@ -32,10 +32,17 @@ src/assets/        app icon — the .svg comes from NaviCore; the .ico and .png
                    rasterisation — read that header before regenerating
 src/certs.py       TLS trust, because a stock macOS Python has none
 src/flash.py       native esptool flashing — what the browser cannot do here
+src/wcb_flash.py   the same for a WCB: chip + flash-size detection, then write
+src/shell.html     the window that holds one or both tools (tabs / side by side)
 src/webui/         bundled NaviCore config tool — fetched, never committed
 src/webui/Images/  footer art the tool loads as "../Images/<name>" (see below)
+src/webui_wcb/     bundled WCB Wizard — also fetched, also never committed.
+                   Laid out as Wizard/ + Images/ SIBLINGS, mirroring gh-pages,
+                   and mounted at /wcb/ so the Wizard's own "../Images/<name>"
+                   resolves with no path rewriting
 NaviLink.bat       double-click launcher — Windows
 NaviLink.command   double-click launcher — macOS
+docs/WCB_WIZARD.md how the Wizard is hosted, flashed and laid out — read first
 docs/WIP_NOTES.md  firmware-side change tracker + removal recipe
 scripts/           cross-platform build scripts
 ```
@@ -47,6 +54,12 @@ side. Here `index.html` is served **at** the root, so the browser clamps the
 `fetch_webui.py` bundles them. Anything else the tool loads from outside
 `config_tool/` needs adding to `IMAGES` (or its own list) the same way, or it
 will 404 in the app while looking perfect on the published site.
+
+The Wizard has the same `../Images/` habit, solved the other way round: instead
+of flattening it and clamping the `..`, its bundle keeps `Wizard/` and `Images/`
+as siblings under `src/webui_wcb/` and mounts the pair at `/wcb/`. The published
+file is then served byte-identically. See
+[docs/WCB_WIZARD.md](docs/WCB_WIZARD.md).
 
 ## Running it
 

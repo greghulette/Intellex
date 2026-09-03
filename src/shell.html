@@ -1,0 +1,368 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>NaviLink</title>
+<!--
+  shell.html — holds the two tools in one window and lets you switch or split them.
+
+  WHY A SHELL AT ALL
+  NaviLink now serves two independent browser tools: the NaviCore config tool at /
+  and the WCB Wizard at /wcb/Wizard/. Both are whole applications with their own
+  chrome, and neither knows the other exists. An app window has no tabs and no
+  address bar, so without something above them there is no way to get from one to
+  the other — you would have to relaunch.
+
+  WHY IFRAMES AND NOT A REWRITE
+  The tools stay byte-identical to the copies published on Pages; that is the whole
+  constraint this project is built around. An iframe hosts a page without touching
+  it. Both frames are same-origin (everything is served from 127.0.0.1:PORT), so
+  the shim inside each one reaches /_link and /_api/* exactly as it does standalone.
+
+  WHY BOTH CAN BE OPEN AT ONCE
+  Each frame opens its own /_link socket, and the host fans the droid's bytes to
+  every attached page (host.py, Bridge._pages). That is the same shape the far end
+  already has: MgmtRelay serves 3 WebSocket clients and mirrors its console to all
+  of them. Through the relay, the NaviCore tool and the Wizard really are two views
+  of one mesh, so seeing them side by side is the honest arrangement.
+
+  LAZY. The second frame is not loaded until it is first shown. A user who only
+  ever wants the config tool should not pay for the Wizard's ~1 MB, and — more to
+  the point — should not have a second WebSocket on the droid link for a pane they
+  never opened.
+-->
+<style>
+  :root {
+    --bar:    #16202b;
+    --bar-fg: #cfe3ff;
+    --edge:   #2b3d52;
+    --accent: #3d7dd6;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: #0f1620; }
+  body { display: flex; flex-direction: column; font: 13px/1.4 system-ui, sans-serif; }
+
+  #bar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+    padding: 5px 10px; background: var(--bar); color: var(--bar-fg);
+    border-bottom: 1px solid var(--edge); user-select: none;
+  }
+  #bar .brand { font-weight: 600; letter-spacing: .3px; margin-right: 6px; opacity: .9; }
+  #bar button {
+    font: inherit; color: var(--bar-fg); background: #223042;
+    border: 1px solid var(--edge); border-radius: 6px; padding: 4px 11px; cursor: pointer;
+  }
+  #bar button:hover { background: #2b3d52; }
+  #bar button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #bar .grow { flex: 1; }
+  #bar .link { cursor: pointer; opacity: .85; }
+  #bar .link:hover { opacity: 1; text-decoration: underline; }
+
+  #panes { flex: 1; display: flex; min-height: 0; }
+  .pane { flex: 1; min-width: 0; display: none; position: relative; }
+  .pane.on { display: block; }
+  .pane iframe { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+  /* A label per pane, but ONLY when both are visible. On a single pane the tab
+     above already says which tool this is, and repeating it is just clutter. */
+  .pane .tag {
+    position: absolute; left: 0; top: 0; z-index: 5; display: none;
+    background: rgba(22,32,43,.88); color: var(--bar-fg);
+    font: 11px/1 system-ui, sans-serif; padding: 4px 8px; border-radius: 0 0 6px 0;
+    pointer-events: none;
+  }
+  body.split .pane .tag { display: block; }
+
+  /* The divider only exists while both panes are up. */
+  #split { display: none; flex: 0 0 6px; cursor: col-resize; background: var(--edge); }
+  body.split #split { display: block; }
+  #split:hover { background: var(--accent); }
+</style>
+
+<div id="bar">
+  <span class="brand">NaviLink</span>
+  <button id="t-nc"  aria-pressed="false">NaviCore</button>
+  <button id="t-wcb" aria-pressed="false">WCB Wizard</button>
+  <button id="t-split" aria-pressed="false" title="Show both tools side by side">Side by side</button>
+  <span class="grow"></span>
+  <button id="t-win" title="Open the tool that is not shown here in its own window">New window</button>
+  <span class="link" id="target" title="Change the connection (USB / WiFi)">…</span>
+</div>
+
+<div id="panes">
+  <div class="pane" id="p-nc"><div class="tag">NaviCore config tool</div></div>
+  <div id="split" title="Drag to resize"></div>
+  <div class="pane" id="p-wcb"><div class="tag">WCB Wizard</div></div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const SRC = { nc: '/', wcb: '/wcb/Wizard/' };
+  const VIEWS = ['nc', 'wcb', 'split'];
+  const KEY = 'navilink_view';
+
+  // URL first, then what was used last, then the config tool. The URL wins so the
+  // launcher can send you somewhere specific and a bookmark/reload keeps it.
+  function wanted() {
+    const q = new URLSearchParams(location.search).get('view');
+    if (VIEWS.includes(q)) return q;
+    try {
+      const s = localStorage.getItem(KEY);
+      if (VIEWS.includes(s)) return s;
+    } catch (_) {}
+    return 'nc';
+  }
+
+  // ── Frames are created on FIRST show and never destroyed ──────────────────
+  // Never destroyed because removing an iframe kills its page: the tool's
+  // connection, its pulled config, its terminal scrollback, everything. Switching
+  // tabs must not throw away work, so hiding is display:none and nothing more.
+  //
+  // The cost of keeping it alive is one WebSocket on the droid link, which the
+  // host is built to fan out to. The cost of not doing it is losing an unsaved
+  // config by clicking the wrong tab, which is not recoverable.
+  const made = {};
+  function ensure(which) {
+    if (made[which]) return;
+    made[which] = true;
+    const f = document.createElement('iframe');
+    f.src = SRC[which];
+    // A same-origin frame, deliberately unsandboxed: the tools need storage,
+    // WebSocket, popups and clipboard, and every one of them is served by this
+    // host from this origin. A sandbox attribute here would break the shim.
+    f.setAttribute('title', which === 'nc' ? 'NaviCore config tool' : 'WCB Wizard');
+    $(which === 'nc' ? 'p-nc' : 'p-wcb').appendChild(f);
+  }
+
+  function apply(view) {
+    const both = view === 'split';
+    const showNc  = both || view === 'nc';
+    const showWcb = both || view === 'wcb';
+    if (showNc)  ensure('nc');
+    if (showWcb) ensure('wcb');
+    $('p-nc').classList.toggle('on', showNc);
+    $('p-wcb').classList.toggle('on', showWcb);
+    document.body.classList.toggle('split', both);
+    $('t-nc').setAttribute('aria-pressed',  String(view === 'nc'));
+    $('t-wcb').setAttribute('aria-pressed', String(view === 'wcb'));
+    $('t-split').setAttribute('aria-pressed', String(both));
+    if (both) {
+      // Restore the last drag, or start even.
+      let pct = 50;
+      try { pct = parseFloat(localStorage.getItem('navilink_split') || '50') || 50; } catch (_) {}
+      setSplit(pct);
+    } else {
+      $('p-nc').style.flex = '1';
+      $('p-wcb').style.flex = '1';
+      fitPanes();          // a pane that just became full-width goes back to 1:1
+    }
+    try { localStorage.setItem(KEY, view); } catch (_) {}
+    // Keep the URL honest so a reload lands where you were.
+    const u = new URL(location.href);
+    u.searchParams.set('view', view);
+    history.replaceState(null, '', u);
+  }
+
+  function setSplit(pct) {
+    pct = Math.min(85, Math.max(15, pct));
+    $('p-nc').style.flex  = pct + ' 1 0';
+    $('p-wcb').style.flex = (100 - pct) + ' 1 0';
+    fitPanes();
+  }
+
+  // ── Fit a full-window tool into half a window ─────────────────────────────
+  // Both tools lay out for a full window: the Wizard's header alone carries
+  // Simple/Advanced, Wizard, Push All, Load File and Export, and NaviCore's is no
+  // narrower. In a half-width pane that header runs off the edge and takes the
+  // board tabs and the terminal selector with it — reachable only by zooming the
+  // whole window out, which shrinks the shell chrome too.
+  //
+  // Neither tool is ours to restyle (that is the no-fork rule), and a horizontal
+  // scrollbar per pane just moves the problem. So give the pane's DOCUMENT the
+  // width it was designed for and scale it down to fit.
+  //
+  // The mechanism is CSS `zoom` on the iframe, which is a LAYOUT zoom in Chromium
+  // (WebView2 included): at zoom z the inner document sees a viewport of
+  // width/z CSS pixels. Sizing the element to 100/z % and zooming by z therefore
+  // fills the pane exactly while handing the tool DESIGN_W px to lay out in.
+  // A CSS transform would not do this — it scales the painted result and leaves
+  // the tool still laying out in a too-narrow viewport, so the header would clip
+  // exactly as before, only smaller.
+  // The viewport each tool wants. Below this their headers start clipping — the
+  // Wizard's runs Simple/Advanced, Wizard, Push All, Load File, Export, and the
+  // board tabs sit under it.
+  const DESIGN_W = 1180;
+  const MIN_ZOOM = 0.55;   // below this the text stops being readable
+
+  function fitPane(pane) {
+    const f = pane.querySelector('iframe');
+    if (!f) return;
+    const w = pane.clientWidth, h = pane.clientHeight;
+    if (!w || !h) return;
+    // Never zoom IN. A pane wider than the design width should just be a wider
+    // tool, not a magnified one.
+    const z = Math.max(MIN_ZOOM, Math.min(1, w / DESIGN_W));
+    if (f.__z === z && f.__w === w && f.__h === h) return;   // no reflow per tick
+    f.__z = z; f.__w = w; f.__h = h;
+    if (z === 1) {
+      f.style.zoom = '';
+      f.style.width = '100%';
+      f.style.height = '100%';
+      return;
+    }
+    // EXPLICIT PIXELS, not percentages. A percentage width resolves against the
+    // parent and is THEN divided by the zoom, so `width:100/z %` compounds: at
+    // z=0.5 in a 621 px pane it handed the document a 2482 px viewport and
+    // rendered everything at quarter size. Measured, on this exact layout.
+    //
+    // In pixels it is unambiguous: an element w/z CSS px wide, zoomed by z,
+    // occupies exactly w px on screen while its document lays out in w/z px —
+    // which is DESIGN_W whenever the zoom was not clamped.
+    f.style.zoom = String(z);
+    f.style.width  = Math.round(w / z) + 'px';
+    f.style.height = Math.round(h / z) + 'px';
+  }
+
+  function fitPanes() {
+    for (const id of ['p-nc', 'p-wcb']) {
+      const p = $(id);
+      if (p.classList.contains('on')) fitPane(p);
+    }
+  }
+
+  // Panes change width from a window resize AND from a divider drag; watch the
+  // elements rather than the window so both are covered by one path.
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(() => fitPanes());
+    ro.observe($('p-nc'));
+    ro.observe($('p-wcb'));
+  } else {
+    window.addEventListener('resize', fitPanes);
+  }
+
+  $('t-nc').onclick    = () => apply('nc');
+  $('t-wcb').onclick   = () => apply('wcb');
+  $('t-split').onclick = () => apply(document.body.classList.contains('split') ? 'nc' : 'split');
+
+  // ── Drag to resize ────────────────────────────────────────────────────────
+  // pointer-events is turned off on the frames for the duration of the drag.
+  // Without it the pointer crosses into an iframe, that document swallows the
+  // move events, and the divider sticks halfway — the classic iframe-splitter bug.
+  let dragging = false;
+  $('split').addEventListener('pointerdown', e => {
+    dragging = true;
+    $('split').setPointerCapture(e.pointerId);
+    document.querySelectorAll('iframe').forEach(f => { f.style.pointerEvents = 'none'; });
+  });
+  $('split').addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const r = $('panes').getBoundingClientRect();
+    setSplit(((e.clientX - r.left) / r.width) * 100);
+  });
+  function endDrag() {
+    if (!dragging) return;
+    dragging = false;
+    document.querySelectorAll('iframe').forEach(f => { f.style.pointerEvents = ''; });
+    const pct = parseFloat($('p-nc').style.flex) || 50;
+    try { localStorage.setItem('navilink_split', String(pct)); } catch (_) {}
+  }
+  $('split').addEventListener('pointerup', endDrag);
+  $('split').addEventListener('pointercancel', endDrag);
+
+  // ── "New window" ──────────────────────────────────────────────────────────
+  // Opens whichever tool is NOT currently in front, because that is what someone
+  // reaching for a second window wants. Asks the host first: under pywebview a
+  // real second app window is far better than window.open(), which in a webview
+  // may open the system browser or be blocked outright. Falls back when the host
+  // has no window backend (running under --browser, or plain `python src/host.py`).
+  $('t-win').onclick = async () => {
+    const front = document.body.classList.contains('split') ? 'nc'
+                : ($('t-wcb').getAttribute('aria-pressed') === 'true' ? 'wcb' : 'nc');
+    const other = front === 'nc' ? 'wcb' : 'nc';
+    const url = SRC[other];
+    try {
+      const r = await fetch('/_api/open-window', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, title: other === 'nc' ? 'NaviCore' : 'WCB Wizard' }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (j && j.ok) return;
+    } catch (_) { /* fall through */ }
+    window.open(url, '_blank');
+  };
+
+  // ── The connection, and the way to change it ──────────────────────────────
+  // Same information the shim puts in each tool, hoisted to the one place that is
+  // always visible regardless of which pane is in front.
+  function labelFor(t) {
+    if (!t) return 'not attached';
+    const m = /^ws:\/\/([^/:]+)/.exec(t);
+    if (m) return 'WiFi ' + m[1];
+    if (/^relay\s/.test(t)) return t.replace(/^relay\s+/, 'Relay ');
+    return t.replace(/^serial\s+/, 'USB ');
+  }
+  async function refresh() {
+    let txt = 'not attached';
+    try {
+      const st = await (await fetch('/_api/status')).json();
+      txt = st.attached ? labelFor(st.target) : (st.wantsLink ? 'reconnecting…' : 'not attached');
+    } catch (_) {}
+    const el = $('target');
+    const want = txt + ' ▾';
+    if (el.textContent !== want) el.textContent = want;
+  }
+  // ── The chooser is an OVERLAY, not a navigation ───────────────────────────
+  // location.href = '/_launcher' unloads this document, which destroys both tool
+  // frames. Coming back then reloads them from scratch: reconnect, re-handshake,
+  // and a full config re-pull of every board — which through a relay is a
+  // sequential pull per board over the mesh, so it is slow as well as pointless.
+  // Nothing about looking at the connection list requires discarding the configs
+  // already in hand.
+  //
+  // An overlay keeps the frames alive and untouched underneath. The launcher is
+  // same-origin, so its own "Back to tool" / connect handlers still drive the
+  // real /_api endpoints; they just navigate the OVERLAY instead of the window.
+  // A connect there changes what the host is attached to, and each tool's shim
+  // notices the link change on its own — the same path a droid reboot takes.
+  let overlay = null;
+  function openChooser() {
+    if (overlay) return;
+    overlay = document.createElement('div');
+    overlay.id = 'chooser';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:50;background:#12131a';
+    const f = document.createElement('iframe');
+    f.src = '/_launcher';
+    f.style.cssText = 'width:100%;height:100%;border:0;display:block';
+    const close = document.createElement('button');
+    close.textContent = 'Close';
+    close.style.cssText = 'position:absolute;right:14px;top:12px;z-index:2;font:13px system-ui;'
+      + 'background:#273044;color:#e8e8ea;border:1px solid #2c2f3d;border-radius:7px;'
+      + 'padding:6px 12px;cursor:pointer';
+    close.onclick = closeChooser;
+    overlay.append(f, close);
+    document.body.appendChild(overlay);
+  }
+  function closeChooser() {
+    if (!overlay) return;
+    overlay.remove();
+    overlay = null;
+    refresh();
+  }
+  $('target').onclick = openChooser;
+
+  // The launcher inside the overlay asks to be dismissed rather than navigating,
+  // and a tool's own "change connection" affordance asks through its parent. Both
+  // arrive here as a postMessage; ignore anything from another origin.
+  window.addEventListener('message', (ev) => {
+    if (ev.origin !== location.origin) return;
+    const t = ev.data && ev.data.navilink;
+    if (t === 'close-chooser') closeChooser();
+    else if (t === 'open-chooser') openChooser();
+  });
+
+  refresh();
+  setInterval(refresh, 2000);
+
+  apply(wanted());
+})();
+</script>

@@ -181,14 +181,37 @@
           // one ~10 KB line, and a corrupted copy is persisted to the droid and then
           // adopted as "in sync", so it is never re-pushed.
           pending += dec.decode(bytes, { stream: true });
-          let nl;
-          while ((nl = pending.indexOf('\n')) >= 0) {
-            const line = pending.slice(0, nl + 1);   // keep the newline
-            pending = pending.slice(nl + 1);
+          // BOTH TERMINATORS. This split on '\n' alone, which was correct while the
+          // NaviCore tool was the only caller -- it ends every line with '\n'.
+          //
+          // The WCB Wizard ends every command with '\r' and never sends '\n'
+          // (BoardConnection.send is called as `send(cmd + '\r')`, and
+          // sendAndCollect does `this.send(command + '\r')`). So a Wizard command
+          // contained no '\n', this loop never fired, and the command sat in
+          // `pending` FOREVER -- never reaching the host, let alone the board.
+          //
+          // The symptom was silent and looked like a board fault: the page still
+          // received the relay's console mirror, so it appeared connected and
+          // healthy, while every command it sent vanished. The first pull timed out
+          // as "config pull incomplete", so a MgmtRelay was never identified and no
+          // mesh boards were ever offered.
+          //
+          // Splitting on either is safe in both directions: the relay's own reader
+          // treats '\n' and '\r' identically (mgmt_wsserver.h feed(): `if (c ==
+          // '\n' || c == '\r')`), and so does the WCB firmware's USB reader.
+          let i;
+          while ((i = pending.search(/[\r\n]/)) >= 0) {
+            let end = i + 1;
+            // CRLF is ONE terminator, not two. Splitting it would emit a trailing
+            // empty line; harmless (both readers skip blank lines) but it doubles
+            // the frames and makes a capture confusing to read.
+            if (pending[i] === '\r' && pending[end] === '\n') end++;
+            const line = pending.slice(0, end);      // keep the terminator
+            pending = pending.slice(end);
             ws.send(line);
           }
-          // A tail without a newline stays buffered until the rest arrives. The
-          // tool always terminates its lines, so this only holds a partial chunk.
+          // A tail with no terminator stays buffered until the rest arrives -- a
+          // genuine mid-line chunk boundary, which is what this is for.
         },
         close() {
           if (pending) { try { ws.send(pending); } catch (_) {} pending = ''; }
@@ -276,6 +299,40 @@
   }
 
   console.info('[NaviLink] navigator.serial is backed by', LINK_URL);
+
+  // ── Which tool is this? ───────────────────────────────────────────────────
+  // One shim serves both. Everything above is genuinely shared -- the fake port,
+  // the reconnect handling, the reload keys -- because both tools talk to the same
+  // byte pipe and neither knows or cares what is on the far end. Below, the two
+  // diverge: different connect entry points, different flash functions, different
+  // status elements.
+  //
+  // Keyed off the path because that is what host.py actually mounts (the Wizard at
+  // /wcb/Wizard/), not off page content, which would mean guessing from markup that
+  // is not ours and may change upstream at any time.
+  const IS_WCB = location.pathname.startsWith('/wcb/');
+  console.info('[NaviLink] tool:', IS_WCB ? 'WCB Wizard' : 'NaviCore config tool');
+
+  // ── Point the Wizard's cross-link at OUR NaviCore tool ────────────────────
+  // The Wizard offers "open the RC Config Tool", defaulting to the copy on GitHub
+  // Pages (RC_TOOL_URL_DEFAULT in its app.js). Inside NaviLink that default is
+  // wrong twice over: it needs the internet, which a con floor does not have, and
+  // it lands on a DIFFERENT ORIGIN that cannot reach this host's byte pipe -- so
+  // the tool it opens would be unable to talk to the droid at all.
+  //
+  // The Wizard already reads this from localStorage and treats it as user-editable
+  // (rc_config_tool_url), so setting it is using a documented seam rather than
+  // patching the file. Set before app.js runs, since it reads the value at load.
+  //
+  // Only when unset or still pointing at Pages: a user who has deliberately typed
+  // their own URL keeps it.
+  if (IS_WCB) {
+    try {
+      const KEY = 'rc_config_tool_url';
+      const cur = localStorage.getItem(KEY);
+      if (!cur || /greghulette\.github\.io/.test(cur)) localStorage.setItem(KEY, '/');
+    } catch (_) { /* private mode / storage disabled — the link just stays remote */ }
+  }
 
   // ── Reload keys ───────────────────────────────────────────────────────────
   // The app window has no browser chrome, so F5 and Ctrl+R do nothing — which
@@ -470,6 +527,287 @@
     }
   }
 
+  // ══ The WCB Wizard ═══════════════════════════════════════════════════════
+  // Everything from here to the next banner runs ONLY in the Wizard.
+
+  // ── Auto-connect board slot 1 ─────────────────────────────────────────────
+  // Same reasoning as the NaviCore auto-connect above: the host already knows what
+  // it is attached to, so making the user re-answer "which port?" in a modal is
+  // asking a question we have the answer to -- and the honest answer may well be a
+  // relay over WiFi, which the modal has no way to express.
+  //
+  // Slot 1 specifically, and only when it is free. The Wizard is a MULTI-BOARD
+  // tool: slots 2..n are for other WCBs, and quietly filling one the user was
+  // about to assign themselves would be worse than doing nothing. Slot 1 on a
+  // fresh page is the unambiguous case.
+  //
+  // _modalDoConnect() is the tool's own "connect this slot to this port" path, the
+  // one its manual and authorize buttons both end in, so the entire rest of the
+  // connect sequence (pull, UI, terminal wiring) happens exactly as it always does.
+  // ── Turn OFF the Wizard's cross-tab port sharing ──────────────────────────
+  // WcbSerialHub exists to work around one browser rule: a Web Serial port can be
+  // open in exactly ONE browsing context, so the Wizard and the NaviCore tool
+  // cannot each hold their own connection to the same USB board. It solves that
+  // with a BroadcastChannel + Web Locks election — one tab owns the port, the
+  // others proxy their bytes through it.
+  //
+  // THAT RULE DOES NOT APPLY HERE, and the workaround is actively harmful.
+  // Under NaviLink the "port" is a WebSocket to the host, every page opens its own,
+  // and the host fans the droid's bytes to all of them (Bridge._pages). Both tools
+  // already have independent, first-class access to the same link.
+  //
+  // Left on, the hub layers a second election and mirroring scheme on top of that:
+  //   - establishConnection() auto-shares on the FIRST connect and then waits up to
+  //     3 s for hub.portOpen before it will proceed, delaying every connect;
+  //   - whichever tool loads first becomes leader, and the other stops using its own
+  //     socket and relays through the leader's BroadcastChannel instead;
+  //   - flashing is explicitly unavailable in shared mode ("it needs the raw port"),
+  //     which would disable the native flash path for no reason.
+  //
+  // allowShare=false is the tool's OWN documented opt-out — its bulk auto-detect
+  // passes it for a related reason ("so every board connects direct and a busy port
+  // is reported rather than silently shared"). Forcing it is using a supported seam,
+  // not defeating one. Deliberately NOT done by faking WcbSerialHub.supported:
+  // getSharedHub() THROWS when unsupported and establishConnection has no catch
+  // around it, so that would turn a connect into "Port sharing needs a Chromium
+  // browser".
+  function disableWcbPortSharing() {
+    const orig = window.establishConnection;
+    if (typeof orig !== 'function' || orig.__navilinkNoShare) return;
+    const wrapped = function (n, port, usedPorts, _allowShare) {
+      return orig.call(this, n, port, usedPorts, false);
+    };
+    wrapped.__navilinkNoShare = true;
+    window.establishConnection = wrapped;
+    console.info('[NaviLink] cross-tab port sharing disabled — the host already '
+               + 'serves every page its own link');
+  }
+
+  // What the far end is decides how the Wizard must be set up, so remember it.
+  let wcbRole = '', wcbRelayId = null;
+
+  async function autoConnectWcb() {
+    try {
+      const r = await fetch('/_api/status');
+      const st = await r.json();
+      if (!st.attached) {
+        console.info('[NaviLink] host has no transport attached — not auto-connecting');
+        return;
+      }
+      wcbRole    = st.role || '';
+      wcbRelayId = st.relayId || null;
+      if (typeof window._modalDoConnect !== 'function') {
+        console.warn('[NaviLink] _modalDoConnect() not found; connect board 1 manually');
+        return;
+      }
+      // Already connected (a reload that raced us, or the user was quicker)? Leave it.
+      const conns = window.boardConnections || {};
+      if (conns[1] && conns[1].isConnected && conns[1].isConnected()) return;
+      console.info('[NaviLink] auto-connecting WCB slot 1 to', st.target,
+                   wcbRole ? `(role: ${wcbRole})` : '');
+      await window._modalDoConnect(1, await navigator.serial.requestPort());
+      // _modalDoConnect schedules its own pull 3 s out. That pull is what reveals
+      // ?RELAY,1 and turns slot 1 into a relay card, so wait for the outcome
+      // rather than assuming it.
+      //
+      // RUN THIS WHATEVER THE HOST SAID IT ATTACHED TO. It used to be gated on
+      // role === 'relay', which was wrong the moment NaviCore itself became a
+      // doorway to the mesh: the host reports that link as role "navicore", so
+      // the gate would skip routing and leave every WCB unmanaged behind a board
+      // that was perfectly capable of relaying to them.
+      //
+      // What actually matters is whether a RELAY CARD appears, which is the
+      // page's own verdict on the backup it got back — and something only a
+      // device advertising ?RELAY,1 produces. routeMeshThroughRelay() polls for
+      // exactly that and does nothing if none ever shows, so running it
+      // unconditionally costs a timer against a directly-cabled WCB and gets the
+      // answer right for every kind of doorway, including ones added later.
+      routeMeshThroughRelay();
+    } catch (e) {
+      console.warn('[NaviLink] WCB auto-connect skipped:', e && e.message);
+    }
+  }
+
+  // ── A relay is NOT a board, and the Wizard already knows that ─────────────
+  // Connecting the Wizard to a MgmtRelay and stopping there leaves it looking
+  // like a broken WCB: "config pull incomplete", no boards, nothing to manage.
+  // That is not a bug in either tool — it is a setup step nobody performed.
+  //
+  // The Wizard's own model is exactly right for this and needs no changes. A
+  // device whose backup carries ?RELAY,1 is short-circuited out of the numbered
+  // grid into a dedicated RELAY CARD (app.js, the config.isRelay branch), the
+  // mesh boards it hears via ?WDP,DUMP land in _relayNodes, and relayRouteAll()
+  // binds each one for remote management and pulls its config SEQUENTIALLY --
+  // sequentially because the relay reassembles one config reply at a time and
+  // overlapping pulls cross-assign configs to the wrong board.
+  //
+  // All of that is reached by clicking "Manage all" on the relay card. The only
+  // thing missing was anyone clicking it, so do that: the host already knows it
+  // attached a relay, which is the fact the page was lacking.
+  //
+  // WAIT FOR THE CARD, do not race it. The chain is connect -> 3 s -> pull ->
+  // parse ?RELAY,1 -> relay card -> a WDP mesh sweep populates the board list.
+  // Calling relayRouteAll() before the sweep finds no targets and does nothing,
+  // silently, which is indistinguishable from the bug it is meant to fix.
+  // Which relay card the Wizard rendered. Prefer the id the host gave us; fall
+  // back to whatever card exists, because a relay whose DEVICE_ID was changed
+  // still renders one and is still the thing we want.
+  function relayCardSlot() {
+    if (wcbRelayId != null && document.getElementById(`relay-card-${wcbRelayId}`)) return wcbRelayId;
+    const card = document.querySelector('#relay-cards [id^="relay-card-"]');
+    if (!card) return null;
+    const n = parseInt(card.id.slice('relay-card-'.length), 10);
+    return Number.isNaN(n) ? null : n;
+  }
+
+  // Boards on the card that are heard but NOT yet managed. renderRelayCard gives
+  // each unbound board a "Manage via relay" button and each bound one a plain
+  // "managed" label, so counting the buttons asks the page what it actually shows
+  // rather than reaching into the tool's module-scoped state.
+  function unmanagedOnCard(slot) {
+    return document.querySelectorAll(
+      `#relay-card-${slot} button[onclick^="relayManageOne"]`).length;
+  }
+
+  // KEEP WATCHING, do not race the mesh sweep once and give up.
+  //
+  // The chain is: connect -> pull -> relay card -> a ?WDP,DUMP sweep populates the
+  // board list -> relayRouteAll binds them. That sweep runs on the Wizard's own
+  // timer, so how long it takes is not ours to predict — and a board that is
+  // powered on later, or that misses a sweep, appears minutes afterwards. A
+  // one-shot window measured this wrong: it expired before the first sweep landed
+  // and then never looked again, leaving every board unmanaged with no way back
+  // except noticing the button.
+  //
+  // So poll, act whenever there is something unmanaged, and keep polling. Calling
+  // relayRouteAll again is safe and cheap: it guards itself with _relayRouteAllBusy
+  // against overlapping runs, and skips boards that already have a baseline.
+  const RELAY_POLL_MS  = 2000;
+  const RELAY_WATCH_MS = 300000;   // 5 min of attention, then stop nagging
+  async function routeMeshThroughRelay() {
+    if (typeof window.relayRouteAll !== 'function') {
+      console.warn('[NaviLink] relayRouteAll() not found — click "Manage all" on the relay card');
+      return;
+    }
+    const deadline = Date.now() + RELAY_WATCH_MS;
+    let sawCard = false, bound = 0;
+    while (Date.now() < deadline) {
+      await new Promise(res => setTimeout(res, RELAY_POLL_MS));
+      const slot = relayCardSlot();
+      if (slot == null) continue;
+      if (!sawCard) {
+        sawCard = true;
+        console.info('[NaviLink] relay card is up at slot', slot);
+      }
+      const n = unmanagedOnCard(slot);
+      if (!n) continue;
+      bound += n;
+      console.info(`[NaviLink] ${n} mesh board(s) unmanaged — routing them through relay ${slot}`);
+      try { window.relayRouteAll(slot); } catch (e) {
+        console.warn('[NaviLink] relayRouteAll failed:', e && e.message);
+      }
+    }
+    // Say WHICH half fell short — they need different things looked at.
+    if (!sawCard) {
+      console.warn('[NaviLink] no relay card appeared — the config pull never returned '
+        + 'a backup. Check the terminal pane for what came back.');
+    } else if (!bound) {
+      console.warn('[NaviLink] the relay card is up but no mesh boards were ever heard. '
+        + 'Are the WCBs powered and on the same mesh channel?');
+    }
+  }
+
+  // ── Native flashing for the Wizard ────────────────────────────────────────
+  // REPLACE THE FUNCTION, DO NOT INTERCEPT THE BUTTONS.
+  //
+  // The NaviCore tool has two fixed flash buttons, so intercepting clicks works
+  // there. The Wizard does not: flashing is one branch of boardGo() for any of N
+  // board slots, wrapped in its own bookkeeping -- it saves the port, closes the
+  // connection, sets "Flashing…" on that card, drives a per-board progress bar,
+  // then reconnects and re-shares the port and re-pushes config afterwards. All of
+  // that is correct and none of it is ours to reimplement.
+  //
+  // But every path through it funnels into exactly one call: flashFirmware(port,
+  // hwVersion, {onProgress, onLog, onStatus, appOnly, eraseNvs}). Swapping THAT
+  // leaves all the surrounding behaviour untouched and running, and the tool cannot
+  // tell the difference: it passes the same callbacks and gets the same
+  // resolve-or-throw contract back.
+  //
+  // `port` is ignored on purpose -- it is our fake one, and the host has the real
+  // device. So is hwVersion: flasher.js calls it a "pre-fetch guess" and says chip
+  // auto-detection is authoritative, and the host detects for real before it
+  // downloads anything, so passing the guess along could only make things worse.
+  function installWcbFlash() {
+    if (window.__navilinkWcbFlash) return;
+    window.__navilinkWcbFlash = true;
+
+    window.flashFirmware = async function (_port, _hwVersion, opts) {
+      const o = opts || {};
+      const onLog      = o.onLog      || (() => {});
+      const onStatus   = o.onStatus   || (() => {});
+      const onProgress = o.onProgress || (() => {});
+      const appOnly    = !!o.appOnly;
+      const eraseNvs   = !!o.eraseNvs;
+
+      if (!(await hostSupportsFlash())) throw new Error(STALE_HOST_MSG);
+
+      onStatus('Starting native flash…');
+      onLog('NaviLink: flashing through the host (esptool), not the browser.');
+      onLog(appOnly ? 'Mode: Update — app only, configuration preserved.'
+                    : eraseNvs ? 'Mode: Factory Reset — NVS will be erased.'
+                               : 'Mode: full flash — bootloader + partitions + app.');
+
+      const r = await fetch('/_api/flash-wcb', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ appOnly, eraseNvs }),
+      });
+      if (r.status === 404 || r.status === 405) {
+        // The route is absent, so aiohttp's static handler answered instead —
+        // a page newer than the running host. Same trap as the NaviCore path.
+        hostCanFlash = false;
+        throw new Error(STALE_HOST_MSG);
+      }
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || `the host refused (HTTP ${r.status})`);
+
+      // Poll, for the reason the NaviCore path polls: a flash outlives any request
+      // held open across the board reset that ends it.
+      const seen = new Set();
+      for (;;) {
+        await new Promise(res => setTimeout(res, FLASH_POLL_MS));
+        let st;
+        try {
+          st = await (await fetch('/_api/flash-status')).json();
+        } catch (_) {
+          continue;                    // the host is briefly busy; keep waiting
+        }
+        for (const line of (st.log || [])) {
+          if (seen.has(line)) continue;
+          seen.add(line);
+          onLog(line);
+        }
+        const p = st.percent || 0;
+        // The Wizard's bar takes (written, total) and derives the percentage, so
+        // feed it p/100 rather than inventing byte counts we do not have.
+        onProgress(p, 100);
+        if (st.running) { onStatus(`Flashing… ${p}%`); continue; }
+        // THROW on failure. boardGo() uses the exception as its only failure
+        // signal -- it catches, toasts, and skips the post-flash reconnect and
+        // config push. Returning quietly would have it report success and then
+        // push config at a board that never got new firmware.
+        if (!st.ok) throw new Error(st.error || 'flash failed — see the log');
+        onStatus('Flash complete');
+        onLog(`Done — board is running ${st.version}.`);
+        // The tool reads this to label the card after a flash. Setting it keeps
+        // that display honest instead of leaving it on the pre-flash build.
+        try { window.latestFirmwareVersion = st.version; } catch (_) {}
+        return;
+      }
+    };
+    console.info('[NaviLink] flashFirmware() now runs on the host');
+  }
+
   // ── Say which transport is actually in use ────────────────────────────────
   // The tool's status reads "Connected" whatever is behind navigator.serial, so a
   // WiFi session looks identical to a cable. That is not cosmetic: what you do
@@ -503,7 +841,7 @@
     // picked there is otherwise no route to the chooser -- you would have to close
     // and relaunch to switch from USB to WiFi. The label naming the current
     // connection is where you look when you want to change it.
-    el.addEventListener('click', () => { location.href = '/_launcher'; });
+    el.addEventListener('click', openChooser);
     host.parentNode.insertBefore(el, host.nextSibling);
     return el;
   }
@@ -539,7 +877,73 @@
     if (el.textContent !== want) el.textContent = want;
   }
 
-  setInterval(() => { refreshTarget().then(annotateStatus); }, 2000);
+  // ── The Wizard's version of that label ────────────────────────────────────
+  // The Wizard has no #status-text to annotate -- its connection state lives per
+  // board card, and there is no one place that means "the link". So it gets its
+  // own chip instead of a borrowed element.
+  //
+  // The information matters more here than in the NaviCore tool, not less: a WCB
+  // reached over the relay is on the far side of a mesh hop, so "it stopped
+  // answering" has a different cause and a different fix than it does on a cable.
+  // The Wizard's own UI cannot say which, because through the shim both look like
+  // an ordinary serial port.
+  //
+  // SUPPRESSED INSIDE THE SHELL, which already shows the transport in its bar.
+  // Two chips saying the same thing in one window reads as two connections.
+  const IN_SHELL = (() => {
+    try { return window.parent !== window; } catch (_) { return false; }
+  })();
+
+  // ── "Change connection", without throwing the session away ────────────────
+  // Standalone this is a plain navigation. Inside the shell it must NOT be: this
+  // document is a tool frame, so navigating it to /_launcher unloads the tool and
+  // discards everything it holds — the connection, every board's pulled config,
+  // the terminal scrollback. Coming back then re-pulls the lot, which through a
+  // relay is a slow sequential pull per board.
+  //
+  // So ask the shell to put the chooser over the top instead. It stays a
+  // navigation when there is no shell to ask.
+  function openChooser() {
+    if (IN_SHELL) {
+      try {
+        window.parent.postMessage({ navilink: 'open-chooser' }, location.origin);
+        return;
+      } catch (_) { /* fall through to navigating */ }
+    }
+    location.href = '/_launcher';
+  }
+
+  function wcbChip() {
+    if (IN_SHELL) return null;
+    let el = document.getElementById('navilink-chip');
+    if (el) return el;
+    if (!document.body) return null;
+    el = document.createElement('div');
+    el.id = 'navilink-chip';
+    el.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:99998;'
+      + 'background:#1d2733;color:#cfe3ff;border:1px solid #35506e;border-radius:14px;'
+      + 'padding:5px 11px;font:12px/1.3 system-ui,sans-serif;cursor:pointer;'
+      + 'box-shadow:0 2px 10px rgba(0,0,0,.35);opacity:.92';
+    el.title = 'NaviLink connection — click to change it';
+    // THE WAY BACK, same problem as the NaviCore label solves: an app window has
+    // no browser chrome, so without this there is no route from the Wizard to the
+    // chooser and switching from USB to WiFi means restarting the app.
+    el.addEventListener('click', openChooser);
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function annotateWcb() {
+    const el = wcbChip();
+    if (!el) return;
+    const label = labelFor(lastTarget);
+    const want = label ? 'NaviLink · ' + label + ' ▾' : 'NaviLink · not attached ▾';
+    if (el.textContent !== want) el.textContent = want;
+  }
+
+  setInterval(() => {
+    refreshTarget().then(IS_WCB ? annotateWcb : annotateStatus);
+  }, 2000);
 
   // ── "Still trying" banner ─────────────────────────────────────────────────
   // A reboot costs ~6 s of dead air and the host recovers on its own, so a banner
@@ -586,7 +990,7 @@
       // ambiguous -- there is exactly one host and it has already told us it is
       // attached -- so retrying is safe, and necessary: the first attempt usually
       // lands while the droid is still rebooting and sees no PONG.
-      autoConnect();
+      (IS_WCB ? autoConnectWcb : autoConnect)();
     }
 
     if (st.attached || !st.wantsLink) { downSince = 0; banner(''); return; }
@@ -602,13 +1006,30 @@
   }
   setInterval(watchLink, 2000);
 
+  // AS EARLY AS THE FUNCTION EXISTS, which is DOMContentLoaded: every <script> has
+  // run by then, so app.js has defined establishConnection, but the Wizard's own
+  // init (and any auto-detect it starts) has not yet had a chance to connect. Doing
+  // this only at load+400 ms leaves a window in which a connect could still go
+  // through the shared hub. Idempotent, and repeated below as a backstop.
+  if (IS_WCB) {
+    document.addEventListener('DOMContentLoaded', disableWcbPortSharing, { once: true });
+  }
+
   // After load, so the tool has defined its functions and wired its UI. The delay
   // is for its own connect-modal setup, not the socket.
   window.addEventListener('load', () => setTimeout(() => {
-    wireNativeFlash();
-    autoConnect();
+    if (IS_WCB) {
+      disableWcbPortSharing();   // BEFORE any connect — it wraps the connect path
+      installWcbFlash();
+      autoConnectWcb();
+    } else {
+      wireNativeFlash();
+      autoConnect();
+    }
   }, 400), { once: true });
-  // The tool rewrites these buttons whenever the transport changes, so re-assert
-  // after any connect settles rather than only once at load.
-  setInterval(wireNativeFlash, 3000);
+  // The NaviCore tool rewrites its flash buttons whenever the transport changes,
+  // so re-assert after any connect settles rather than only once at load. The
+  // Wizard needs no equivalent: replacing flashFirmware() is a one-time swap that
+  // nothing in the page overwrites.
+  if (!IS_WCB) setInterval(wireNativeFlash, 3000);
 })();

@@ -78,10 +78,29 @@ packaging problem here; it has probably already been solved.
 Rejected: Electron (~150 MB Chromium to maintain, and does not fix the DTR bug), Tauri (Rust
 toolchain plus an unofficial community serial crate on the critical path, for a solo maintainer).
 
+## Two tools, one link
+
+NaviLink hosts **both** browser tools and attaches them to the same droid link:
+
+| Path | Tool | Source repo |
+|---|---|---|
+| `/` | NaviCore config tool | `NaviCore/config_tool/` |
+| `/wcb/Wizard/` | WCB Wizard | `Wireless_Communication_Board-WCB/Wizard/` |
+| `/_shell` | the window that holds one or both | this repo |
+
+This works because **MgmtRelay's WebSocket endpoint was built to NaviCore's transport contract
+on purpose** — same URI, same newline-delimited UTF-8, same console-mirror semantics, different
+payload grammar (`mgmt_wsserver.h` header comment). So one transport carries both tools, and
+`Bridge` fans the link to *every* attached page rather than one.
+
+**Read [`docs/WCB_WIZARD.md`](docs/WCB_WIZARD.md) before touching the Wizard, the `/wcb/` mount,
+the page fan-out, or WCB flashing.** The rules there are the ones that bite.
+
 ## The UI is NOT forked
 
-**`config_tool/index.html` stays the single source of truth in the public NaviCore repo.** This
-app *bundles* a copy and serves it. It does not fork it, and it does not diverge from it.
+**Neither tool is forked.** `config_tool/index.html` stays the single source of truth in the
+public NaviCore repo, and `Wizard/` in the public WCB repo. This app *bundles* a copy of each
+and serves it. It does not fork them, and it does not diverge from them.
 
 That is a hard constraint, not a preference — a fork drifts within a week and the whole point is
 that a fix to the web tool is a fix here too.
@@ -99,9 +118,19 @@ against a newer UI. Skip `index-Old.html` and `index1.html` (frozen, nothing loa
 Source: `https://greghulette.github.io/NaviCore/config_tool/`. Per-branch previews exist at
 `/dev/<branch>/config_tool/` — a free test channel.
 
+**The Wizard is not one file either.** ~1.1 MB across 16 files: `index.html` + `app.js` +
+`parser.js` + `flasher.js` + `device-labels.js` + `serial-hub.js` + `styles.css` + `vendor/`,
+plus the sibling `Images/`. Its version stamp is **`UI_VERSION` in `app.js`**, not a footer
+element — the WCB pre-commit hook writes it, so it plays the same role `footer-dtg` does.
+Source: `https://greghulette.github.io/Wireless_Communication_Board-WCB/Wizard/`, with the same
+`/dev/<branch>/Wizard/` preview channel. Firmware binaries are deliberately **not** bundled —
+both `flasher.js` and `src/wcb_flash.py` pull them from the GitHub Contents API at flash time.
+
 Updates must be **atomic and revertible**: download to a temp dir, verify, swap, and keep the
 bundled copy permanently as a fallback. A bad pull otherwise leaves a broken UI and no way back,
-and this is the only way to configure the droid.
+and this is the only way to configure the droid. The two tools update as **separate** atomic
+swaps (`tools/fetch_webui.py --tool navicore|wcb|all`) — different repos, different cadences, so
+one failing offline must not roll back the other.
 
 ## Rules that are easy to break
 
@@ -121,6 +150,30 @@ and this is the only way to configure the droid.
    is `esptool` as a Python package, exactly as ESP-Flasher-Companion does it. Note that repo's
    `--run-esptool` self-reinvocation trick: a frozen build cannot spawn `python -m esptool`
    because `sys.executable` is the app.
+6. **The bridge feeds MANY pages, not one.** Both tools can be open at once, and each holds its
+   own `/_link`. Every chunk goes to every page **whole** — each page keeps its own streaming
+   `TextDecoder`, so a chunk one page misses desynchronises a multi-byte character for it. A
+   single page slot is what let the second tool silently steal the pipe, showing "Connected"
+   while receiving nothing. `tools/smoke_fanout.py` guards this, no hardware needed.
+7. **The S3 bootloader must match the board's flash size.** Its header *declares* the size, so
+   writing the 16 MB build onto an 8 MB board does not fail — it boots and then silently
+   corrupts NVS. `src/wcb_flash.py` detects chip and flash size before downloading anything and
+   **refuses** a full flash when no size-matched bootloader exists. Never make that a warning.
+8. **The two tools do not agree on a line terminator.** The NaviCore tool ends every line with
+   `\n`; **the WCB Wizard ends every command with `\r` and never sends `\n`** (`send(cmd +
+   '\r')`, and `sendAndCollect` likewise). The shim's writable frames outgoing bytes per line,
+   so splitting on `\n` alone left every Wizard command parked in its buffer forever — never
+   sent. It failed *silently and invisibly*: the page still received the relay's console
+   mirror, so it looked connected and healthy while nothing it sent arrived. The first pull
+   timed out as "config pull incomplete", so no relay was ever identified and no mesh boards
+   appeared. **Split on `\r`, `\n` and `\r\n`.** Both readers on the far end already accept
+   either (`mgmt_wsserver.h` `feed()`: `if (c == '\n' || c == '\r')`).
+9. **Intercept `flashFirmware()`, not the Wizard's buttons.** Flashing there is one branch of
+   `boardGo()` per board slot, wrapped in bookkeeping (save port, close, progress, reconnect,
+   re-share, re-push config) that is correct and not ours to reimplement. Every path funnels
+   into that one call, and the replacement **must throw on failure** — `boardGo()` uses the
+   exception as its only failure signal, so returning quietly makes it report success and then
+   push config at a board that never got new firmware.
 
 ## Firmware counterpart
 
@@ -148,10 +201,21 @@ The desktop app is **not announced**. The NaviCore repo and its GitHub Pages too
 ## Verifying
 
 ```bash
-python -m py_compile src/*.py          # no test suite yet — this is the bar
+python -m py_compile src/*.py tools/*.py     # the bar for everything else
+
+# The one real test. Fake transport, real Bridge, real aiohttp, real WebSockets —
+# proves both tools can hold the link at once. No droid needed, so there is no
+# excuse for skipping it after touching Bridge or /_link.
+python tools/smoke_fanout.py
+
+# Both browser tools have no build step, so a syntax slip silently breaks all
+# event wiring. Run after editing shell.html, launcher.html or the shim.
+node C:\Users\ghulette\tools\jscheck.js src/shell.html      # inline <script> blocks
+node --check src/navilink_shim.js                           # bare .js — jscheck reads HTML only
 ```
 
-Say "compiles" and mean it; do not imply testing that did not happen.
+Everything else needs hardware. Say "compiles" and mean it; do not imply testing that did not
+happen.
 
 ## Conventions
 

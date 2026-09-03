@@ -28,6 +28,8 @@
   button:hover { background:#313c55; }
   button.primary { background:var(--accent); color:#0d1117; border-color:var(--accent); font-weight:600; }
   button:disabled { opacity:.5; cursor:default; }
+  button.pick[aria-pressed="true"] { background:var(--accent); color:#0d1117;
+                                     border-color:var(--accent); font-weight:600; }
   .bar { display:flex; gap:8px; align-items:center; }
   .bar .grow { flex:1; }
   .status { font-size:12.5px; color:var(--muted); min-height:18px; margin-top:10px; }
@@ -46,6 +48,17 @@
 <div class="card">
   <h2>Over USB</h2>
   <div id="serial"><div class="empty">looking for ports…</div></div>
+</div>
+
+<div class="card" id="openwith">
+  <h2>Open with</h2>
+  <div class="bar">
+    <button class="pick" data-view="nc">NaviCore tool</button>
+    <button class="pick" data-view="wcb">WCB Wizard</button>
+    <button class="pick" data-view="split">Side by side</button>
+    <button class="pick" data-view="sep">Separate windows</button>
+  </div>
+  <div class="empty" id="viewnote"></div>
 </div>
 
 <div class="card">
@@ -88,6 +101,86 @@ function row(dot, title, sub, onclick) {
   return d;
 }
 
+// ── Which tool(s) to open, and how ──────────────────────────────────────────
+// Four ways to arrange two tools, and no one of them is right for everyone: the
+// config tool alone is the common case, the Wizard alone is the WCB-only case,
+// side by side is what the relay makes newly worth doing (one mesh, two views),
+// and separate windows is the only answer on two monitors.
+//
+// Remembered, because it is a working style rather than a per-session decision —
+// having to re-pick it on every launch would be the annoying half of offering it.
+const VIEW_KEY = 'navilink_view';
+const VIEWS = {
+  nc:    { label: 'NaviCore tool',    note: 'The droid config tool, full window.' },
+  wcb:   { label: 'WCB Wizard',       note: 'The WCB config tool, full window. Reaches WCBs over USB, '
+                                          + 'or through a management relay over WiFi.' },
+  split: { label: 'Side by side',     note: 'Both tools in one window, with a draggable divider. '
+                                          + 'Both stay connected — the host feeds them the same link.' },
+  sep:   { label: 'Separate windows', note: 'The config tool here, the Wizard in its own window.' },
+};
+
+function currentView() {
+  try {
+    const v = localStorage.getItem(VIEW_KEY);
+    if (v && VIEWS[v]) return v;
+  } catch (_) {}
+  return 'nc';
+}
+
+function paintView() {
+  const cur = currentView();
+  for (const b of document.querySelectorAll('.pick'))
+    b.setAttribute('aria-pressed', String(b.dataset.view === cur));
+  $('viewnote').textContent = VIEWS[cur].note;
+}
+
+for (const b of document.querySelectorAll('.pick')) {
+  b.onclick = () => {
+    try { localStorage.setItem(VIEW_KEY, b.dataset.view); } catch (_) {}
+    paintView();
+  };
+}
+paintView();
+
+// Where "open the tool" actually goes. The shell handles nc/wcb/split itself;
+// "sep" opens the config tool here and asks the host for a second window for the
+// Wizard — falling back to a plain tab if there is no window backend, which is
+// the normal case under --browser.
+// Inside the shell's chooser overlay, "open the tool" means DISMISS THE OVERLAY —
+// the tools are already loaded and running behind it. Navigating this frame to
+// /_shell would nest a whole second shell inside the first, and reloading the top
+// window would throw away the very state the overlay exists to preserve (every
+// board's pulled config, which through a relay is a slow sequential re-pull).
+const IN_SHELL = (() => { try { return window.parent !== window; } catch (_) { return false; } })();
+function backToTools() {
+  window.parent.postMessage({ navilink: 'close-chooser' }, location.origin);
+}
+
+// The layout picker is the SHELL's job once the shell exists — its tabs and its
+// side-by-side toggle already do this live, with no reload. A second control for
+// the same thing here, whose only way to take effect is the page reload this
+// overlay exists to avoid, is worse than no control.
+if (IN_SHELL) $('openwith').style.display = 'none';
+
+async function openTools() {
+  if (IN_SHELL) { backToTools(); return; }
+  const view = currentView();
+  if (view === 'sep') {
+    let opened = false;
+    try {
+      const r = await fetch('/_api/open-window', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ url: '/wcb/Wizard/', title: 'WCB Wizard' }),
+      });
+      opened = !!(await r.json().catch(() => ({}))).ok;
+    } catch (_) {}
+    if (!opened) window.open('/wcb/Wizard/', '_blank');
+    location.href = '/';
+    return;
+  }
+  location.href = '/_shell?view=' + view;
+}
+
 async function connect(body, label) {
   setStatus('connecting to ' + label + '…');
   const r = await api('/_api/attach', {
@@ -95,9 +188,9 @@ async function connect(body, label) {
     body: JSON.stringify(body),
   });
   if (!r.ok) { setStatus(r.error || 'could not connect', true); return; }
-  setStatus('connected — opening the config tool…');
-  // Straight to the tool. The shim there auto-connects to whatever we just attached.
-  location.href = '/';
+  setStatus('connected — opening ' + VIEWS[currentView()].label + '…');
+  // Straight to the tool(s). The shim in each auto-connects to what we just attached.
+  openTools();
 }
 
 // ── Keep looking while a droid is still coming up ─────────────────────────
@@ -153,7 +246,12 @@ async function scanWifi() {
         el.appendChild(row(true, `${who} at ${c.host}`,
           `bridges to the mesh${c.relayId ? ` · WCB #${c.relayId}` : ''}`
           + (behind ? ` · sees ${behind}` : ' · no boards seen yet'),
-          () => connect({kind:'ws', host:c.host, role:'relay', ssid:netSsid}, c.host)));
+          // relayId rides along: the Wizard files a relay under its DEVICE_ID
+          // rather than the slot it lands on, and needs the number to route the
+          // mesh boards through it. Discovery already read it from the WDP
+          // self-row, so pass it on rather than making the page rediscover it.
+          () => connect({kind:'ws', host:c.host, role:'relay', ssid:netSsid,
+                         relayId: c.relayId ? parseInt(c.relayId) : undefined}, c.host)));
       } else if (c.routable) {
         // The adapter is fine and something IS there — very likely a board
         // mid-boot, so tell watchForDroid() to keep looking.
@@ -278,34 +376,48 @@ async function scan() {
   offerOfflineIfEmpty();
 }
 
+// One line per bundled tool. Both age independently — they come from different
+// repos with different release cadences — so a single combined verdict would hide
+// whichever one happens to be current behind whichever one is not.
+function uiLine(name, v) {
+  if (!v || !v.bundled) return `no ${name} bundled`;
+  if (!v.checked) {
+    // "offline" was the only story this told, and on a stock macOS Python it was
+    // the wrong one — the box was online and simply could not verify a
+    // certificate. Show the first line, keep the fix in the tooltip.
+    const why = (v.reason || '').split('\n')[0].trim();
+    return `${name} ${v.bundled} — ${why ? 'cannot compare: ' + why : 'offline, cannot compare'}`;
+  }
+  if (v.stale) return `${name} <b>${v.bundled}</b> — <span class="stale">update available (${v.published})</span>`;
+  return `${name} ${v.bundled} — up to date`;
+}
+
 async function checkUi() {
   try {
     const v = await api('/_api/webui-version');
-    if (!v.bundled) { $('uiver').textContent = 'no config tool bundled'; return; }
-    if (!v.checked)  {
-      // "offline" was the only story this told, and on a stock macOS Python it was
-      // the wrong one — the box was online and simply could not verify a
-      // certificate. Show the first line, keep the fix in the tooltip.
-      const why = (v.reason || '').split('\n')[0].trim();
-      $('uiver').textContent = `config tool ${v.bundled} — ${why ? 'cannot compare: ' + why : 'offline, cannot compare'}`;
-      $('uiver').title = v.reason || '';
-      return;
-    }
-    if (v.stale) {
-      $('uiver').innerHTML = `config tool <b>${v.bundled}</b> — <span class="stale">update available (${v.published})</span>`;
-    } else {
-      $('uiver').textContent = `config tool ${v.bundled} — up to date`;
-    }
-  } catch (e) { $('uiver').textContent = 'could not check the tool version'; }
+    // wcb is absent when an OLD host serves this NEW page — a NaviLink left
+    // running across an update. Treat it as "not bundled" rather than throwing,
+    // which would blank the NaviCore line too and hide both answers at once.
+    const w = v.wcb || null;
+    $('uiver').innerHTML = uiLine('config tool', v)
+                         + '<br>' + uiLine('WCB Wizard', w);
+    $('uiver').title = [v.reason, w && w.reason].filter(Boolean).join('\n\n');
+  } catch (e) { $('uiver').textContent = 'could not check the tool versions'; }
 }
 
 $('rescan').onclick = () => { scan(); checkUi(); };
 $('update').onclick = async () => {
   $('update').disabled = true;
-  setStatus('downloading the latest config tool…');
+  setStatus('downloading the latest config tool and Wizard…');
   try {
+    // No ?tool=, so the host updates both. Each is its own atomic swap, so a
+    // partial result is real and reported: r.version and r.wcbVersion say what
+    // actually landed even when the overall run failed.
     const r = await api('/_api/update-webui', {method: 'POST'});
-    setStatus(r.ok ? `updated to ${r.version}` : (r.error || 'update failed'), !r.ok);
+    const got = [r.version && `config tool ${r.version}`,
+                 r.wcbVersion && `Wizard ${r.wcbVersion}`].filter(Boolean).join(', ');
+    setStatus(r.ok ? (got ? 'updated — ' + got : 'updated')
+                   : ((r.error || 'update failed') + (got ? ` (now: ${got})` : '')), !r.ok);
   } catch (e) { setStatus('update failed: ' + e.message, true); }
   $('update').disabled = false;
   checkUi();
@@ -319,13 +431,13 @@ async function showBackIfConnected() {
     const st = await api('/_api/status');
     if (st.attached) {
       $('back').style.display = '';
-      $('back').onclick = () => { location.href = '/'; };
+      $('back').onclick = openTools;
       setStatus('currently on ' + st.target + ' — pick another, or go back');
     }
   } catch (e) { /* nothing attached, or the host is starting: leave it hidden */ }
 }
 
-$('back').onclick = () => { location.href = '/'; };
+$('back').onclick = openTools;
 
 // THE CHOOSER MUST NOT BE A DEAD END.
 //
@@ -339,7 +451,7 @@ $('back').onclick = () => { location.href = '/'; };
 // deliberately does nothing, and watchLink() likewise stays quiet. The tool comes
 // up disconnected, which is exactly right. Come back here from the status line
 // when a droid is available.
-$('offline').onclick = () => { location.href = '/'; };
+$('offline').onclick = openTools;
 
 // If a scan finds nothing, point at that button rather than leaving the user
 // staring at two empty lists wondering whether the app is broken.

@@ -19,3 +19,8 @@ src/webui/
 logs/
 navilink_config.json
 src/webui.prev/
+
+# Bundled copy of the WCB Wizard — same rule as src/webui/ above. The public WCB
+# repo is the single source of truth; fetched with tools/fetch_webui.py --tool wcb.
+src/webui_wcb/
+src/webui_wcb.prev/
