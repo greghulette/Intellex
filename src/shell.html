@@ -24,10 +24,10 @@
   of them. Through the relay, the NaviCore tool and the Wizard really are two views
   of one mesh, so seeing them side by side is the honest arrangement.
 
-  LAZY. The second frame is not loaded until it is first shown. A user who only
-  ever wants the config tool should not pay for the Wizard's ~1 MB, and — more to
-  the point — should not have a second WebSocket on the droid link for a pane they
-  never opened.
+  BOTH ARE PRELOADED. Connecting and pulling is the slow part — through a relay the
+  Wizard's pull is a request per board, answered sequentially over the mesh — so
+  loading the hidden pane up front is what makes clicking its tab instant. The cost
+  is a second WebSocket on the droid link, which the host is built to fan out to.
 -->
 <style>
   :root {
@@ -79,7 +79,7 @@
 <div id="bar">
   <span class="brand">NaviLink</span>
   <button id="t-nc"  aria-pressed="false">NaviCore</button>
-  <button id="t-wcb" aria-pressed="false">WCB Wizard</button>
+  <button id="t-wcb" aria-pressed="false">WCB</button>
   <button id="t-split" aria-pressed="false" title="Show both tools side by side">Side by side</button>
   <span class="grow"></span>
   <button id="t-win" title="Open the tool that is not shown here in its own window">New window</button>
@@ -112,16 +112,18 @@
     return 'nc';
   }
 
-  // ── Frames are created on FIRST show and never destroyed ──────────────────
-  // Never destroyed because removing an iframe kills its page: the tool's
-  // connection, its pulled config, its terminal scrollback, everything. Switching
-  // tabs must not throw away work, so hiding is display:none and nothing more.
+  // ── Hiding a pane never destroys it ───────────────────────────────────────
+  // Removing an iframe kills its page: the tool's connection, its pulled config,
+  // its terminal scrollback, everything. Switching tabs must not throw away work,
+  // so hiding is display:none and nothing more. The ONE place a frame is removed
+  // is "New window", where the tool is being moved rather than closed.
   //
   // The cost of keeping it alive is one WebSocket on the droid link, which the
   // host is built to fan out to. The cost of not doing it is losing an unsaved
   // config by clicking the wrong tab, which is not recoverable.
   const made = {};
   function ensure(which) {
+    movedOut.delete(which);      // an explicit request wins over "it went to a window"
     if (made[which]) return;
     made[which] = true;
     const f = document.createElement('iframe');
@@ -131,6 +133,31 @@
     // host from this origin. A sandbox attribute here would break the shim.
     f.setAttribute('title', which === 'nc' ? 'NaviCore config tool' : 'WCB Wizard');
     $(which === 'nc' ? 'p-nc' : 'p-wcb').appendChild(f);
+  }
+
+  // ── Preload the pane you are not looking at ───────────────────────────────
+  // Connecting and pulling is the slow part, especially for the Wizard: through a
+  // relay it is a config request per board, answered sequentially over the mesh.
+  // Doing that only when you click the tab means every first click waits for it.
+  //
+  // So load both up front and leave the hidden one running. It is already the case
+  // that a hidden pane keeps its state (frames are never destroyed), so this only
+  // changes WHEN the work happens, not what it costs overall.
+  //
+  // STAGGERED, and the visible pane goes first. Both tools connect and start
+  // pulling the moment they load, and through a relay those pulls contend for one
+  // mesh — a background pane racing the pane you are watching would make the
+  // visible one slower, which is the opposite of the point. A few seconds is
+  // enough for the front tool to get its own connect and first pull away.
+  // A tool handed to its own window must NOT be quietly recreated here — that
+  // would put it back to two instances and two pulls, which is the thing moving it
+  // was meant to avoid. An explicit tab click still brings it back (see ensure).
+  const movedOut = new Set();
+  const PRELOAD_DELAY_MS = 4000;
+  function preloadOthers() {
+    setTimeout(() => {
+      for (const w of ['nc', 'wcb']) if (!movedOut.has(w)) ensure(w);
+    }, PRELOAD_DELAY_MS);
   }
 
   function apply(view) {
@@ -274,21 +301,50 @@
   // real second app window is far better than window.open(), which in a webview
   // may open the system browser or be blocked outright. Falls back when the host
   // has no window backend (running under --browser, or plain `python src/host.py`).
+  // ── Why a new window re-pulls, and what is done about it ──────────────────
+  // A window is a separate DOCUMENT. The pulled configs live in the tool's own
+  // page memory (boardConfigs / boardBaselines), and nothing carries JS state
+  // across documents — so the new window connects and pulls like any fresh start.
+  //
+  // Caching them across documents was considered and rejected. The Wizard has no
+  // persistence of its own, so we would be inventing one: writing configs to
+  // storage and replaying them into a page the tool believes it pulled. Get that
+  // subtly wrong and the next Push diffs against a baseline that never came off
+  // the board — which is exactly the damage boardPull's "config pull incomplete"
+  // guard exists to prevent. A slow, correct pull beats a fast, possibly-stale one.
+  //
+  // What IS worth avoiding is pulling TWICE. This used to leave the tool running in
+  // the shell and open a second copy in a window: two instances, two sockets on the
+  // droid link, and both pulling the same boards over the same mesh. So MOVE it
+  // instead — hand the tool to the window and drop the shell's pane. One instance,
+  // one pull, which is what "open it in its own window" ought to mean.
   $('t-win').onclick = async () => {
     const front = document.body.classList.contains('split') ? 'nc'
                 : ($('t-wcb').getAttribute('aria-pressed') === 'true' ? 'wcb' : 'nc');
     const other = front === 'nc' ? 'wcb' : 'nc';
     const url = SRC[other];
+    let opened = false;
     try {
       const r = await fetch('/_api/open-window', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, title: other === 'nc' ? 'NaviCore' : 'WCB Wizard' }),
+        body: JSON.stringify({ url, title: other === 'nc' ? 'NaviCore' : 'WCB' }),
       });
-      const j = await r.json().catch(() => ({}));
-      if (j && j.ok) return;
-    } catch (_) { /* fall through */ }
-    window.open(url, '_blank');
+      opened = !!(await r.json().catch(() => ({}))).ok;
+    } catch (_) { /* fall through to window.open */ }
+    if (!opened) opened = !!window.open(url, '_blank');
+    if (!opened) return;
+
+    // Hand it over: tear down the shell's copy so it is not connected twice, and
+    // show whatever is left. Destroying the frame is safe HERE specifically —
+    // everywhere else in this file frames are kept alive because hiding must not
+    // lose work, but here the tool is not being closed, it is being moved.
+    const pane = $(other === 'nc' ? 'p-nc' : 'p-wcb');
+    const f = pane.querySelector('iframe');
+    if (f) f.remove();
+    made[other] = false;
+    movedOut.add(other);
+    apply(front);
   };
 
   // ── The connection, and the way to change it ──────────────────────────────
@@ -364,5 +420,6 @@
   setInterval(refresh, 2000);
 
   apply(wanted());
+  preloadOthers();
 })();
 </script>

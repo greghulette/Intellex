@@ -32,6 +32,35 @@ import urllib.error
 import urllib.request
 
 import certs
+import fwcache
+
+
+def _no_network(e: BaseException) -> bool:
+    """Is this "there is no network" rather than "the network misbehaved"?
+
+    Worth telling apart because the retry loop below is built for GitHub's
+    throttles -- four attempts with a growing backoff, ~9 s in all. That is right
+    for a 429 and completely wrong on a droid's SoftAP, where there is no route to
+    GitHub and never will be: every one of the ~10 firmware files would burn its
+    full backoff before falling back to cache, turning an offline flash into
+    minutes of waiting for a foregone conclusion. Measured at over two minutes for
+    one full set.
+
+    A timeout is deliberately NOT in here: that really can be transient, and it is
+    the case the backoff exists for.
+    """
+    import errno
+    import socket
+    reason = getattr(e, "reason", e)
+    if isinstance(reason, socket.gaierror):
+        return True                      # DNS did not resolve -- nothing is up
+    if isinstance(reason, socket.timeout) or isinstance(reason, TimeoutError):
+        return False
+    if isinstance(reason, OSError) and reason.errno in (
+            errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
+            errno.ECONNREFUSED, errno.ECONNRESET, errno.EHOSTDOWN):
+        return True
+    return False
 
 # ── Firmware source ─────────────────────────────────────────────────────────
 # Mirrors flasher.js exactly. If that file's constants change, these must too --
@@ -103,6 +132,8 @@ def _get(url: str, log, attempts: int = 4, timeout: float = 60.0) -> bytes:
             last = e
             if certs.is_cert_error(e):
                 break                      # retrying will not grow a CA store
+            if _no_network(e):
+                break                      # offline: fail fast so the cache is reached
             if i < attempts - 1:
                 time.sleep(1.5 * (i + 1))
                 continue
@@ -114,7 +145,17 @@ def _get(url: str, log, attempts: int = 4, timeout: float = 60.0) -> bytes:
 def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dict]:
     url = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
            f"/contents/{GITHUB_BIN_PATH}?ref={branch}")
-    raw = _get(url, log)
+    # Offline, fall back to the listing we kept last time we could reach GitHub.
+    # Its download_url values are dead, which is fine: download() below tries the
+    # network, fails, and reads the bytes cached under the same filename.
+    try:
+        raw = _get(url, log)
+        fwcache.store_listing(fwcache.NAVICORE, raw)
+    except FlashError:
+        raw = fwcache.load_listing(fwcache.NAVICORE)
+        if raw is None:
+            raise
+        log("  offline - using the cached firmware listing")
     try:
         files = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -155,10 +196,24 @@ def fetch_images(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dict
     version = APP_RE.match(app_entry["name"]).group(1)
 
     def download(entry):
-        log(f"Found: {entry['name']}")
-        data = _get(entry["download_url"], log)
+        """Fetch an image, keeping a copy -- and using that copy when offline.
+
+        The cache is what makes the whole update path work on a droid's AP, where
+        there is no route to GitHub by definition. See src/fwcache.py.
+        """
+        name = entry["name"]
+        log(f"Found: {name}")
+        try:
+            data = _get(entry["download_url"], log)
+        except FlashError:
+            cached = fwcache.load(fwcache.NAVICORE, name)
+            if cached is None:
+                raise
+            log(f"  offline - using the cached copy of {name}")
+            return cached
         if not data:
-            raise FlashError(f"{entry['name']} is empty")
+            raise FlashError(f"{name} is empty")
+        fwcache.store(fwcache.NAVICORE, name, data)
         return data
 
     images = [{"address": ADDR_APP, "data": download(app_entry), "name": app_entry["name"]}]

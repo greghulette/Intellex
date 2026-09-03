@@ -32,6 +32,7 @@ import tempfile
 from typing import Optional
 
 import certs
+import fwcache
 from flash import FlashError, _esptool_argv, _get, _PCT_RE
 
 # ── Firmware source ─────────────────────────────────────────────────────────
@@ -80,7 +81,17 @@ def _app_re(binary_type: str) -> re.Pattern:
 def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dict]:
     url = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
            f"/contents/{GITHUB_BIN_PATH}?ref={branch}")
-    raw = _get(url, log)
+    # Offline, fall back to the listing we kept last time we could reach GitHub.
+    # Its download_url values are dead, which is fine: download() below tries the
+    # network, fails, and reads the bytes cached under the same filename.
+    try:
+        raw = _get(url, log)
+        fwcache.store_listing(fwcache.WCB, raw)
+    except FlashError:
+        raw = fwcache.load_listing(fwcache.WCB)
+        if raw is None:
+            raise
+        log("  offline - using the cached firmware listing")
     try:
         files = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -139,10 +150,24 @@ def fetch_images(binary_type: str, flash_mb: Optional[int],
     log(f"Build {version} ({binary_type})")
 
     def download(entry) -> bytes:
-        log(f"Found: {entry['name']}")
-        data = _get(entry["download_url"], log)
+        """Fetch an image, keeping a copy -- and using that copy when offline.
+
+        Same reason as flash.py: on the droid's own AP there is no route to
+        GitHub, which is exactly when a WCB most often needs updating.
+        """
+        name = entry["name"]
+        log(f"Found: {name}")
+        try:
+            data = _get(entry["download_url"], log)
+        except FlashError:
+            cached = fwcache.load(fwcache.WCB, name)
+            if cached is None:
+                raise
+            log(f"  offline - using the cached copy of {name}")
+            return cached
         if not data:
-            raise FlashError(f"{entry['name']} is empty")
+            raise FlashError(f"{name} is empty")
+        fwcache.store(fwcache.WCB, name, data)
         return data
 
     app = {"address": ADDR_APP, "data": download(app_entry), "name": app_entry["name"]}

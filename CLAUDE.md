@@ -123,8 +123,9 @@ Source: `https://greghulette.github.io/NaviCore/config_tool/`. Per-branch previe
 plus the sibling `Images/`. Its version stamp is **`UI_VERSION` in `app.js`**, not a footer
 element — the WCB pre-commit hook writes it, so it plays the same role `footer-dtg` does.
 Source: `https://greghulette.github.io/Wireless_Communication_Board-WCB/Wizard/`, with the same
-`/dev/<branch>/Wizard/` preview channel. Firmware binaries are deliberately **not** bundled —
-both `flasher.js` and `src/wcb_flash.py` pull them from the GitHub Contents API at flash time.
+`/dev/<branch>/Wizard/` preview channel. Firmware binaries are **not** part of a tool update —
+they are a separate thing on a separate cadence, fetched by `tools/fetch_firmware.py` and kept
+locally so flashing works with no network (see [§ Offline](#offline-is-the-normal-case-not-the-edge-case)).
 
 Updates must be **atomic and revertible**: download to a temp dir, verify, swap, and keep the
 bundled copy permanently as a fallback. A bad pull otherwise leaves a broken UI and no way back,
@@ -175,6 +176,40 @@ one failing offline must not roll back the other.
    exception as its only failure signal, so returning quietly makes it report success and then
    push config at a board that never got new firmware.
 
+## Offline is the normal case, not the edge case
+
+The workflow this app is built around: **get everything current while you have a
+network, disconnect, join the droid's AP, and configure the fleet from there.** On that
+AP there is no route to GitHub — so anything that reaches for the internet at the moment
+of use is broken by design.
+
+- **Both flashers cache every image they download** (`src/fwcache.py`), and fall back to
+  the cache when the network is gone. `tools/fetch_firmware.py` fills it deliberately —
+  both WCB families *and* both S3 flash sizes, because which one a board needs is only
+  known once esptool has answered, and that happens offline.
+- **The GitHub file listing is cached too.** Caching only the images is not enough: both
+  flashers call the Contents API *first* to discover what exists, and that call fails
+  before any download is attempted — so the cache could never be reached.
+- **`_no_network()` in `flash.py` fails fast.** The retry loop is built for GitHub's
+  throttles (4 attempts, ~9 s). Offline that is pure waste: measured at **over two
+  minutes** for one firmware set before falling back. A DNS or no-route error breaks out
+  immediately; a *timeout* still retries, because that really can be transient.
+
+## Frozen builds write somewhere else
+
+`src/paths.py` resolves every updatable directory (`webui`, `webui_wcb`, `firmware`) to
+**the user data dir if a copy is there, else what shipped inside the app**.
+
+A PyInstaller one-file build unpacks to a temp directory that is deleted on exit, so an
+update written "beside the app" is gone the moment it closes — silently, with the button
+reporting success. Reads prefer the user copy; the bundled copy is the permanent
+fallback, which is what makes a bad update recoverable by deleting one directory.
+
+**A frozen build has no python and no `tools/` directory.** Anything that shells out to a
+script must re-invoke the app with a sentinel that `app.py` intercepts before startup —
+`--run-esptool`, `--run-fetch-webui`, `--run-fetch-firmware`. Adding a fourth follows the
+same pattern; calling `sys.executable` with a script path does not work.
+
 ## Firmware counterpart
 
 The droid side is `wifiEnabled` / `wifiSsid` / `wifiPassword` in `NaviCore/rc_config.h`, off by
@@ -202,6 +237,11 @@ The desktop app is **not announced**. The NaviCore repo and its GitHub Pages too
 
 ```bash
 python -m py_compile src/*.py tools/*.py     # the bar for everything else
+
+# Packaging. Fetches both tools AND the firmware cache first, then builds.
+scripts\build-windows.bat                    # -> dist\NaviLink.exe
+scripts/build-macos.command                  # -> dist/NaviLink.app + .dmg
+powershell -File scripts\install-windows.ps1 # Start Menu shortcut
 
 # The one real test. Fake transport, real Bridge, real aiohttp, real WebSockets —
 # proves both tools can hold the link at once. No droid needed, so there is no

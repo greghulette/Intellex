@@ -55,7 +55,9 @@ from typing import Optional
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import certs                                             # noqa: E402
+import paths                                             # noqa: E402
 import flash                                             # noqa: E402
+import fwcache                                           # noqa: E402
 import wcb_flash                                         # noqa: E402
 
 try:
@@ -79,7 +81,9 @@ from serial_transport import SerialTransport             # noqa: E402
 from ws_transport import WebSocketTransport              # noqa: E402
 import discover                                          # noqa: E402
 
-WEBUI_DIR = pathlib.Path(__file__).resolve().parent / "webui"
+# Resolved, not hard-coded: a frozen app serves the UPDATED copy from the user
+# data dir when one exists, and the shipped copy otherwise. See src/paths.py.
+WEBUI_DIR = paths.data_dir("webui")
 
 # The WCB Wizard, bundled the same way and for the same reasons as the NaviCore
 # tool: a copy, never a fork.
@@ -94,7 +98,7 @@ WEBUI_DIR = pathlib.Path(__file__).resolve().parent / "webui"
 # It also keeps the two tools' images apart. Both ship a qr-code.png and an
 # r2logo.png; a single flat /Images/ would have had one silently overwrite the
 # other depending on which update ran last.
-WEBUI_WCB_DIR = pathlib.Path(__file__).resolve().parent / "webui_wcb"
+WEBUI_WCB_DIR = paths.data_dir("webui_wcb")
 WCB_INDEX = WEBUI_WCB_DIR / "Wizard" / "index.html"
 
 DEFAULT_PORT = 8765
@@ -501,8 +505,49 @@ async def api_webui_version(_req: web.Request) -> web.Response:
     })
 
 
-LAUNCHER_FILE = pathlib.Path(__file__).resolve().parent / "launcher.html"
-SHELL_FILE = pathlib.Path(__file__).resolve().parent / "shell.html"
+async def api_firmware(_req: web.Request) -> web.Response:
+    """What firmware is cached locally, for the launcher to show."""
+    return web.json_response(fwcache.summary())
+
+
+async def api_update_firmware(_req: web.Request) -> web.Response:
+    """Pre-download every firmware image so a later flash needs no network.
+
+    THE POINT IS THE ORDER OF OPERATIONS. Update everything while you have a
+    network, then disconnect and join the droid's AP -- where there is no route to
+    GitHub and both flashers would otherwise have nothing to write. Flashing while
+    online caches as a side effect; this fills the set deliberately, including the
+    WCB targets and flash sizes you did not happen to flash today.
+
+    Same frozen-build reasoning as the tool update: re-invoke ourselves rather
+    than looking for a python and a tools/ directory that are not there.
+    """
+    import subprocess
+    if getattr(sys, "frozen", False):
+        argv = [sys.executable, "--run-fetch-firmware"]
+    else:
+        script = pathlib.Path(__file__).resolve().parent.parent / "tools" / "fetch_firmware.py"
+        argv = [sys.executable, str(script)]
+
+    def run():
+        return subprocess.run(argv, capture_output=True, text=True, timeout=900)
+
+    try:
+        r = await asyncio.to_thread(run)
+    except Exception as e:                    # noqa: BLE001
+        return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
+    # A partial result is real and worth reporting: a cached NaviCore set is still
+    # useful when the WCB fetch was rate-limited, so send what landed either way.
+    return web.json_response({
+        "ok": r.returncode == 0,
+        "error": "" if r.returncode == 0 else (r.stdout or r.stderr or "fetch failed").strip()[-300:],
+        "cached": fwcache.summary(),
+        "log": (r.stdout or "").strip()[-600:],
+    })
+
+
+LAUNCHER_FILE = paths.BUNDLE_DIR / "launcher.html"
+SHELL_FILE = paths.BUNDLE_DIR / "shell.html"
 
 
 async def launcher(_req: web.Request) -> web.StreamResponse:
@@ -579,11 +624,25 @@ async def api_update_webui(req: web.Request) -> web.Response:
     if tool not in ("navicore", "wcb", "all"):
         return web.json_response({"ok": False, "error": "tool must be navicore|wcb|all"},
                                  status=400)
-    script = pathlib.Path(__file__).resolve().parent.parent / "tools" / "fetch_webui.py"
+
+    # HOW TO INVOKE THE FETCHER, frozen or not. Run from source it is a script and
+    # sys.executable is python. Frozen there is no python and no tools/ directory:
+    # sys.executable IS this app. So re-invoke ourselves with a sentinel that
+    # app.py intercepts before anything starts -- the same trick flash.py uses for
+    # esptool (--run-esptool), and for the same reason.
+    #
+    # Still a subprocess either way rather than an in-process import: the fetcher
+    # writes to stdout and returns an exit code, and capturing a module's prints
+    # from a worker thread means redirecting stdout process-wide, which would
+    # swallow output from everything else running at the time.
+    if getattr(sys, "frozen", False):
+        argv = [sys.executable, "--run-fetch-webui", "--tool", tool]
+    else:
+        script = pathlib.Path(__file__).resolve().parent.parent / "tools" / "fetch_webui.py"
+        argv = [sys.executable, str(script), "--tool", tool]
 
     def run():
-        return subprocess.run([sys.executable, str(script), "--tool", tool],
-                              capture_output=True, text=True, timeout=600)
+        return subprocess.run(argv, capture_output=True, text=True, timeout=600)
 
     try:
         r = await asyncio.to_thread(run)
@@ -948,7 +1007,7 @@ async def ws_link(req: web.Request) -> web.WebSocketResponse:
 
 
 # ── static UI ───────────────────────────────────────────────────────────────────
-SHIM_FILE = pathlib.Path(__file__).resolve().parent / "navilink_shim.js"
+SHIM_FILE = paths.BUNDLE_DIR / "navilink_shim.js"
 SHIM_TAG = '<script src="/_navilink.js"></script>'
 
 
@@ -1262,6 +1321,8 @@ def build_app() -> web.Application:
         web.get("/_api/status", api_status),
         web.get("/_api/discover", api_discover),
         web.get("/_api/webui-version", api_webui_version),
+        web.get("/_api/firmware", api_firmware),
+        web.post("/_api/update-firmware", api_update_firmware),
         web.post("/_api/update-webui", api_update_webui),
         web.post("/_api/flash", api_flash),
         web.post("/_api/flash-wcb", api_flash_wcb),

@@ -49,17 +49,21 @@ import urllib.request
 # installed package with a same-named file from src/.
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import certs                                                        # noqa: E402
+import paths                                                        # noqa: E402
 
 BASE = "https://greghulette.github.io/NaviCore/config_tool"
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
-WEBUI = SRC / "webui"
+# Writes go to the USER data dir in a frozen app: a one-file build unpacks
+# itself to a temp directory that is deleted on exit, so an update written
+# beside the app vanishes silently. See src/paths.py.
+WEBUI = paths.write_dir("webui")
 
 # Frozen snapshots nothing loads (docs/CONFIG_TOOL.md) -- deliberately excluded.
 ROOT_FILES = ["index.html", "flasher.js", "serial-hub.js"]
 
 # ── The WCB Wizard ──────────────────────────────────────────────────────────
 WCB_BASE  = "https://greghulette.github.io/Wireless_Communication_Board-WCB/Wizard"
-WEBUI_WCB = SRC / "webui_wcb"
+WEBUI_WCB = paths.write_dir("webui_wcb")
 
 # STAGED UNDER Wizard/, NOT AT THE ROOT. index.html reaches its logos with
 # "../Images/<name>", which on Pages resolves because /Wizard/ and /Images/ are
@@ -99,9 +103,10 @@ WCB_IMAGES = ["r2logo.png", "navicore-icon.png", "kyberLogo.png", "qr-code.png"]
 # footer-dtg plays for the NaviCore tool, so it is the honest version handle here.
 WCB_VER_RE = re.compile(r"""\bUI_VERSION\s*=\s*['"]([^'"]+)['"]""")
 
-# Firmware binaries are deliberately NOT bundled. The Wizard pulls them from the
-# GitHub Contents API at flash time (flasher.js), and so does src/wcb_flash.py,
-# so a bundled copy would be a third source of truth that ages silently.
+# Firmware binaries are not fetched HERE -- they are a different thing on a
+# different cadence, so tools/fetch_firmware.py owns them. They ARE kept locally
+# though: on a droid's SoftAP there is no route to GitHub, so without a cache the
+# whole update path is unavailable exactly when it is wanted. See src/fwcache.py.
 
 # Images live BESIDE config_tool/ in the NaviCore repo, and index.html reaches
 # them with "../Images/<name>". On Pages that resolves because the site root holds

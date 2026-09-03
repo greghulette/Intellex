@@ -147,6 +147,20 @@ def main() -> int:
         sys.argv = ["esptool"] + sys.argv[2:]
         return esptool.main(sys.argv[1:]) or 0
 
+    # Same trick, same reason, for the config-tool fetcher: a frozen build has no
+    # python to run tools/fetch_webui.py with, and no tools/ directory either. The
+    # module is bundled (see NaviLink.spec) so importing it here is the whole job.
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-fetch-webui":
+        import fetch_webui
+        sys.argv = ["fetch_webui"] + sys.argv[2:]
+        return fetch_webui.main()
+
+    # And the firmware cache, for the same reason.
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-fetch-firmware":
+        import fetch_firmware
+        sys.argv = ["fetch_firmware"] + sys.argv[2:]
+        return fetch_firmware.main()
+
     ap = argparse.ArgumentParser(description="NaviLink desktop app")
     ap.add_argument("--port", type=int, default=hostmod.DEFAULT_PORT)
     ap.add_argument("--serial", help="attach this port at launch and skip the chooser")

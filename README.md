@@ -33,6 +33,13 @@ src/assets/        app icon — the .svg comes from NaviCore; the .ico and .png
 src/certs.py       TLS trust, because a stock macOS Python has none
 src/flash.py       native esptool flashing — what the browser cannot do here
 src/wcb_flash.py   the same for a WCB: chip + flash-size detection, then write
+src/paths.py       where things live, run from source AND frozen — updates go to
+                   the user data dir, because a one-file build's own directory is
+                   a temp dir that is deleted on exit
+src/fwcache.py     local copy of every firmware image, so flashing works with no
+                   internet (join the droid's AP and there is no route to GitHub)
+src/firmware/      that cache — fetched, never committed
+NaviLink.spec      PyInstaller: one .exe on Windows, one .app/.dmg on macOS
 src/shell.html     the window that holds one or both tools (tabs / side by side)
 src/webui/         bundled NaviCore config tool — fetched, never committed
 src/webui/Images/  footer art the tool loads as "../Images/<name>" (see below)

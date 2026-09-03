@@ -1,0 +1,124 @@
+# -*- mode: python ; coding: utf-8 -*-
+#
+#  NaviLink.spec — one-file app for Windows and macOS.
+#
+#  Modelled on ESP-Flasher-Companion's spec, which is the proven pipeline for this
+#  exact stack (pyserial + esptool frozen with PyInstaller). Its collect_all calls
+#  for 'esptool' and 'serial' are here for the same reason: both reach for data
+#  files and submodules PyInstaller's static analysis does not see, and without
+#  them the app builds cleanly and then fails at the moment you try to flash.
+#
+#  WHAT IS BUNDLED AND WHAT IS NOT
+#  The two browser tools (src/webui/, src/webui_wcb/) are bundled if they are
+#  present, and they should be: run tools/fetch_webui.py --tool all before
+#  building, or the app ships with no UI and every launch has to download one.
+#  They are gitignored, so a clean clone has neither until that is run.
+#
+#  fetch_webui is bundled as a MODULE, not a data file. A frozen build has no
+#  python and no tools/ directory, so the Update button re-invokes this executable
+#  with --run-fetch-webui and app.py imports it (see the sentinel there, and the
+#  matching --run-esptool one).
+#
+#  ONE-FILE IS SAFE HERE ONLY BECAUSE UPDATES GO ELSEWHERE. A one-file build
+#  unpacks into a temp directory that is deleted on exit, so anything written
+#  "beside the app" is lost silently. src/paths.py sends updates to the user data
+#  dir instead and prefers them over the bundled copy at serve time.
+
+import os
+import sys
+from PyInstaller.utils.hooks import collect_all
+
+datas = []
+binaries = []
+hiddenimports = ['fetch_webui', 'fetch_firmware']
+
+# The tools and the firmware cache, if they have been fetched. Kept optional so a
+# build never fails on a missing bundle -- the app explains an empty one at
+# runtime far better than a PyInstaller stack trace does. Shipping the firmware
+# means a fresh install can flash a board with no network at all, which is the
+# whole point of src/fwcache.py.
+for _d in ('webui', 'webui_wcb', 'firmware'):
+    if os.path.isdir(os.path.join('src', _d)):
+        datas.append((os.path.join('src', _d), _d))
+
+# Served at runtime, so they must be real files in the bundle.
+for _f in ('launcher.html', 'shell.html', 'navilink_shim.js'):
+    datas.append((os.path.join('src', _f), '.'))
+datas.append((os.path.join('src', 'assets'), 'assets'))
+
+for _pkg in ('esptool', 'serial'):
+    _ret = collect_all(_pkg)
+    datas += _ret[0]
+    binaries += _ret[1]
+    hiddenimports += _ret[2]
+
+a = Analysis(
+    ['src/app.py'],
+    pathex=['src', 'tools'],      # 'tools' is what makes `import fetch_webui` resolve
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+pyz = PYZ(a.pure)
+
+# ── One file on Windows, one DIRECTORY on macOS ─────────────────────────────
+# Not a style choice. PyInstaller warns that onefile plus a .app bundle "don't
+# make sense (a .app bundle can not be a single file) and clashes with macOS's
+# security", and says it becomes an error in v7. A .app IS a directory, so the
+# Mac gets the onedir layout wrapped in the bundle; Windows keeps the single
+# self-contained .exe, which is what makes it trivial to copy and install.
+_common = dict(
+    name='NaviLink',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    # UPX OFF, unlike ESP-Flasher-Companion. It compresses well and it is also a
+    # reliable way to get a fresh unsigned binary flagged by SmartScreen and by
+    # several AV engines. The download is bigger; the app starts.
+    upx=False,
+    upx_exclude=[],
+    # No console window. Note app.py's _tell_user(): with no console a refusal to
+    # start (an older instance already holding the port) is otherwise completely
+    # silent, so it puts up a message box instead.
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+
+if sys.platform == 'darwin':
+    # macOS wants a .icns and there is no portable way to build one off a Mac
+    # (iconutil is macOS-only). scripts/build-macos.command generates it before
+    # calling PyInstaller; without it we still build, just with the default icon.
+    _icns = os.path.join('src', 'assets', 'navicore-icon.icns')
+    if not os.path.isfile(_icns):
+        _icns = None
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, icon=_icns, **_common)
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False,
+                   upx_exclude=[], name='NaviLink')
+    app = BUNDLE(
+        coll,
+        name='NaviLink.app',
+        icon=_icns,
+        bundle_identifier='com.greghulette.navilink',
+        info_plist={
+            'CFBundleName': 'NaviLink',
+            'CFBundleDisplayName': 'NaviLink',
+            'NSHighResolutionCapable': True,
+            # Not a background agent: it owns a window and belongs in the Dock.
+            'LSUIElement': False,
+        },
+    )
+else:
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
+              runtime_tmpdir=None,
+              icon=[os.path.join('src', 'assets', 'navicore-icon.ico')],
+              **_common)

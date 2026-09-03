@@ -24,3 +24,8 @@ src/webui.prev/
 # repo is the single source of truth; fetched with tools/fetch_webui.py --tool wcb.
 src/webui_wcb/
 src/webui_wcb.prev/
+
+# Downloaded firmware images, kept so flashing works with no internet (see
+# src/fwcache.py). Several MB, refetchable, and each file is already versioned by
+# its own name — committing them would just be a slower copy of GitHub.
+src/firmware/

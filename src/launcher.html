@@ -54,7 +54,7 @@
   <h2>Open with</h2>
   <div class="bar">
     <button class="pick" data-view="nc">NaviCore tool</button>
-    <button class="pick" data-view="wcb">WCB Wizard</button>
+    <button class="pick" data-view="wcb">WCB</button>
     <button class="pick" data-view="split">Side by side</button>
     <button class="pick" data-view="sep">Separate windows</button>
   </div>
@@ -64,10 +64,21 @@
 <div class="card">
   <div class="bar">
     <span class="grow" id="uiver">checking the config tool version…</span>
-    <button id="update">Update tool</button>
+    <button id="update">Update tools</button>
+    <button id="updatefw" title="Download every firmware image now, so flashing works later with no internet">Update firmware</button>
     <button id="rescan">Rescan</button>
     <button id="offline">Open the tool anyway</button>
     <button id="back" class="primary" style="display:none">Back to tool</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="bar">
+    <span class="grow" id="fwver">checking the firmware cache…</span>
+  </div>
+  <div class="empty">
+    Firmware is cached locally so you can flash with no internet — get everything
+    current here, then disconnect and join the droid's AP.
   </div>
 </div>
 
@@ -112,7 +123,7 @@ function row(dot, title, sub, onclick) {
 const VIEW_KEY = 'navilink_view';
 const VIEWS = {
   nc:    { label: 'NaviCore tool',    note: 'The droid config tool, full window.' },
-  wcb:   { label: 'WCB Wizard',       note: 'The WCB config tool, full window. Reaches WCBs over USB, '
+  wcb:   { label: 'WCB',              note: 'The WCB config tool, full window. Reaches WCBs over USB, '
                                           + 'or through a management relay over WiFi.' },
   split: { label: 'Side by side',     note: 'Both tools in one window, with a draggable divider. '
                                           + 'Both stay connected — the host feeds them the same link.' },
@@ -405,7 +416,39 @@ async function checkUi() {
   } catch (e) { $('uiver').textContent = 'could not check the tool versions'; }
 }
 
-$('rescan').onclick = () => { scan(); checkUi(); };
+// ── The firmware cache ──────────────────────────────────────────────────────
+// Shown because the whole point is knowing what you are CARRYING before you walk
+// away from the network. "It will download when I flash" is exactly the
+// assumption that fails on a droid's AP, where there is no route to GitHub.
+async function checkFw() {
+  try {
+    const f = await api('/_api/firmware');
+    const bits = [];
+    for (const [k, label] of [['navicore', 'NaviCore'], ['wcb', 'WCB']]) {
+      const i = f[k] || {};
+      bits.push(i.count ? `${label} ${i.newest || i.count + ' files'}`
+                        : `${label} <span class="stale">not cached</span>`);
+    }
+    $('fwver').innerHTML = 'firmware cached: ' + bits.join(' &nbsp;·&nbsp; ');
+  } catch (e) { $('fwver').textContent = 'could not read the firmware cache'; }
+}
+checkFw();
+
+$('updatefw').onclick = async () => {
+  $('updatefw').disabled = true;
+  setStatus('downloading firmware for offline use — this can take a minute…');
+  try {
+    const r = await api('/_api/update-firmware', {method: 'POST'});
+    // Partial success is real: a cached NaviCore set is still worth having when
+    // the WCB fetch was rate-limited, so report what landed either way.
+    setStatus(r.ok ? 'firmware cached — safe to go offline now'
+                   : ('firmware update incomplete: ' + (r.error || 'see the log')), !r.ok);
+  } catch (e) { setStatus('firmware update failed: ' + e.message, true); }
+  $('updatefw').disabled = false;
+  checkFw();
+};
+
+$('rescan').onclick = () => { scan(); checkUi(); checkFw(); };
 $('update').onclick = async () => {
   $('update').disabled = true;
   setStatus('downloading the latest config tool and Wizard…');
