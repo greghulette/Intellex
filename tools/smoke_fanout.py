@@ -112,6 +112,29 @@ async def main() -> int:
             ok &= check(fake.written == [b";w20,S1\n", b"?version\n"],
                         f"both pages' writes reached the transport ({fake.written})")
 
+            # 5. ORDER, under a burst. The pipe is a byte stream and each page
+            # keeps its own streaming TextDecoder, so a chunk delivered out of
+            # order desynchronises that decoder and corrupts a multi-byte
+            # character -- silently, and only for the page that got them swapped.
+            #
+            # This is what the single _pump task exists to guarantee. The previous
+            # task-per-chunk fan-out could reorder for page B whenever page A's
+            # send for chunk N parked on backpressure while its send for N+1
+            # failed fast, so "usually in order" was the strongest claim available.
+            N = 200
+            for i in range(N):
+                fake.feed(f"L{i}\n".encode())
+            got_a, got_b = [], []
+            for who, sock in ((got_a, a), (got_b, b)):
+                buf = b""
+                while buf.count(b"\n") < N:
+                    m = await asyncio.wait_for(sock.receive(), 5)
+                    buf += m.data if isinstance(m.data, bytes) else m.data.encode()
+                who.extend(buf.decode().split("\n")[:N])
+            want = [f"L{i}" for i in range(N)]
+            ok &= check(got_a == want, f"page A got all {N} chunks in order")
+            ok &= check(got_b == want, f"page B got all {N} chunks in order")
+
             # 3. THE REGRESSION. Close A; B must still hear everything.
             await a.close()
             for _ in range(50):

@@ -121,6 +121,13 @@ class Bridge:
         # mirror too. Several listeners on one droid link is the normal shape of this
         # protocol, not an abuse of it.
         self._pages: "set[web.WebSocketResponse]" = set()
+        # Chunks waiting to go out, drained in order by the single _pump task.
+        # Created on the event loop (bind_page), because an asyncio.Queue binds
+        # to the loop that makes it. Unbounded, like the task-per-chunk scheme it
+        # replaces -- dropping bytes here would desync a page's decoder, which is
+        # worse than the memory, and the only producer is one serial/WS reader.
+        self._outq: "Optional[asyncio.Queue[bytes]]" = None
+        self._pumping: bool = False
         self.target_label = ""     # human-readable label for /_api/status
         self.last_error = ""
         # What to reconnect to, and whether we should be trying. Set by attach()
@@ -153,6 +160,14 @@ class Bridge:
         with self._lock:
             self._pages.add(ws)
             self._loop = loop
+            if self._outq is None:
+                # Made HERE, not in __init__: an asyncio.Queue binds to the running
+                # loop, and __init__ runs at import time when there is none.
+                self._outq = asyncio.Queue()
+            start_pump = not self._pumping
+            self._pumping = True
+        if start_pump:
+            asyncio.ensure_future(self._pump())
 
     def unbind_page(self, ws: Optional[web.WebSocketResponse] = None) -> None:
         """Drop ONE page. Never the others.
@@ -290,31 +305,53 @@ class Bridge:
         """Called on a READER THREAD. Must not touch aiohttp directly."""
         import time as _t
         self.last_rx = _t.monotonic()     # cheap, and it gates the liveness probe
-        loop = self._loop
+        loop, q = self._loop, self._outq
+        if loop is None or q is None:
+            return
         with self._lock:
-            pages = list(self._pages)     # snapshot: the set can change under us
-        if loop is None or not pages:
-            return                    # no page attached; drop rather than buffer forever
+            if not self._pages:
+                return                # no page attached; drop rather than buffer forever
         # Bytes stay bytes all the way to the page. A str here would decode
         # per-chunk and mangle any multi-byte character split across a read.
         #
-        # EVERY page gets the SAME chunk, and gets it whole. Both tools read this
-        # link as a console mirror, so seeing each other's traffic is correct rather
-        # than leakage -- the Wizard already expects to watch mesh lines it did not
-        # ask for. What would NOT be correct is splitting the stream between them:
-        # each keeps its own streaming TextDecoder, so a chunk delivered to one page
-        # and not another desynchronises a multi-byte character for whoever missed it.
-        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._push(pages, chunk)))
+        # ONE QUEUE, ONE CONSUMER -- ordering is structural, not argued.
+        #
+        # This used to spawn a task per chunk, each looping over the pages and
+        # awaiting every send. Per page that is USUALLY in order, but not provably:
+        # if page A's send for chunk 1 parks on backpressure while its send for
+        # chunk 2 fails fast, task 2 reaches page B first and B receives 2 before 1.
+        # B then has a desynchronised streaming TextDecoder -- the exact corruption
+        # the note below is about -- caused entirely by a neighbour misbehaving.
+        # It also created an unbounded number of tasks under an OTA or config push.
+        #
+        # A single pump task consuming a FIFO cannot do that: chunk N is delivered
+        # to every page before chunk N+1 is started.
+        with contextlib.suppress(Exception):
+            loop.call_soon_threadsafe(q.put_nowait, chunk)
 
-    async def _push(self, pages: "list[web.WebSocketResponse]", chunk: bytes) -> None:
-        for ws in pages:
-            if ws.closed:
-                continue
-            # Suppressed PER PAGE. One page dying mid-send must not cost the others
-            # the rest of the chunk -- that is a decode desync for a page that is
-            # perfectly healthy, caused entirely by a neighbour going away.
-            with contextlib.suppress(Exception):
-                await ws.send_bytes(chunk)
+    async def _pump(self) -> None:
+        """Deliver each chunk to every page, in order. One task, forever."""
+        q = self._outq
+        assert q is not None
+        while True:
+            chunk = await q.get()
+            with self._lock:
+                pages = list(self._pages)     # snapshot: the set can change under us
+            # EVERY page gets the SAME chunk, and gets it whole. Both tools read this
+            # link as a console mirror, so seeing each other's traffic is correct
+            # rather than leakage -- the Wizard already expects to watch mesh lines it
+            # did not ask for. What would NOT be correct is splitting the stream:
+            # each page keeps its own streaming TextDecoder, so a chunk delivered to
+            # one and not another desynchronises a multi-byte character for whoever
+            # missed it.
+            for ws in pages:
+                if ws.closed:
+                    continue
+                # Suppressed PER PAGE. One page dying mid-send must not cost the
+                # others the rest of the chunk -- that is a decode desync for a page
+                # that is perfectly healthy, caused by a neighbour going away.
+                with contextlib.suppress(Exception):
+                    await ws.send_bytes(chunk)
 
     def _on_transport_lost(self, why: str) -> None:
         # A drop is NOT a decision to stop. Keep the target so the reconnect loop
