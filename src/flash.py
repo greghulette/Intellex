@@ -61,12 +61,31 @@ def reachable(host: str = "api.github.com", timeout: float = 3.0) -> bool:
     now = time.monotonic()
     if now - _reach_at < REACH_TTL_S:
         return _reach_ok
+
     import socket
-    try:
-        with socket.create_connection((host, 443), timeout=timeout):
-            _reach_ok = True
-    except OSError:
-        _reach_ok = False
+    import threading
+
+    # RUN IT IN A THREAD WITH A HARD DEADLINE. create_connection's timeout bounds
+    # the CONNECT, not the name lookup -- getaddrinfo takes no timeout at all and
+    # on a network whose resolver is unreachable it blocks for ~10 s regardless.
+    # Measured: a 3 s probe took 13.6 s, nearly all of it DNS.
+    #
+    # A daemon thread we stop waiting on is the way to bound wall-clock here. If
+    # it finishes late nobody is listening; the process can still exit, and the
+    # next call re-probes.
+    done: "list[bool]" = []
+
+    def probe() -> None:
+        try:
+            with socket.create_connection((host, 443), timeout=timeout):
+                done.append(True)
+        except OSError:
+            done.append(False)
+
+    t = threading.Thread(target=probe, daemon=True)
+    t.start()
+    t.join(timeout)
+    _reach_ok = bool(done and done[0])
     _reach_at = now
     return _reach_ok
 

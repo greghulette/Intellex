@@ -53,8 +53,25 @@ WCB = "wcb"
 MANIFEST = "manifest.json"
 
 
-def _read_dir() -> pathlib.Path:
-    return paths.data_dir("firmware")      # user copy if present, else bundled
+# TWO INDEPENDENT LOCATIONS, checked per (product, branch) -- NOT via
+# paths.data_dir().
+#
+# data_dir() answers "user copy if it has anything, else bundled", which is right
+# for a whole tool bundle and WRONG here. This cache is many small sets and the
+# question is always about ONE of them: a user directory holding last week's main
+# build is "non-empty", so it won a global decision and shadowed a bundled WIFI
+# set that was sitting right there. Observed as "not cached" with the files
+# present. Ask about the directory you actually want instead.
+def _dirs() -> "list[pathlib.Path]":
+    """Where to look, most-recent first. Deduped: unfrozen they are the same path."""
+    out = [paths.user_data_dir() / "firmware"] if paths.FROZEN else []
+    out.append(paths.BUNDLE_DIR / "firmware")
+    seen, uniq = set(), []
+    for d in out:
+        if d not in seen:
+            seen.add(d)
+            uniq.append(d)
+    return uniq
 
 
 def _write_dir() -> pathlib.Path:
@@ -78,7 +95,7 @@ def load(product: str, branch: str, name: str) -> Optional[bytes]:
     Checks the writable copy first and the shipped copy second, so a build
     downloaded since install wins over the one that came with the app.
     """
-    for base in (_write_dir(), _read_dir()):
+    for base in _dirs():
         f = base / _key(product, branch) / name
         if f.is_file():
             try:
@@ -134,7 +151,7 @@ def summary(branches: Optional[dict] = None) -> dict:
     for product in (NAVICORE, WCB):
         br = (branches or {}).get(product, "main")
         names = set()
-        for base in (_write_dir(), _read_dir()):
+        for base in _dirs():
             d = base / _key(product, br)
             if d.is_dir():
                 names.update(p.name for p in d.iterdir()
@@ -177,7 +194,7 @@ def store_listing(product: str, branch: str, raw: bytes) -> None:
 
 
 def load_listing(product: str, branch: str) -> Optional[bytes]:
-    for base in (_write_dir(), _read_dir()):
+    for base in _dirs():
         f = base / _key(product, branch) / LISTING
         if f.is_file():
             try:

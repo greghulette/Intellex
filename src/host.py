@@ -420,9 +420,23 @@ def _bundled_dtg() -> str:
 _published_error = ""
 
 
+# What an unreachable network should SAY. "cannot compare: URLError:" -- with
+# nothing after the colon, because URLError's str is often empty -- tells you
+# neither what went wrong nor that it is expected. On a droid's AP being unable to
+# reach Pages is the normal, correct state, and it should read that way.
+OFFLINE_NOTE = "offline - no route to github.io (normal on a droid's AP)"
+
+
 def _published_dtg() -> str:
     global _published_error
     import urllib.request
+    # ONE cheap probe instead of a 40 s timeout. On a droid's AP a connection does
+    # not fail, it times out -- and this runs at startup AND behind the launcher's
+    # version check, so without it the app takes ~80 s to show a chooser and the
+    # update buttons sit disabled through it.
+    if not flash.reachable("greghulette.github.io"):
+        _published_error = OFFLINE_NOTE
+        return ""
     try:
         with urllib.request.urlopen(
                 "https://greghulette.github.io/NaviCore/config_tool/index.html",
@@ -455,6 +469,9 @@ def _wcb_bundled_ver() -> str:
 def _wcb_published_ver() -> str:
     global _wcb_published_error
     import urllib.request
+    if not flash.reachable("greghulette.github.io"):
+        _wcb_published_error = OFFLINE_NOTE
+        return ""
     try:
         with urllib.request.urlopen(
                 "https://greghulette.github.io/Wireless_Communication_Board-WCB"
