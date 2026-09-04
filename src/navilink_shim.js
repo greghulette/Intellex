@@ -620,6 +620,51 @@
                + 'serves every page its own link');
   }
 
+  // ── Dismiss the Wizard's "Setup Wizard / Config Tool" splash ──────────────
+  // It asks which way you want to start, every single load. Inside NaviLink that
+  // question has already been answered by opening the WCB pane at all, and the
+  // shell PRELOADS that pane — so the modal appears over a tool nobody has looked
+  // at yet, and again in a second window, for a choice nobody asked to make.
+  //
+  // Answered with the tool's OWN splashGoConfig(), which is exactly what its
+  // "Config Tool" button calls — the seam the page already offers, not a reach
+  // into its internals and not an edit to index.html. There is no flag or URL
+  // parameter to do this with; showSplash() is called unconditionally at init.
+  //
+  // Config Tool, not Setup Wizard, because that is the branch for "updating an
+  // existing system" — its own words — and the guided setup is a thing to choose
+  // deliberately, never something to land in by default.
+  //
+  // NOTHING IS LOST. The header keeps its "✦ Wizard" button, so the guided setup
+  // is still one click away; only the question up front goes.
+  //
+  // Polled rather than called once: the splash is raised during the tool's own
+  // init, which can land after this shim's load handler. Watches only
+  // #splash-overlay, so a Setup Wizard the user opens deliberately (a different
+  // modal, #wizard-modal) is never touched.
+  const SPLASH_WATCH_MS = 10000;
+  let splashWatching = false;
+  function dismissWcbSplash() {
+    if (splashWatching) return;
+    splashWatching = true;
+    const until = Date.now() + SPLASH_WATCH_MS;
+    const tick = setInterval(() => {
+      const el = document.getElementById('splash-overlay');
+      if (el && el.classList.contains('open')) {
+        try {
+          if (typeof window.splashGoConfig === 'function') window.splashGoConfig();
+          else el.classList.remove('open');   // the function was renamed; still dismiss
+          console.info('[NaviLink] dismissed the Wizard start-up splash');
+        } catch (e) {
+          console.warn('[NaviLink] could not dismiss the splash:', e && e.message);
+        }
+        clearInterval(tick);
+        return;
+      }
+      if (Date.now() > until) clearInterval(tick);
+    }, 150);
+  }
+
   // What the far end is decides how the Wizard must be set up, so remember it.
   let wcbRole = '', wcbRelayId = null;
 
@@ -1057,7 +1102,14 @@
   // this only at load+400 ms leaves a window in which a connect could still go
   // through the shared hub. Idempotent, and repeated below as a backstop.
   if (IS_WCB) {
-    document.addEventListener('DOMContentLoaded', disableWcbPortSharing, { once: true });
+    document.addEventListener('DOMContentLoaded', () => {
+      disableWcbPortSharing();
+      // Started HERE rather than in the load handler below: the splash goes up
+      // during the tool's init, so waiting for load+400ms left it on screen for
+      // ~2 s -- measured -- which is a flash of a modal answering itself. The
+      // poller catches it within 150 ms of it appearing instead.
+      dismissWcbSplash();
+    }, { once: true });
   }
 
   // After load, so the tool has defined its functions and wired its UI. The delay
@@ -1065,6 +1117,7 @@
   window.addEventListener('load', () => setTimeout(() => {
     if (IS_WCB) {
       disableWcbPortSharing();   // BEFORE any connect — it wraps the connect path
+      dismissWcbSplash();        // backstop; normally already running from DOMContentLoaded
       installWcbFlash();
       autoConnectWcb();
     } else {
