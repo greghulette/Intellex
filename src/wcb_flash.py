@@ -33,6 +33,7 @@ from typing import Optional
 
 import certs
 import fwcache
+import settings
 from flash import FlashError, _esptool_argv, _get, _PCT_RE
 
 # ── Firmware source ─────────────────────────────────────────────────────────
@@ -41,7 +42,7 @@ from flash import FlashError, _esptool_argv, _get, _PCT_RE
 GITHUB_OWNER    = "greghulette"
 GITHUB_REPO     = "Wireless_Communication_Board-WCB"
 GITHUB_BIN_PATH = "Code/bin"
-BRANCH_DEFAULT  = "main"
+BRANCH_DEFAULT  = "main"        # the fallback; settings.py holds the choice
 
 # ── Flash map ───────────────────────────────────────────────────────────────
 # From flasher.js (its "Flash map" comment block and Step 3a):
@@ -86,9 +87,9 @@ def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dic
     # network, fails, and reads the bytes cached under the same filename.
     try:
         raw = _get(url, log)
-        fwcache.store_listing(fwcache.WCB, raw)
+        fwcache.store_listing(fwcache.WCB, branch, raw)
     except FlashError:
-        raw = fwcache.load_listing(fwcache.WCB)
+        raw = fwcache.load_listing(fwcache.WCB, branch)
         if raw is None:
             raise
         log("  offline - using the cached firmware listing")
@@ -160,14 +161,14 @@ def fetch_images(binary_type: str, flash_mb: Optional[int],
         try:
             data = _get(entry["download_url"], log)
         except FlashError:
-            cached = fwcache.load(fwcache.WCB, name)
+            cached = fwcache.load(fwcache.WCB, branch, name)
             if cached is None:
                 raise
-            log(f"  offline - using the cached copy of {name}")
+            log(f"  offline - using the cached {branch} copy of {name}")
             return cached
         if not data:
             raise FlashError(f"{name} is empty")
-        fwcache.store(fwcache.WCB, name, data)
+        fwcache.store(fwcache.WCB, branch, name, data)
         return data
 
     app = {"address": ADDR_APP, "data": download(app_entry), "name": app_entry["name"]}
@@ -386,13 +387,16 @@ def run_esptool(port: str, chip: str, entries: list[dict], log, progress=None,
 
 
 def flash(port: str, app_only: bool, erase_nvs: bool, log, progress=None,
-          branch: str = BRANCH_DEFAULT) -> str:
+          branch: str = "") -> str:
     """Detect, fetch and write. Returns the build flashed. Port must be free.
 
     Detection FIRST, before a single byte is downloaded. It decides the chip family
     (which images even exist) and the flash size (which S3 bootloader is safe), so
     fetching first would mean downloading a set that detection then invalidates.
     """
+    # Read HERE, not as a default argument: a default is evaluated once at import
+    # and would pin the branch for the life of the process.
+    branch = branch or settings.branch(settings.WCB)
     binary_type, flash_mb = detect(port, log)
     fw = fetch_images(binary_type, flash_mb, branch, log)
     entries = write_list(fw, app_only, erase_nvs, log)

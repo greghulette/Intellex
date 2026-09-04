@@ -58,6 +58,7 @@ import certs                                             # noqa: E402
 import paths                                             # noqa: E402
 import applog                                            # noqa: E402
 import version                                           # noqa: E402
+import settings                                          # noqa: E402
 import flash                                             # noqa: E402
 import fwcache                                           # noqa: E402
 import wcb_flash                                         # noqa: E402
@@ -541,9 +542,32 @@ async def api_log(_req: web.Request) -> web.Response:
     })
 
 
+async def api_branches(_req: web.Request) -> web.Response:
+    """Which GitHub branch each product's firmware comes from."""
+    return web.json_response(settings.branches())
+
+
+async def api_set_branch(req: web.Request) -> web.Response:
+    """Point a product at a different branch.
+
+    Per product, because working on a WCB feature branch while the droid stays on
+    released NaviCore firmware is the normal case. Validated in settings.py -- the
+    value is interpolated into a GitHub API URL.
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    product = body.get("product", "")
+    err = settings.set_branch(product, body.get("branch", ""))
+    if err:
+        return web.json_response({"ok": False, "error": err}, status=400)
+    return web.json_response({"ok": True, "branches": settings.branches()})
+
+
 async def api_firmware(_req: web.Request) -> web.Response:
     """What firmware is cached locally, for the launcher to show."""
-    return web.json_response(fwcache.summary())
+    return web.json_response(fwcache.summary(settings.branches()))
 
 
 async def api_update_firmware(_req: web.Request) -> web.Response:
@@ -577,7 +601,7 @@ async def api_update_firmware(_req: web.Request) -> web.Response:
     return web.json_response({
         "ok": r.returncode == 0,
         "error": "" if r.returncode == 0 else (r.stdout or r.stderr or "fetch failed").strip()[-300:],
-        "cached": fwcache.summary(),
+        "cached": fwcache.summary(settings.branches()),
         "log": (r.stdout or "").strip()[-600:],
     })
 
@@ -1358,6 +1382,8 @@ def build_app() -> web.Application:
         web.get("/_api/discover", api_discover),
         web.get("/_api/webui-version", api_webui_version),
         web.get("/_api/firmware", api_firmware),
+        web.get("/_api/branches", api_branches),
+        web.post("/_api/branch", api_set_branch),
         web.get("/_api/log", api_log),
         web.get("/_api/version", api_version),
         web.post("/_api/update-firmware", api_update_firmware),

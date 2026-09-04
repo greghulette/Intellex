@@ -19,6 +19,14 @@ one-file frozen build unpacks to a temp directory that is deleted on exit, so a
 cache written beside the app would evaporate. Writes go to the user data dir;
 reads prefer it and fall back to whatever shipped inside the app. See paths.py.
 
+KEYED BY BRANCH, NOT JUST PRODUCT
+Because a fallback that crosses branches is worse than no fallback at all. With a
+single directory per product, a throttled or offline fetch for a feature branch
+fell back to whatever was last cached -- and returned MAIN's images for a WIFI
+build, silently, under names that looked perfectly legitimate. Observed. A cache
+directory per (product, branch) makes that impossible: the miss is a miss, and you
+are told, instead of being handed the wrong firmware.
+
 WHAT IS AND IS NOT CHECKED
 Images are stored under their published filename, which carries the build tag
 (NaviCore_v0.2.0_022126QSEP26_ESP32S3.bin). A name is therefore a version, and a
@@ -53,14 +61,25 @@ def _write_dir() -> pathlib.Path:
     return paths.write_dir("firmware")
 
 
-def load(product: str, name: str) -> Optional[bytes]:
+def _key(product: str, branch: str) -> str:
+    """One cache directory per product AND branch.
+
+    A branch name may legitimately contain '/' ("feature/x"), which is a path
+    separator -- so flatten it rather than silently creating a nested tree that
+    the summary walk would then miss.
+    """
+    safe = (branch or "main").replace("/", "__").replace("\\", "__")
+    return f"{product}/{safe}"
+
+
+def load(product: str, branch: str, name: str) -> Optional[bytes]:
     """The cached bytes for one published filename, or None.
 
     Checks the writable copy first and the shipped copy second, so a build
     downloaded since install wins over the one that came with the app.
     """
     for base in (_write_dir(), _read_dir()):
-        f = base / product / name
+        f = base / _key(product, branch) / name
         if f.is_file():
             try:
                 return f.read_bytes()
@@ -69,7 +88,7 @@ def load(product: str, name: str) -> Optional[bytes]:
     return None
 
 
-def store(product: str, name: str, data: bytes) -> None:
+def store(product: str, branch: str, name: str, data: bytes) -> None:
     """Keep a downloaded image. Best effort -- never break a flash over a cache.
 
     Written to a temp name and renamed, so an interrupted write cannot leave a
@@ -79,24 +98,24 @@ def store(product: str, name: str, data: bytes) -> None:
     if not data:
         return
     try:
-        d = _write_dir() / product
+        d = _write_dir() / _key(product, branch)
         d.mkdir(parents=True, exist_ok=True)
         tmp = d / (name + ".part")
         tmp.write_bytes(data)
         tmp.replace(d / name)
-        _touch_manifest(product, name)
+        _touch_manifest(_key(product, branch), name)
     except OSError:
         pass
 
 
-def _touch_manifest(product: str, name: str) -> None:
+def _touch_manifest(key: str, name: str) -> None:
     d = _write_dir()
     f = d / MANIFEST
     try:
         m = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
     except (OSError, json.JSONDecodeError):
         m = {}
-    m.setdefault(product, {})[name] = int(time.time())
+    m.setdefault(key, {})[name] = int(time.time())
     try:
         d.mkdir(parents=True, exist_ok=True)
         f.write_text(json.dumps(m, indent=1), encoding="utf-8")
@@ -104,24 +123,31 @@ def _touch_manifest(product: str, name: str) -> None:
         pass
 
 
-def summary() -> dict:
-    """What is cached, for the UI. {product: {"count": n, "newest": name}}."""
+def summary(branches: Optional[dict] = None) -> dict:
+    """What is cached, for the UI. {product: {"count", "newest", "branch"}}.
+
+    Reports the CONFIGURED branch's cache, because that is the one a flash would
+    actually use -- showing a total across branches would say "cached" for a set
+    that the next flash cannot touch.
+    """
     out: dict = {}
     for product in (NAVICORE, WCB):
+        br = (branches or {}).get(product, "main")
         names = set()
         for base in (_write_dir(), _read_dir()):
-            d = base / product
+            d = base / _key(product, br)
             if d.is_dir():
                 names.update(p.name for p in d.iterdir()
                              if p.is_file() and p.suffix == ".bin")
         if not names:
-            out[product] = {"count": 0, "newest": ""}
+            out[product] = {"count": 0, "newest": "", "branch": br}
             continue
         # The app image is the interesting one -- boot/part are its companions and
         # carry the same build tag, so naming them adds nothing.
         apps = sorted(n for n in names
                       if "_boot" not in n and "_part" not in n and "bootloader" not in n)
-        out[product] = {"count": len(names), "newest": apps[-1] if apps else ""}
+        out[product] = {"count": len(names), "newest": apps[-1] if apps else "",
+                        "branch": br}
     return out
 
 
@@ -137,11 +163,11 @@ def summary() -> dict:
 LISTING = "listing.json"
 
 
-def store_listing(product: str, raw: bytes) -> None:
+def store_listing(product: str, branch: str, raw: bytes) -> None:
     if not raw:
         return
     try:
-        d = _write_dir() / product
+        d = _write_dir() / _key(product, branch)
         d.mkdir(parents=True, exist_ok=True)
         tmp = d / (LISTING + ".part")
         tmp.write_bytes(raw)
@@ -150,9 +176,9 @@ def store_listing(product: str, raw: bytes) -> None:
         pass
 
 
-def load_listing(product: str) -> Optional[bytes]:
+def load_listing(product: str, branch: str) -> Optional[bytes]:
     for base in (_write_dir(), _read_dir()):
-        f = base / product / LISTING
+        f = base / _key(product, branch) / LISTING
         if f.is_file():
             try:
                 return f.read_bytes()

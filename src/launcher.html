@@ -80,6 +80,19 @@
     Firmware is cached locally so you can flash with no internet — get everything
     current here, then disconnect and join the droid's AP.
   </div>
+  <div class="bar" style="margin-top:10px">
+    <span style="color:var(--muted);font-size:12.5px">firmware branch</span>
+    <label style="font-size:12.5px">NaviCore
+      <input id="br-nc" size="14" spellcheck="false"
+             style="font:inherit;background:#12131a;color:var(--fg);border:1px solid var(--line);
+                    border-radius:6px;padding:4px 8px;margin-left:4px"></label>
+    <label style="font-size:12.5px">WCB
+      <input id="br-wcb" size="14" spellcheck="false"
+             style="font:inherit;background:#12131a;color:var(--fg);border:1px solid var(--line);
+                    border-radius:6px;padding:4px 8px;margin-left:4px"></label>
+    <button id="br-save">Set</button>
+    <span class="grow" id="br-note"></span>
+  </div>
 </div>
 
 <div class="card">
@@ -470,6 +483,51 @@ async function checkLog() {
   } catch (e) { $('logpath').textContent = 'log location unavailable'; }
 }
 checkLog();
+
+// ── Firmware branch, per product ────────────────────────────────────────────
+// CI publishes binaries per branch, so a feature branch has a real flashable
+// build — and working on one while unable to flash it is the whole problem this
+// solves. Per product because a WCB feature branch alongside released NaviCore
+// firmware is the normal case.
+//
+// A non-main branch is called out in ORANGE, deliberately. Flashing a branch
+// build is a thing you should only ever do on purpose, and a setting that
+// persists silently is exactly how you end up flashing one months later without
+// remembering you set it.
+async function checkBranches() {
+  try {
+    const b = await api('/_api/branches');
+    $('br-nc').value = b.navicore || 'main';
+    $('br-wcb').value = b.wcb || 'main';
+    const off = [];
+    if ((b.navicore || 'main') !== 'main') off.push('NaviCore → ' + b.navicore);
+    if ((b.wcb || 'main') !== 'main') off.push('WCB → ' + b.wcb);
+    $('br-note').innerHTML = off.length
+      ? '<span class="stale">not on main: ' + off.join(', ') + '</span>'
+      : '';
+  } catch (e) { $('br-note').textContent = 'could not read the branch setting'; }
+}
+checkBranches();
+
+$('br-save').onclick = async () => {
+  $('br-save').disabled = true;
+  try {
+    for (const [product, id] of [['navicore', 'br-nc'], ['wcb', 'br-wcb']]) {
+      const r = await api('/_api/branch', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ product, branch: $(id).value.trim() }),
+      });
+      if (!r.ok) { setStatus(r.error || 'could not set the branch', true); break; }
+    }
+    // The cache still holds whatever was fetched before, and its filenames carry
+    // the old branch — so say the quiet part out loud rather than letting an
+    // offline flash quietly use the previous branch's images.
+    setStatus('branch set — press Update firmware to cache the new branch build');
+  } catch (e) { setStatus('could not set the branch: ' + e.message, true); }
+  $('br-save').disabled = false;
+  checkBranches();
+  checkFw();
+};
 
 // Which build this is. Shown because a frozen app is copied around by hand and a
 // stale one behaves like the code that built it, with nothing on screen to say so

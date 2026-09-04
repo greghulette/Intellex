@@ -33,6 +33,7 @@ import urllib.request
 
 import certs
 import fwcache
+import settings
 
 
 def _no_network(e: BaseException) -> bool:
@@ -68,7 +69,7 @@ def _no_network(e: BaseException) -> bool:
 GITHUB_OWNER    = "greghulette"
 GITHUB_REPO     = "NaviCore"
 GITHUB_BIN_PATH = "firmware"
-BRANCH_DEFAULT  = "main"
+BRANCH_DEFAULT  = "main"        # the fallback; settings.py holds the choice
 
 # Anchored, never a bare suffix match. firmware/ is a SHARED directory: it also
 # holds another product's images (RC-Controller_*_ESP32S3*.bin) and may hold older
@@ -150,9 +151,9 @@ def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dic
     # network, fails, and reads the bytes cached under the same filename.
     try:
         raw = _get(url, log)
-        fwcache.store_listing(fwcache.NAVICORE, raw)
+        fwcache.store_listing(fwcache.NAVICORE, branch, raw)
     except FlashError:
-        raw = fwcache.load_listing(fwcache.NAVICORE)
+        raw = fwcache.load_listing(fwcache.NAVICORE, branch)
         if raw is None:
             raise
         log("  offline - using the cached firmware listing")
@@ -206,14 +207,14 @@ def fetch_images(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dict
         try:
             data = _get(entry["download_url"], log)
         except FlashError:
-            cached = fwcache.load(fwcache.NAVICORE, name)
+            cached = fwcache.load(fwcache.NAVICORE, branch, name)
             if cached is None:
                 raise
-            log(f"  offline - using the cached copy of {name}")
+            log(f"  offline - using the cached {branch} copy of {name}")
             return cached
         if not data:
             raise FlashError(f"{name} is empty")
-        fwcache.store(fwcache.NAVICORE, name, data)
+        fwcache.store(fwcache.NAVICORE, branch, name, data)
         return data
 
     images = [{"address": ADDR_APP, "data": download(app_entry), "name": app_entry["name"]}]
@@ -337,8 +338,14 @@ def run_esptool(port: str, entries: list[dict], log, progress=None,
 
 
 def flash(port: str, erase_nvs: bool, log, progress=None,
-          branch: str = BRANCH_DEFAULT) -> str:
-    """Fetch and write. Returns the version flashed. The port must already be free."""
+          branch: str = "") -> str:
+    """Fetch and write. Returns the version flashed. The port must already be free.
+
+    An empty branch means "whatever is configured", read HERE rather than bound as
+    a default argument -- a default is evaluated once at import and would pin the
+    branch for the life of the process, so changing it would need a restart.
+    """
+    branch = branch or settings.branch(settings.NAVICORE)
     images = fetch_images(branch, log)
     version = APP_RE.match(images[-1]["name"]).group(1)
     entries = write_list(images, erase_nvs, log)

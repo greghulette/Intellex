@@ -183,6 +183,11 @@ network, disconnect, join the droid's AP, and configure the fleet from there.** 
 AP there is no route to GitHub — so anything that reaches for the internet at the moment
 of use is broken by design.
 
+- **The cache is keyed by (product, BRANCH), not product alone.** CI publishes binaries
+  per branch, so a feature branch has a real flashable build — and a fallback that
+  crosses branches is worse than no fallback. Keyed by product only, a throttled fetch
+  for `WIFI` silently returned **main's** images under legitimate-looking names.
+  Observed. Now a miss is a miss and says so.
 - **Both flashers cache every image they download** (`src/fwcache.py`), and fall back to
   the cache when the network is gone. `tools/fetch_firmware.py` fills it deliberately —
   both WCB families *and* both S3 flash sizes, because which one a board needs is only
@@ -194,6 +199,21 @@ of use is broken by design.
   throttles (4 attempts, ~9 s). Offline that is pure waste: measured at **over two
   minutes** for one firmware set before falling back. A DNS or no-route error breaks out
   immediately; a *timeout* still retries, because that really can be transient.
+
+## Firmware comes from a branch you choose
+
+`src/settings.py` holds a branch **per product** — a WCB feature branch alongside
+released NaviCore firmware is the normal case, not an edge case. Set it in the launcher;
+both flashers and the offline cache read it.
+
+- The branch is interpolated into a GitHub API URL, so it is **whitelisted**
+  (`[A-Za-z0-9._/-]`, ≤100 chars) — the same guard, for the same reason, that
+  `flasher.js` documents.
+- Resolved **at call time**, never as a default argument: a default is evaluated once at
+  import and would pin the branch for the life of the process.
+- A non-main branch warns in the flash log and is called out in the launcher. Flashing a
+  branch build should only ever happen on purpose, and a setting that persists silently
+  is how you flash one months later having forgotten.
 
 ## Frozen builds write somewhere else
 

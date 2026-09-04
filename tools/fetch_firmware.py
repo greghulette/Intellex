@@ -25,6 +25,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import flash                                                        # noqa: E402
 import fwcache                                                      # noqa: E402
+import settings                                                     # noqa: E402
 import wcb_flash                                                    # noqa: E402
 
 
@@ -33,12 +34,13 @@ def _log(msg: str) -> None:
 
 
 def fetch_navicore() -> int:
-    print("NaviCore")
+    br = settings.branch(settings.NAVICORE)
+    print(f"NaviCore  (branch {br})")
     try:
         # fetch_images downloads the whole set and caches each file as it goes,
         # so there is nothing to store here -- reusing it means the cache holds
         # exactly what a real flash would use, not a second opinion about it.
-        imgs = flash.fetch_images(log=_log)
+        imgs = flash.fetch_images(br, log=_log)
         names = ", ".join(i["name"] for i in imgs)
         print(f"  cached: {names}")
         return 0
@@ -49,14 +51,15 @@ def fetch_navicore() -> int:
 
 def fetch_wcb() -> int:
     rc = 0
+    br = settings.branch(settings.WCB)
     # BOTH families and BOTH S3 flash sizes. Which one a board needs is only known
     # once it is plugged in and esptool has answered, and that will happen offline
     # -- so guessing here defeats the point. The whole set is a few MB.
     for binary_type, flash_mb in (("ESP32", None), ("ESP32S3", 16), ("ESP32S3", 8)):
         label = binary_type + (f" {flash_mb} MB" if flash_mb else "")
-        print(f"WCB {label}")
+        print(f"WCB {label}  (branch {br})")
         try:
-            fw = wcb_flash.fetch_images(binary_type, flash_mb, log=_log)
+            fw = wcb_flash.fetch_images(binary_type, flash_mb, br, log=_log)
             got = [i["name"] for i in (fw["app"], fw["part"], fw["boot"]) if i]
             print(f"  cached: {', '.join(got)}")
             if fw["bootBlocked"]:
@@ -68,13 +71,14 @@ def fetch_wcb() -> int:
 
 
 def report() -> int:
-    s = fwcache.summary()
+    s = fwcache.summary(settings.branches())
     for product, label in ((fwcache.NAVICORE, "NaviCore"), (fwcache.WCB, "WCB")):
         info = s.get(product, {})
         if info.get("count"):
-            print(f"{label}: {info['count']} file(s) cached, newest {info['newest']}")
+            print(f"{label} [{info['branch']}]: {info['count']} file(s) cached, "
+                  f"newest {info['newest']}")
         else:
-            print(f"{label}: nothing cached")
+            print(f"{label} [{info.get('branch','main')}]: nothing cached")
     return 0
 
 
