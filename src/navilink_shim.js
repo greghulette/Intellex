@@ -313,6 +313,37 @@
   const IS_WCB = location.pathname.startsWith('/wcb/');
   console.info('[NaviLink] tool:', IS_WCB ? 'WCB Wizard' : 'NaviCore config tool');
 
+  // ── Tell the tool which firmware branch NaviLink is set to ────────────────
+  // Both tools resolve a branch themselves and default to 'main': the Wizard's
+  // getFirmwareBranch() reads localStorage 'wcb_fw_branch', the config tool's
+  // reads 'rc_fw_branch'. Each is a documented escape hatch, which makes it the
+  // right seam -- setting it is using the page's own mechanism, not patching it.
+  //
+  // Without this the branch setting is only half applied: the HOST flashes the
+  // branch build, while the PAGE still reports "latest on GitHub" from main and
+  // its own firmware panel disagrees with what a flash would actually write.
+  // Two sources of truth about the same thing, which is worse than either alone.
+  //
+  // Read from a value host.py prepends to this file, NOT fetched: the tools read
+  // their key during init, and an async fetch would resolve after they had
+  // already looked. Set before their scripts run, which is what the injection
+  // point buys us.
+  //
+  // 'main' REMOVES the key rather than writing it. The tools treat absent and
+  // 'main' identically, and leaving no residue means an override is always a
+  // deliberate mark of a non-default branch rather than something that merely
+  // accumulated.
+  try {
+    const br = (window.__navilinkBranches || {})[IS_WCB ? 'wcb' : 'navicore'] || 'main';
+    const key = IS_WCB ? 'wcb_fw_branch' : 'rc_fw_branch';
+    if (br && br !== 'main') {
+      localStorage.setItem(key, br);
+      console.info('[NaviLink] firmware branch for this tool:', br);
+    } else {
+      localStorage.removeItem(key);
+    }
+  } catch (_) { /* storage unavailable — the host still flashes the right branch */ }
+
   // ── Point the Wizard's cross-link at OUR NaviCore tool ────────────────────
   // The Wizard offers "open the RC Config Tool", defaulting to the copy on GitHub
   // Pages (RC_TOOL_URL_DEFAULT in its app.js). Inside NaviLink that default is

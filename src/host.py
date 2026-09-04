@@ -1072,13 +1072,31 @@ SHIM_TAG = '<script src="/_navilink.js"></script>'
 
 
 async def shim_js(_req: web.Request) -> web.StreamResponse:
-    # no-store: the shim changes far more often than the tool during development,
-    # and a cached copy means editing it appears to do nothing. Costs nothing --
-    # it is 7 KB from loopback.
-    return web.FileResponse(SHIM_FILE, headers={
-        "Content-Type": "application/javascript",
-        "Cache-Control": "no-store, must-revalidate",
-    })
+    """The shim, with the current firmware branches baked in.
+
+    WHY BAKED IN RATHER THAN FETCHED. Both tools read their branch from
+    localStorage during INIT -- the Wizard's getFirmwareBranch() and the config
+    tool's equivalent -- and use it to show "latest on GitHub" and to pick what a
+    flash would write. The shim runs before their scripts, but it cannot fetch
+    /_api/branches in time: that is async, and by the time it resolved the tool
+    would already have read the old value and displayed the wrong branch.
+    Prepending one line makes it available synchronously, before anything reads it.
+
+    Injecting into OUR OWN file, which is the whole difference from the tools: the
+    no-fork rule is about not editing THEIR files, and this is ours.
+    """
+    src = SHIM_FILE.read_text(encoding="utf-8", errors="replace")
+    prelude = ("window.__navilinkBranches = "
+               + json.dumps(settings.branches(), separators=(",", ":")) + ";\n")
+    return web.Response(
+        text=prelude + src,
+        content_type="application/javascript",
+        # no-store: the shim changes far more often than the tool during
+        # development, and a cached copy means editing it appears to do nothing.
+        # It is also what makes a branch change take effect on the next reload
+        # rather than needing the app restarted. Costs nothing over loopback.
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 def _inject_shim(html: str) -> str:

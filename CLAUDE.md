@@ -195,10 +195,38 @@ of use is broken by design.
 - **The GitHub file listing is cached too.** Caching only the images is not enough: both
   flashers call the Contents API *first* to discover what exists, and that call fails
   before any download is attempted — so the cache could never be reached.
-- **`_no_network()` in `flash.py` fails fast.** The retry loop is built for GitHub's
+- **Ask `flash.reachable()` ONCE before a batch, do not infer from exceptions.** On a
+  droid's AP there *is* a default route — it just goes nowhere — so a connection does
+  not fail, it **times out at ~40 s**, and `urlopen`'s own timeout does not bound it
+  because DNS and connect retry underneath. Four attempts across a ~35-file tool update
+  is tens of minutes of certain failure. One TCP probe answers in ~3 s. A timeout can
+  never be treated as "offline" in general (a real network times out transiently), which
+  is exactly why the question has to be asked separately.
+- **`no_network()` in `flash.py` fails fast** on the errors that *are* unambiguous. The retry loop is built for GitHub's
   throttles (4 attempts, ~9 s). Offline that is pure waste: measured at **over two
   minutes** for one firmware set before falling back. A DNS or no-route error breaks out
   immediately; a *timeout* still retries, because that really can be transient.
+
+## The branch picks the TOOL as well as the firmware
+
+CI publishes the tools per branch to gh-pages under `/dev/<branch>/`, with the same
+`Wizard/` + `Images/` sibling layout as the site root — so `../Images` resolution
+carries over and `tools/fetch_webui.py` needs no special case. Verified against
+gh-pages, not assumed.
+
+They must match. A branch build that adds a config field is unreachable from a
+main-branch UI with no widget for it, and that shows up as "the tool cannot see the new
+setting" rather than as anything version-shaped.
+
+- **Not every branch publishes a tool.** WCB deploys `/dev/<branch>/Wizard`; NaviCore's
+  gh-pages has no `/dev/` tree at all today. `resolve_base()` probes and falls back to
+  main *saying so* — otherwise a branch set for firmware reasons turns into "my config
+  tool stopped updating", which nobody would connect back to it.
+- **The tools resolve their own branch from `localStorage`** (`wcb_fw_branch`,
+  `rc_fw_branch`) — documented escape hatches, so setting them is using the page's own
+  mechanism. `host.py` prepends `window.__navilinkBranches` to the served shim because
+  the tools read that key during *init*: an async fetch resolves after they have already
+  looked, and the page would report main's firmware while the host flashed the branch's.
 
 ## Firmware comes from a branch you choose
 

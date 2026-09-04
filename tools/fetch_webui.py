@@ -50,8 +50,56 @@ import urllib.request
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import certs                                                        # noqa: E402
 import paths                                                        # noqa: E402
+import settings                                                     # noqa: E402
+from flash import no_network, reachable                             # noqa: E402
 
-BASE = "https://greghulette.github.io/NaviCore/config_tool"
+# ── Per-branch tool previews ────────────────────────────────────────────────
+# CI publishes the tools per branch to gh-pages under /dev/<branch>/, so a branch
+# has its own UI as well as its own firmware. Those two must MATCH: a branch build
+# that adds a config field is unreachable from a main-branch UI that has no widget
+# for it, and the mismatch shows up as "the tool cannot see the new setting"
+# rather than as a version problem.
+#
+# The layout under /dev/<branch>/ is the same as the site root -- Wizard/ and
+# Images/ as siblings, config_tool/ and Images/ as siblings -- so the "../Images"
+# resolution the bundling depends on carries over unchanged. Verified against
+# gh-pages rather than assumed.
+NAVICORE_SITE = "https://greghulette.github.io/NaviCore"
+WCB_SITE      = "https://greghulette.github.io/Wireless_Communication_Board-WCB"
+
+
+def base_for(site: str, leaf: str, branch: str) -> str:
+    """Where a tool lives for `branch`. Main is the site root, not a /dev/ path."""
+    if not branch or branch == "main":
+        return f"{site}/{leaf}"
+    return f"{site}/dev/{branch}/{leaf}"
+
+
+def resolve_base(site: str, leaf: str, branch: str) -> tuple[str, str]:
+    """The branch's tool if it is published, else main's. Returns (base, note).
+
+    NOT EVERY BRANCH PUBLISHES A TOOL. The two repos differ today: WCB deploys
+    /dev/<branch>/Wizard for its branches, NaviCore's gh-pages has no /dev/ tree at
+    all. A branch set for FIRMWARE reasons would then 404 the whole tool update --
+    turning "I want the WIFI firmware" into "my config tool stopped updating",
+    which is not a connection anyone would make.
+
+    So probe, and fall back to main saying so. A branch whose tool is unchanged
+    from main is the common case anyway; the fallback is right far more often than
+    it is a compromise.
+    """
+    if not branch or branch == "main":
+        return f"{site}/{leaf}", ""
+    dev = base_for(site, leaf, branch)
+    try:
+        get(f"{dev}/index.html", timeout=15, attempts=1)
+        return dev, f"branch {branch}"
+    except FetchError:
+        return (f"{site}/{leaf}",
+                f"branch {branch} publishes no tool - using main's")
+
+
+BASE = f"{NAVICORE_SITE}/config_tool"
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 # Writes go to the USER data dir in a frozen app: a one-file build unpacks
 # itself to a temp directory that is deleted on exit, so an update written
@@ -62,7 +110,7 @@ WEBUI = paths.write_dir("webui")
 ROOT_FILES = ["index.html", "flasher.js", "serial-hub.js"]
 
 # ── The WCB Wizard ──────────────────────────────────────────────────────────
-WCB_BASE  = "https://greghulette.github.io/Wireless_Communication_Board-WCB/Wizard"
+WCB_BASE  = f"{WCB_SITE}/Wizard"
 WEBUI_WCB = paths.write_dir("webui_wcb")
 
 # STAGED UNDER Wizard/, NOT AT THE ROOT. index.html reaches its logos with
@@ -158,6 +206,13 @@ def get(url: str, timeout: float = 30.0, attempts: int = 4) -> bytes:
                 break                     # a 404 will still be a 404 in two seconds
         except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
             last = e
+            # Offline, give up at once. The backoff below exists for Pages
+            # throttling a burst of ~35 files; on a droid's AP there is no route
+            # to github.io and never will be, so retrying every file is minutes
+            # of waiting for a foregone conclusion. flash.py learned this the
+            # same way -- one shared implementation so they cannot disagree.
+            if no_network(e):
+                break
             if certs.is_cert_error(e):
                 break                     # no amount of retrying grows a CA store
         if i < attempts - 1:
@@ -385,8 +440,23 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="fetch even if unchanged")
     a = ap.parse_args()
 
+    # One probe, up front. Offline this turns tens of minutes of certain failure
+    # into three seconds and a clear message -- on a droid's AP a connection times
+    # out rather than failing, so every file would wait ~40 s to learn the same
+    # thing. Nothing here has a cache to fall back to: unlike firmware, a bundled
+    # tool is already on disk and simply stays as it is.
+    if not reachable("greghulette.github.io"):
+        print("github.io is not reachable - the bundled tools are unchanged.")
+        print("  (on a droid's AP there is no route out; reconnect to update)")
+        return 1
+
     if a.tool == "wcb":
-        return fetch_wcb(a.base or WCB_BASE, a.check, a.force)
+        base = a.base
+        if not base:
+            base, note = resolve_base(WCB_SITE, "Wizard", settings.branch(settings.WCB))
+            if note:
+                print(f"[wcb] {note}")
+        return fetch_wcb(base, a.check, a.force)
     if a.tool == "all":
         if a.base:
             # One --base cannot mean two different sites, and quietly applying it
@@ -395,10 +465,23 @@ def main() -> int:
         # SEPARATE swaps, and the NaviCore result does not gate the WCB one. Each
         # tool is independently atomic; a Wizard fetch that fails offline must not
         # undo or skip a NaviCore update that already succeeded.
-        rc_nc = _fetch_navicore(BASE, a.check, a.force)
-        rc_wcb = fetch_wcb(WCB_BASE, a.check, a.force)
+        nb, note = resolve_base(NAVICORE_SITE, "config_tool",
+                                settings.branch(settings.NAVICORE))
+        if note:
+            print(f"[navicore] {note}")
+        rc_nc = _fetch_navicore(nb, a.check, a.force)
+        wb, note = resolve_base(WCB_SITE, "Wizard", settings.branch(settings.WCB))
+        if note:
+            print(f"[wcb] {note}")
+        rc_wcb = fetch_wcb(wb, a.check, a.force)
         return rc_nc or rc_wcb
-    return _fetch_navicore(a.base or BASE, a.check, a.force)
+    base = a.base
+    if not base:
+        base, note = resolve_base(NAVICORE_SITE, "config_tool",
+                                  settings.branch(settings.NAVICORE))
+        if note:
+            print(f"[navicore] {note}")
+    return _fetch_navicore(base, a.check, a.force)
 
 
 def _fetch_navicore(base: str, check: bool, force: bool) -> int:

@@ -36,7 +36,42 @@ import fwcache
 import settings
 
 
-def _no_network(e: BaseException) -> bool:
+# Cache the answer for a short while. A single firmware set is ~4 files plus a
+# listing, and re-probing before each one turns one 3 s check into five.
+_reach_at = 0.0
+_reach_ok = False
+REACH_TTL_S = 20.0
+
+
+def reachable(host: str = "api.github.com", timeout: float = 3.0) -> bool:
+    """Is GitHub actually reachable? One TCP connect, answered in ~3 s.
+
+    WHY A PROBE AND NOT AN EXCEPTION CHECK. On a droid's SoftAP there IS a default
+    route -- it just goes nowhere -- so a connection does not fail, it TIMES OUT.
+    Measured at 40 s per attempt on that network, and urlopen's own timeout does
+    not bound it because DNS and connect retry underneath. Four attempts across a
+    ~35 file tool update is tens of minutes of certain failure.
+
+    A timeout cannot be treated as "offline" in general (no_network() deliberately
+    does not), because a real network does time out transiently. But asking ONCE
+    whether the host is reachable at all separates the two cleanly: unreachable
+    means go to cache now, reachable means a later timeout is worth retrying.
+    """
+    global _reach_at, _reach_ok
+    now = time.monotonic()
+    if now - _reach_at < REACH_TTL_S:
+        return _reach_ok
+    import socket
+    try:
+        with socket.create_connection((host, 443), timeout=timeout):
+            _reach_ok = True
+    except OSError:
+        _reach_ok = False
+    _reach_at = now
+    return _reach_ok
+
+
+def no_network(e: BaseException) -> bool:
     """Is this "there is no network" rather than "the network misbehaved"?
 
     Worth telling apart because the retry loop below is built for GitHub's
@@ -133,7 +168,7 @@ def _get(url: str, log, attempts: int = 4, timeout: float = 60.0) -> bytes:
             last = e
             if certs.is_cert_error(e):
                 break                      # retrying will not grow a CA store
-            if _no_network(e):
+            if no_network(e):
                 break                      # offline: fail fast so the cache is reached
             if i < attempts - 1:
                 time.sleep(1.5 * (i + 1))
@@ -149,7 +184,12 @@ def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dic
     # Offline, fall back to the listing we kept last time we could reach GitHub.
     # Its download_url values are dead, which is fine: download() below tries the
     # network, fails, and reads the bytes cached under the same filename.
+    # Ask ONCE whether GitHub is even reachable. On a droid's AP a connection does
+    # not fail, it times out at ~40 s -- so without this the offline path costs
+    # minutes before reaching a cache that was ready all along.
     try:
+        if not reachable():
+            raise FlashError("GitHub is not reachable")
         raw = _get(url, log)
         fwcache.store_listing(fwcache.NAVICORE, branch, raw)
     except FlashError:
@@ -205,6 +245,8 @@ def fetch_images(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dict
         name = entry["name"]
         log(f"Found: {name}")
         try:
+            if not reachable():
+                raise FlashError("GitHub is not reachable")
             data = _get(entry["download_url"], log)
         except FlashError:
             cached = fwcache.load(fwcache.NAVICORE, branch, name)

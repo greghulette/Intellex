@@ -34,7 +34,7 @@ from typing import Optional
 import certs
 import fwcache
 import settings
-from flash import FlashError, _esptool_argv, _get, _PCT_RE
+from flash import FlashError, reachable, _esptool_argv, _get, _PCT_RE
 
 # ── Firmware source ─────────────────────────────────────────────────────────
 # Mirrors flasher.js. If GITHUB_* there changes, these must too -- the whole point
@@ -85,7 +85,12 @@ def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dic
     # Offline, fall back to the listing we kept last time we could reach GitHub.
     # Its download_url values are dead, which is fine: download() below tries the
     # network, fails, and reads the bytes cached under the same filename.
+    # Ask ONCE whether GitHub is even reachable. On a droid's AP a connection does
+    # not fail, it times out at ~40 s -- so without this the offline path costs
+    # minutes before reaching a cache that was ready all along.
     try:
+        if not reachable():
+            raise FlashError("GitHub is not reachable")
         raw = _get(url, log)
         fwcache.store_listing(fwcache.WCB, branch, raw)
     except FlashError:
@@ -159,6 +164,8 @@ def fetch_images(binary_type: str, flash_mb: Optional[int],
         name = entry["name"]
         log(f"Found: {name}")
         try:
+            if not reachable():
+                raise FlashError("GitHub is not reachable")
             data = _get(entry["download_url"], log)
         except FlashError:
             cached = fwcache.load(fwcache.WCB, branch, name)
