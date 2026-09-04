@@ -55,6 +55,11 @@ if [ ! -f "$ICNS" ] && [ -f "$PNG" ]; then
 fi
 
 echo
+echo "=== Stamping the build ==="
+NLSHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+.venv/bin/python -c "import sys; sys.path.insert(0,'src'); import pathlib, version; version.write_stamp(pathlib.Path('src/build_stamp.py'), '$NLSHA')"
+
+echo
 echo "=== Building ==="
 .venv/bin/python -m PyInstaller --noconfirm --clean NaviLink.spec
 

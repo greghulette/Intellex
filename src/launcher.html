@@ -38,7 +38,7 @@
 </style>
 
 <h1>Navi<span>Link</span></h1>
-<div class="sub">Pick a droid, or a cable &mdash; or open the tool on its own.</div>
+<div class="sub">Pick a droid, or a cable &mdash; or open the tool on its own. <span id="appver" style="opacity:.7"></span></div>
 
 <div class="card">
   <h2>Over WiFi</h2>
@@ -470,6 +470,17 @@ async function checkLog() {
   } catch (e) { $('logpath').textContent = 'log location unavailable'; }
 }
 checkLog();
+
+// Which build this is. Shown because a frozen app is copied around by hand and a
+// stale one behaves like the code that built it, with nothing on screen to say so
+// — which has already cost a "the UI change is missing" that was simply an old exe.
+(async () => {
+  try {
+    const v = await api('/_api/version');
+    const bits = [v.commit, v.built].filter(Boolean).join(', ');
+    $('appver').textContent = '· v' + v.version + (bits ? ` (${bits})` : '');
+  } catch (_) {}
+})();
 
 $('showlog').onclick = async () => {
   const pre = $('logtail');

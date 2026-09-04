@@ -29,3 +29,6 @@ src/webui_wcb.prev/
 # src/fwcache.py). Several MB, refetchable, and each file is already versioned by
 # its own name — committing them would just be a slower copy of GitHub.
 src/firmware/
+
+# Written by the build scripts; an artefact of one build, never source.
+src/build_stamp.py

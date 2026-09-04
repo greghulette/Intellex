@@ -57,6 +57,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import certs                                             # noqa: E402
 import paths                                             # noqa: E402
 import applog                                            # noqa: E402
+import version                                           # noqa: E402
 import flash                                             # noqa: E402
 import fwcache                                           # noqa: E402
 import wcb_flash                                         # noqa: E402
@@ -504,6 +505,15 @@ async def api_webui_version(_req: web.Request) -> web.Response:
             "reason": "" if wcb_published else _wcb_published_error,
         },
     })
+
+
+async def api_version(_req: web.Request) -> web.Response:
+    """Which build this is. Shown in the launcher so a stale exe is visible.
+
+    A frozen app is copied around by hand and two of them look identical; a stale
+    one behaves like the code that built it, with nothing on screen to say so.
+    """
+    return web.json_response(version.info())
 
 
 async def api_log(_req: web.Request) -> web.Response:
@@ -1349,6 +1359,7 @@ def build_app() -> web.Application:
         web.get("/_api/webui-version", api_webui_version),
         web.get("/_api/firmware", api_firmware),
         web.get("/_api/log", api_log),
+        web.get("/_api/version", api_version),
         web.post("/_api/update-firmware", api_update_firmware),
         web.post("/_api/update-webui", api_update_webui),
         web.post("/_api/flash", api_flash),

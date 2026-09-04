@@ -28,6 +28,7 @@ import sys
 from typing import Optional, TextIO
 
 import paths
+import version
 
 KEEP_RUNS = 20          # a few days of ordinary use; enough to look back
 _log_file: Optional[TextIO] = None
@@ -116,7 +117,10 @@ def start() -> Optional[str]:
         _log_path = None
         return None
 
-    _log_file.write(f"NaviLink log - {datetime.datetime.now().isoformat(timespec='seconds')}\n")
+    # Version FIRST. Every question that starts "it is doing X" needs "which build?"
+    # answered before anything else in the file is worth reading.
+    _log_file.write(f"NaviLink {version.describe()}\n")
+    _log_file.write(f"  started  {datetime.datetime.now().isoformat(timespec='seconds')}\n")
     _log_file.write(f"  python   {sys.version.split()[0]}\n")
     _log_file.write(f"  frozen   {paths.FROZEN}\n")
     _log_file.write(f"  bundle   {paths.BUNDLE_DIR}\n")
