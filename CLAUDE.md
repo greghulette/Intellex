@@ -233,6 +233,29 @@ The desktop app is **not announced**. The NaviCore repo and its GitHub Pages too
 - This is discretion against casual browsing, not secrecy against inspection. `wifiEnabled` is
   readable in the public repo by anyone who looks. Do not mistake one for the other.
 
+## Never bounce the user's WiFi from a test host
+
+`reconnect_loop` has **`auto_bounce = True` by default**. When a `ws` target is wanted
+and unreachable, after two failures it runs `netsh wlan disconnect` + `netsh wlan connect
+<ssid>` on the adapter associated with that SSID — and `ssid` defaults to `"NaviCore"`
+when the attach body omits it.
+
+That is correct for the app: a droid reboot leaves Windows holding a half-dead
+association, and re-associating is the fix. It is **not** correct for a throwaway host
+started to poke an endpoint. Attaching a test instance to a `ws` target that happens to
+be unreachable disconnects the user's laptop from their droid's AP, mid-session, for
+reasons nothing on their screen explains. This has happened.
+
+**So when starting a host for testing:**
+
+```bash
+python src/host.py --port 879x --no-auto-bounce    # ALWAYS
+```
+
+and prefer not to attach a `ws` target at all unless the test needs one. It bounces the
+*laptop's* adapter, not the droid — the droid is fine, which makes it worse to diagnose,
+because the board looks healthy and the link is simply gone.
+
 ## Verifying
 
 ```bash

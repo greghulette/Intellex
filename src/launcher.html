@@ -82,6 +82,16 @@
   </div>
 </div>
 
+<div class="card">
+  <div class="bar">
+    <span class="grow" id="logpath">…</span>
+    <button id="showlog">Show log</button>
+  </div>
+  <pre id="logtail" style="display:none;max-height:260px;overflow:auto;margin:8px 0 0;
+       padding:10px;background:#0e0f16;border:1px solid var(--line);border-radius:7px;
+       font:11.5px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap"></pre>
+</div>
+
 <div class="status" id="status"></div>
 
 <script>
@@ -448,7 +458,32 @@ $('updatefw').onclick = async () => {
   checkFw();
 };
 
-$('rescan').onclick = () => { scan(); checkUi(); checkFw(); };
+// ── The log ─────────────────────────────────────────────────────────────────
+// The app is windowed, so everything the host prints goes nowhere a user can
+// see. This is the only way to read it without a terminal — which matters
+// because the app's normal launch (Start Menu, or the .exe) has no console at
+// all, and that is the build people actually run.
+async function checkLog() {
+  try {
+    const l = await api('/_api/log');
+    $('logpath').textContent = l.path ? ('log: ' + l.path) : ('logs in ' + l.dir);
+  } catch (e) { $('logpath').textContent = 'log location unavailable'; }
+}
+checkLog();
+
+$('showlog').onclick = async () => {
+  const pre = $('logtail');
+  if (pre.style.display !== 'none') { pre.style.display = 'none'; $('showlog').textContent = 'Show log'; return; }
+  try {
+    const l = await api('/_api/log');
+    pre.textContent = l.tail || '(empty)';
+    pre.style.display = '';
+    pre.scrollTop = pre.scrollHeight;
+    $('showlog').textContent = 'Hide log';
+  } catch (e) { setStatus('could not read the log: ' + e.message, true); }
+};
+
+$('rescan').onclick = () => { scan(); checkUi(); checkFw(); checkLog(); };
 $('update').onclick = async () => {
   $('update').disabled = true;
   setStatus('downloading the latest config tool and Wizard…');

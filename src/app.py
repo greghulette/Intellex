@@ -33,6 +33,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import applog                                             # noqa: E402
 import appicon                                            # noqa: E402
 import host as hostmod                                    # noqa: E402
 from transport import TransportError                      # noqa: E402
@@ -161,6 +162,16 @@ def main() -> int:
         sys.argv = ["fetch_firmware"] + sys.argv[2:]
         return fetch_firmware.main()
 
+    # FIRST thing the app proper does. Everything below prints -- attaches, drops,
+    # reconnects, probe results, flash output -- and in a windowed build (pythonw,
+    # or the frozen console=False exe) stdout is attached to nothing, so all of it
+    # was being written into a void. That made "what did it actually do?"
+    # unanswerable for the one build people actually run.
+    #
+    # After the sentinels above on purpose: those hand the process to esptool or a
+    # fetcher and exit, and each would otherwise open a log of its own.
+    _log = applog.start()
+
     ap = argparse.ArgumentParser(description="NaviLink desktop app")
     ap.add_argument("--port", type=int, default=hostmod.DEFAULT_PORT)
     ap.add_argument("--serial", help="attach this port at launch and skip the chooser")
@@ -233,6 +244,8 @@ def main() -> int:
 
     # Straight to the tool when a target was given; otherwise pick one first.
     landing = "/" if spec else "/_launcher"
+    if _log:
+        print(f"log       {_log}")
     url = f"http://{hostmod.BIND_HOST}:{a.port}{landing}"
 
     if a.browser:

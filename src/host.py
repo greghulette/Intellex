@@ -56,6 +56,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import certs                                             # noqa: E402
 import paths                                             # noqa: E402
+import applog                                            # noqa: E402
 import flash                                             # noqa: E402
 import fwcache                                           # noqa: E402
 import wcb_flash                                         # noqa: E402
@@ -502,6 +503,31 @@ async def api_webui_version(_req: web.Request) -> web.Response:
             "checked": bool(wcb_published),
             "reason": "" if wcb_published else _wcb_published_error,
         },
+    })
+
+
+async def api_log(_req: web.Request) -> web.Response:
+    """Where this run is being logged, and the tail of it.
+
+    The app is windowed, so its console output goes nowhere. Handing the page the
+    path AND the recent lines means a problem can be read off the screen instead
+    of requiring someone to know the file exists and where the data dir is.
+    """
+    p = applog.path()
+    tail = ""
+    if p:
+        try:
+            # Tail, not the whole thing: a long session with mesh telemetry
+            # flowing produces a big file, and the answer is nearly always in the
+            # last screenful.
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                tail = "".join(f.readlines()[-400:])
+        except OSError as e:
+            tail = f"(could not read the log: {e})"
+    return web.json_response({
+        "path": str(p) if p else "",
+        "dir": str(paths.user_data_dir() / "logs"),
+        "tail": tail,
     })
 
 
@@ -1322,6 +1348,7 @@ def build_app() -> web.Application:
         web.get("/_api/discover", api_discover),
         web.get("/_api/webui-version", api_webui_version),
         web.get("/_api/firmware", api_firmware),
+        web.get("/_api/log", api_log),
         web.post("/_api/update-firmware", api_update_firmware),
         web.post("/_api/update-webui", api_update_webui),
         web.post("/_api/flash", api_flash),
@@ -1404,6 +1431,12 @@ def main() -> int:
 
     url = f"http://{BIND_HOST}:{a.port}/"
     sys.stdout.reconfigure(line_buffering=True)   # so a redirected log is live, not buffered
+    # Also log to a file when run standalone. There IS a console on this path, but
+    # having both means a bug reproduced with `python src/host.py` leaves the same
+    # artefact as one hit in the app, and /_api/log can serve it either way.
+    _log = applog.start()
+    if _log:
+        print(f"log       {_log}")
     print(f"serving   {url}")
     _b = _bundled_dtg()
     _p = _published_dtg()

@@ -430,14 +430,51 @@
      'Full wipe via the host\'s native esptool. ERASES saved configuration (NVS).'],
   ];
 
+  // ── USB-only, and the buttons must SAY so ─────────────────────────────────
+  // esptool needs the real serial line to walk the board into its bootloader. A
+  // WiFi session -- to a droid's AP or through a management relay -- has no
+  // control lines at all, so /_api/flash refuses it outright.
+  //
+  // The buttons were still offered on such a session. They looked perfectly
+  // available, and only on click did the host answer 409 with an explanation. On
+  // a page whose whole job is flashing, an enabled button that cannot work is
+  // worse than a disabled one: it invites the click that puts a board into
+  // bootloader mode for a flash that was never going to start.
+  //
+  // So ask what the link IS, not merely whether the host can flash at all.
+  let linkKind = '';
+  async function refreshLinkKind() {
+    try {
+      const st = await (await fetch('/_api/status')).json();
+      // From the SPEC, not gated on being attached right now. The spec is what
+      // the user chose, and it does not stop being WiFi because the link dropped
+      // for a moment -- gating on `attached` made the buttons flap back to
+      // enabled on every transient, which is when a hopeful click is most likely.
+      linkKind = st.kind || '';
+    } catch (_) { /* keep the last answer rather than flapping the buttons */ }
+  }
+
+  const NOT_USB_MSG = 'Flashing needs a direct USB connection. This session is over '
+                    + 'WiFi, which has no DTR/RTS lines to enter the bootloader. '
+                    + 'Attach the board over USB, or use OTA.';
+
   async function wireNativeFlash() {
     const ok = await hostSupportsFlash();
+    await refreshLinkKind();
+    // Only "serial" can flash. An empty kind means nothing is attached yet, and
+    // disabling then would be wrong the other way -- the tool has its own
+    // not-connected handling and this must not fight it.
+    const usb = linkKind === 'serial';
     for (const [id, eraseNvs, label, title] of FLASH_BTNS) {
       const b = document.getElementById(id);
       if (!b) continue;
       if (!ok) {
         // Leave them disabled rather than wired to a route that is not there.
         if (!flashBusy) { b.disabled = true; b.title = STALE_HOST_MSG; }
+        continue;
+      }
+      if (linkKind && !usb) {
+        if (!flashBusy) { b.disabled = true; b.title = NOT_USB_MSG; }
         continue;
       }
       if (!b.__navilinkWired) {
@@ -750,6 +787,14 @@
       const eraseNvs   = !!o.eraseNvs;
 
       if (!(await hostSupportsFlash())) throw new Error(STALE_HOST_MSG);
+
+      // Refuse BEFORE boardGo() tears the board's connection down. The host would
+      // reject a WiFi session anyway (409), but by then the Wizard has already
+      // closed the port, set the card to "Flashing…" and started its own
+      // bookkeeping -- so the failure arrives after a disruption that achieved
+      // nothing. Checking first turns it into a message and no disruption at all.
+      await refreshLinkKind();
+      if (linkKind && linkKind !== 'serial') throw new Error(NOT_USB_MSG);
 
       onStatus('Starting native flash…');
       onLog('NaviLink: flashing through the host (esptool), not the browser.');
