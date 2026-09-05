@@ -35,10 +35,23 @@
   .status { font-size:12.5px; color:var(--muted); min-height:18px; margin-top:10px; }
   .status.err { color:#e5737b; }
   .stale { color:var(--warn); }
+  h1 #appver { font-size:11.5px; font-weight:400; color:var(--muted); letter-spacing:0; }
+  input { font:inherit; background:#12131a; color:var(--fg); border:1px solid var(--line);
+          border-radius:6px; padding:4px 8px; margin-left:4px; }
+  details#maint { margin-top:4px; }
+  details#maint > summary {
+    cursor:pointer; list-style:none; color:var(--muted); font-size:12.5px;
+    padding:8px 10px; border:1px solid var(--line); border-radius:8px;
+    background:var(--panel); user-select:none;
+  }
+  details#maint > summary::-webkit-details-marker { display:none; }
+  details#maint > summary::before { content:'B8'; margin-right:7px; display:inline-block; }
+  details#maint[open] > summary::before { transform:rotate(90deg); }
+  details#maint > summary:hover { background:#232636; }
 </style>
 
-<h1>Navi<span>Link</span></h1>
-<div class="sub">Pick a droid, or a cable &mdash; or open the tool on its own. <span id="appver" style="opacity:.7"></span></div>
+<h1>Navi<span>Link</span> <span id="appver"></span></h1>
+<div class="sub">Pick a droid, or a cable.</div>
 
 <div class="card">
   <h2>Over WiFi</h2>
@@ -50,60 +63,64 @@
   <div id="serial"><div class="empty">looking for ports…</div></div>
 </div>
 
-<div class="card" id="openwith">
-  <h2>Open with</h2>
-  <div class="bar">
-    <button class="pick" data-view="nc">NaviCore tool</button>
-    <button class="pick" data-view="wcb">WCB</button>
-    <button class="pick" data-view="split">Side by side</button>
-    <button class="pick" data-view="sep">Separate windows</button>
-  </div>
-  <div class="empty" id="viewnote"></div>
+<!-- The layout choice is a preference, not a per-launch decision — it is
+     remembered. One row, no card, no explanatory paragraph: the labels say what
+     they do and the note only appears on hover. -->
+<div class="bar" id="openwith" style="margin:14px 2px 16px">
+  <span style="color:var(--muted);font-size:12.5px;margin-right:2px">Open with</span>
+  <button class="pick" data-view="nc"    title="The droid config tool, full window.">NaviCore tool</button>
+  <button class="pick" data-view="wcb"   title="The WCB config tool, full window. Reaches WCBs over USB, or through a relay over WiFi.">WCB</button>
+  <button class="pick" data-view="split" title="Both tools in one window, with a draggable divider. Both stay connected.">Side by side</button>
+  <button class="pick" data-view="sep"   title="The config tool here, the Wizard in its own window.">Separate windows</button>
+  <span class="grow"></span>
+  <button id="rescan">Rescan</button>
+  <button id="offline">Open the tool anyway</button>
+  <button id="back" class="primary" style="display:none">Back to tool</button>
 </div>
 
-<div class="card">
-  <div class="bar">
-    <span class="grow" id="uiver">checking the config tool version…</span>
-    <button id="update">Update tools</button>
-    <button id="updatefw" title="Download every firmware image now, so flashing works later with no internet">Update firmware</button>
-    <button id="rescan">Rescan</button>
-    <button id="offline">Open the tool anyway</button>
-    <button id="back" class="primary" style="display:none">Back to tool</button>
-  </div>
-</div>
+<!-- ── Everything you touch occasionally, folded away ────────────────────────
+     Versions, the firmware cache, the branch and the log are maintenance. They
+     were four stacked cards competing with the one thing this screen is for, so
+     they collapse to a single line.
 
-<div class="card">
-  <div class="bar">
-    <span class="grow" id="fwver">checking the firmware cache…</span>
+     THE SUMMARY MUST SURFACE PROBLEMS. Collapsing is only acceptable if nothing
+     that needs attention hides behind it — a stale tool, an uncached firmware
+     set, a branch that is not main. Those turn the line orange and it opens
+     itself, so folding never costs you a warning. -->
+<details id="maint">
+  <summary id="maint-sum">Updates, firmware and logs</summary>
+  <div class="card" style="margin-top:8px">
+    <div class="bar">
+      <span class="grow" id="uiver">checking…</span>
+      <button id="update">Update tools</button>
+    </div>
+    <div class="bar" style="margin-top:12px">
+      <span class="grow" id="fwver">checking…</span>
+      <button id="updatefw" title="Download every firmware image now, so flashing works later with no internet">Update firmware</button>
+    </div>
+    <div class="empty" style="padding-left:0">
+      Firmware is cached locally so you can flash with no internet — get everything
+      current here, then disconnect and join the droid's AP.
+    </div>
+    <div class="bar" style="margin-top:10px">
+      <span style="color:var(--muted);font-size:12.5px">Branch</span>
+      <label style="font-size:12.5px">NaviCore
+        <input id="br-nc" size="12" spellcheck="false"></label>
+      <label style="font-size:12.5px">WCB
+        <input id="br-wcb" size="12" spellcheck="false"></label>
+      <button id="br-save">Set</button>
+      <span class="grow" id="br-note"></span>
+    </div>
+    <div class="bar" style="margin-top:12px">
+      <span class="grow" id="logpath" style="font-size:12px;color:var(--muted);
+            overflow:hidden;text-overflow:ellipsis;white-space:nowrap">…</span>
+      <button id="showlog">Show log</button>
+    </div>
+    <pre id="logtail" style="display:none;max-height:240px;overflow:auto;margin:8px 0 0;
+         padding:10px;background:#0e0f16;border:1px solid var(--line);border-radius:7px;
+         font:11.5px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap"></pre>
   </div>
-  <div class="empty">
-    Firmware is cached locally so you can flash with no internet — get everything
-    current here, then disconnect and join the droid's AP.
-  </div>
-  <div class="bar" style="margin-top:10px">
-    <span style="color:var(--muted);font-size:12.5px">firmware branch</span>
-    <label style="font-size:12.5px">NaviCore
-      <input id="br-nc" size="14" spellcheck="false"
-             style="font:inherit;background:#12131a;color:var(--fg);border:1px solid var(--line);
-                    border-radius:6px;padding:4px 8px;margin-left:4px"></label>
-    <label style="font-size:12.5px">WCB
-      <input id="br-wcb" size="14" spellcheck="false"
-             style="font:inherit;background:#12131a;color:var(--fg);border:1px solid var(--line);
-                    border-radius:6px;padding:4px 8px;margin-left:4px"></label>
-    <button id="br-save">Set</button>
-    <span class="grow" id="br-note"></span>
-  </div>
-</div>
-
-<div class="card">
-  <div class="bar">
-    <span class="grow" id="logpath">…</span>
-    <button id="showlog">Show log</button>
-  </div>
-  <pre id="logtail" style="display:none;max-height:260px;overflow:auto;margin:8px 0 0;
-       padding:10px;background:#0e0f16;border:1px solid var(--line);border-radius:7px;
-       font:11.5px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap"></pre>
-</div>
+</details>
 
 <div class="status" id="status"></div>
 
@@ -118,6 +135,30 @@ addEventListener('keydown', e => {
 
 const $ = id => document.getElementById(id);
 const setStatus = (t, err) => { const s=$('status'); s.textContent=t; s.className='status'+(err?' err':''); };
+
+// ── The collapsed summary ───────────────────────────────────────────────────
+// Folding maintenance away is only acceptable if nothing needing attention hides
+// behind it. Each check reports its state here; anything wrong turns the line
+// orange AND opens the section, so a stale tool, an uncached firmware set or a
+// non-main branch can never be missed by having collapsed it.
+const _maint = { tools: '', fw: '', branch: '' };
+function paintMaint() {
+  const bad = Object.values(_maint).filter(Boolean);
+  const sum = $('maint-sum');
+  if (bad.length) {
+    sum.innerHTML = 'Updates, firmware and logs &nbsp;·&nbsp; <span class="stale">'
+                  + bad.join(' · ') + '</span>';
+    // Open it once, not on every refresh — reopening a section the user has
+    // deliberately closed is the kind of helpfulness nobody wants.
+    if (!$('maint').dataset.nagged) {
+      $('maint').open = true;
+      $('maint').dataset.nagged = '1';
+    }
+  } else {
+    sum.textContent = 'Updates, firmware and logs · all current';
+  }
+}
+
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -165,7 +206,12 @@ function paintView() {
   const cur = currentView();
   for (const b of document.querySelectorAll('.pick'))
     b.setAttribute('aria-pressed', String(b.dataset.view === cur));
-  $('viewnote').textContent = VIEWS[cur].note;
+  // The per-view description now lives on each button's title rather than a
+  // paragraph under the row. Guarded because this runs at parse time: throwing
+  // here aborts the rest of the script, which is exactly what happened when the
+  // element went away -- every later check silently never ran.
+  const note = $('viewnote');
+  if (note) note.textContent = VIEWS[cur].note;
 }
 
 for (const b of document.querySelectorAll('.pick')) {
@@ -436,7 +482,13 @@ async function checkUi() {
     $('uiver').innerHTML = uiLine('config tool', v)
                          + '<br>' + uiLine('WCB Wizard', w);
     $('uiver').title = [v.reason, w && w.reason].filter(Boolean).join('\n\n');
-  } catch (e) { $('uiver').textContent = 'could not check the tool versions'; }
+    const stale = [v.stale && 'config tool', w && w.stale && 'Wizard'].filter(Boolean);
+    _maint.tools = stale.length ? stale.join(' + ') + ' update available' : '';
+    paintMaint();
+  } catch (e) {
+    $('uiver').textContent = 'could not check the tool versions';
+    _maint.tools = ''; paintMaint();
+  }
 }
 
 // ── The firmware cache ──────────────────────────────────────────────────────
@@ -453,7 +505,15 @@ async function checkFw() {
                         : `${label} <span class="stale">not cached</span>`);
     }
     $('fwver').innerHTML = 'firmware cached: ' + bits.join(' &nbsp;·&nbsp; ');
-  } catch (e) { $('fwver').textContent = 'could not read the firmware cache'; }
+    const missing = [];
+    for (const [k, label] of [['navicore', 'NaviCore'], ['wcb', 'WCB']])
+      if (!(f[k] || {}).count) missing.push(label);
+    _maint.fw = missing.length ? missing.join(' + ') + ' firmware not cached' : '';
+    paintMaint();
+  } catch (e) {
+    $('fwver').textContent = 'could not read the firmware cache';
+    _maint.fw = ''; paintMaint();
+  }
 }
 checkFw();
 
@@ -505,7 +565,12 @@ async function checkBranches() {
     $('br-note').innerHTML = off.length
       ? '<span class="stale">not on main: ' + off.join(', ') + '</span>'
       : '';
-  } catch (e) { $('br-note').textContent = 'could not read the branch setting'; }
+    _maint.branch = off.length ? off.join(', ') : '';
+    paintMaint();
+  } catch (e) {
+    $('br-note').textContent = 'could not read the branch setting';
+    _maint.branch = ''; paintMaint();
+  }
 }
 checkBranches();
 

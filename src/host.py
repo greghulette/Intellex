@@ -438,9 +438,10 @@ def _published_dtg() -> str:
         _published_error = OFFLINE_NOTE
         return ""
     try:
-        with urllib.request.urlopen(
-                "https://greghulette.github.io/NaviCore/config_tool/index.html",
-                timeout=10, context=certs.context()) as r:
+        # The BRANCH's copy. Comparing a branch bundle against main's published
+        # build reports an update that updating cannot deliver.
+        url = settings.tool_base(settings.NAVICORE) + "/index.html"
+        with urllib.request.urlopen(url, timeout=10, context=certs.context()) as r:
             head = r.read(400_000).decode("utf-8", "replace")   # stamp is near the top
         _published_error = ""
         m = _DTG_RE.search(head)
@@ -473,9 +474,8 @@ def _wcb_published_ver() -> str:
         _wcb_published_error = OFFLINE_NOTE
         return ""
     try:
-        with urllib.request.urlopen(
-                "https://greghulette.github.io/Wireless_Communication_Board-WCB"
-                "/Wizard/app.js", timeout=10, context=certs.context()) as r:
+        url = settings.tool_base(settings.WCB) + "/app.js"
+        with urllib.request.urlopen(url, timeout=10, context=certs.context()) as r:
             # app.js is ~650 KB and UI_VERSION sits in its first hundred lines, so
             # read a head rather than the whole file for a version check.
             head = r.read(200_000).decode("utf-8", "replace")

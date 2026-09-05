@@ -69,10 +69,13 @@ WCB_SITE      = "https://greghulette.github.io/Wireless_Communication_Board-WCB"
 
 
 def base_for(site: str, leaf: str, branch: str) -> str:
-    """Where a tool lives for `branch`. Main is the site root, not a /dev/ path."""
-    if not branch or branch == "main":
-        return f"{site}/{leaf}"
-    return f"{site}/dev/{branch}/{leaf}"
+    """Where a tool lives for `branch`. Delegates so there is ONE definition.
+
+    settings.tool_base owns it, because the launcher's version check needs the
+    same answer and a second copy here is how they came to disagree.
+    """
+    product = settings.WCB if leaf == "Wizard" else settings.NAVICORE
+    return settings.tool_base(product, branch)
 
 
 def resolve_base(site: str, leaf: str, branch: str) -> tuple[str, str]:

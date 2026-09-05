@@ -88,3 +88,23 @@ def set_branch(product: str, b: str) -> Optional[str]:
 
 def branches() -> dict:
     return {NAVICORE: branch(NAVICORE), WCB: branch(WCB)}
+
+
+# ── Where a tool is published ───────────────────────────────────────────────
+# Here, not in the fetcher, because the VERSION CHECK needs the same answer. It
+# had its own hard-coded main URL, so a WIFI-branch Wizard was compared against
+# main's published copy and reported "update available" pointing at an OLDER
+# build -- a warning that could never be satisfied, because updating fetches the
+# branch again. Two places deciding one thing, disagreeing.
+NAVICORE_SITE = "https://greghulette.github.io/NaviCore"
+WCB_SITE      = "https://greghulette.github.io/Wireless_Communication_Board-WCB"
+_LEAF = {NAVICORE: (NAVICORE_SITE, "config_tool"), WCB: (WCB_SITE, "Wizard")}
+
+
+def tool_base(product: str, br: Optional[str] = None) -> str:
+    """Published location of `product`'s browser tool for its configured branch."""
+    site, leaf = _LEAF[product]
+    b = br if br is not None else branch(product)
+    if not b or b == DEFAULT_BRANCH:
+        return f"{site}/{leaf}"
+    return f"{site}/dev/{b}/{leaf}"
