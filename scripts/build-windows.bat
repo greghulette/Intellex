@@ -42,15 +42,24 @@ if errorlevel 1 echo   (firmware fetch incomplete - see above)
 REM Windows LOCKS a running executable, so PyInstaller's copy into dist\ fails with
 REM a bare "PermissionError: Access is denied" that reads like a rights problem
 REM rather than "your app is open". Say which it is.
-tasklist /FI "IMAGENAME eq NaviLink.exe" 2>nul | find /I "NaviLink.exe" >nul
-if not errorlevel 1 (
+REM Is the app running? Windows LOCKS a running executable, so PyInstaller's copy
+REM into dist\ dies with a bare "PermissionError: Access is denied" that reads
+REM like a rights problem rather than "your app is open".
+REM
+REM Checked in PYTHON, not with `tasklist | find`. Batch string-matching depends
+REM on PATH: run from a Git Bash shell, cmd inherits /usr/bin ahead of System32,
+REM "find" resolves to Git's UNIX find, the pipe fails and the guard silently
+REM PASSES -- which is exactly how a build then died with the app open. Full
+REM System32 paths did not fix it either (%SystemRoot% did not expand usefully
+REM there). We already depend on this interpreter two lines below, so use it.
+.venv\Scripts\python.exe -c "import subprocess,sys; o=subprocess.run(['tasklist','/FI','IMAGENAME eq NaviLink.exe'],capture_output=True,text=True).stdout; sys.exit(1 if 'NaviLink.exe' in o else 0)"
+if errorlevel 1 (
     echo.
     echo NaviLink is currently RUNNING, and Windows locks a running .exe.
     echo Close it and run this again.
     exit /b 1
 )
 
-echo.
 echo === Stamping the build ===
 for /f %%i in ('git rev-parse --short HEAD 2^>nul') do set NLSHA=%%i
 if "%NLSHA%"=="" set NLSHA=unknown
