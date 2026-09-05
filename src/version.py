@@ -25,6 +25,7 @@ from __future__ import annotations
 import datetime
 import pathlib
 import subprocess
+import proc
 
 # Bump deliberately. Nothing generates this.
 VERSION = "0.1.0"
@@ -47,12 +48,12 @@ def _from_git() -> tuple[str, str] | None:
     """
     root = pathlib.Path(__file__).resolve().parent.parent
     try:
-        sha = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+        sha = proc.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
                              capture_output=True, text=True, timeout=5)
         if sha.returncode != 0:
             return None
         commit = sha.stdout.strip()
-        dirty = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+        dirty = proc.run(["git", "-C", str(root), "status", "--porcelain"],
                                capture_output=True, text=True, timeout=5)
         if dirty.returncode == 0 and dirty.stdout.strip():
             commit += "+dirty"

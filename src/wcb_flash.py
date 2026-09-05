@@ -32,6 +32,7 @@ import tempfile
 from typing import Optional
 
 import certs
+import proc
 import fwcache
 import settings
 from flash import FlashError, reachable, _esptool_argv, _get, _PCT_RE
@@ -254,7 +255,7 @@ def detect(port: str, log=lambda _m: None) -> tuple[str, Optional[int]]:
                              "flash-id"]
     log(f"$ esptool --chip auto --port {port} flash-id")
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        p = proc.run(cmd, capture_output=True, text=True, timeout=90)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise FlashError(f"could not identify the board on {port}: {e}") from e
 
@@ -370,7 +371,7 @@ def run_esptool(port: str, chip: str, entries: list[dict], log, progress=None,
 
         log(f"$ esptool --chip {chip} --port {port} --baud {baud} write-flash ...")
         try:
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+            p = proc.popen(cmd, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, bufsize=1)
         except FileNotFoundError as e:
             raise FlashError(f"could not start esptool: {e}") from e

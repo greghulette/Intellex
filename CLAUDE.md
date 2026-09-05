@@ -281,6 +281,29 @@ The desktop app is **not announced**. The NaviCore repo and its GitHub Pages too
 - This is discretion against casual browsing, not secrecy against inspection. `wifiEnabled` is
   readable in the public repo by anyone who looks. Do not mistake one for the other.
 
+## Never spawn a bare subprocess
+
+The app is windowed — `pythonw`, and the frozen build is `console=False`. A GUI
+process has no console, so spawning a console program (`netsh`, `esptool`, `git`,
+or the exe re-invoking itself) makes Windows **create one**, and a black window
+flashes at the user. Use `src/proc.py` (`proc.run` / `proc.popen`), which adds
+`CREATE_NO_WINDOW` on Windows and nothing elsewhere.
+
+Not cosmetic: the reconnect loop bounces the adapter on a timer, three `netsh`
+calls a go, so an unreachable droid produced a console flash every few seconds
+indefinitely. It looks exactly like malware and names no culprit.
+
+## An adapter bounce that fails is not a transient
+
+`wifi_bounce` failing with *"no wireless interface is associated with X"* means the
+profile is absent or the user is deliberately on another network. The thousandth
+attempt fails exactly like the first. Unbounded it ran **4288 times in one
+session** — flapping the adapter every 10 s and burying every other log line.
+
+`BOUNCE_GIVE_UP` caps consecutive failures, then leaves the adapter alone and says
+so; the link itself keeps retrying passively. The counter resets on success, so a
+droid that genuinely comes and goes still gets the retries this exists for.
+
 ## Never bounce the user's WiFi from a test host
 
 `reconnect_loop` has **`auto_bounce = True` by default**. When a `ws` target is wanted

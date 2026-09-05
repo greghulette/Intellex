@@ -375,6 +375,7 @@ def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
     """
     import re
     import subprocess
+    import proc
     if sys.platform == "darwin":
         return _wifi_bounce_macos(ssid)
     if sys.platform != "win32":
@@ -385,7 +386,7 @@ def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
     # serve, that drops the user's house WiFi (and any call on it) to fix the droid
     # link. Find the adapter actually associated with `ssid` and touch only that.
     try:
-        show = subprocess.run(["netsh", "wlan", "show", "interfaces"],
+        show = proc.run(["netsh", "wlan", "show", "interfaces"],
                               capture_output=True, timeout=10, text=True, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return False, f"netsh unavailable: {e.__class__.__name__}"
@@ -407,9 +408,9 @@ def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
                        "join it once by hand so Windows saves the profile")
 
     try:
-        subprocess.run(["netsh", "wlan", "disconnect", f"interface={iface}"],
+        proc.run(["netsh", "wlan", "disconnect", f"interface={iface}"],
                        capture_output=True, timeout=10, check=False)
-        r = subprocess.run(["netsh", "wlan", "connect",
+        r = proc.run(["netsh", "wlan", "connect",
                             f"name={ssid}", f"interface={iface}"],
                            capture_output=True, timeout=15, text=True, check=False)
         out = (r.stdout or r.stderr or "").strip()
@@ -505,10 +506,10 @@ def _wifi_bounce_macos(ssid: str, ip: str = "") -> tuple[bool, str]:
     Hence: ask the routing table first, and fall back to the SSID scan only when
     it declines to name an interface (droid off, so nothing to bounce anyway).
     """
-    import subprocess
+    import proc
 
     def run(args, timeout=15):
-        return subprocess.run(args, capture_output=True, text=True,
+        return proc.run(args, capture_output=True, text=True,
                               timeout=timeout, check=False)
 
     ip = ip or DEFAULT_CANDIDATES[0]

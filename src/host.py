@@ -56,6 +56,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import certs                                             # noqa: E402
 import paths                                             # noqa: E402
+import proc                                              # noqa: E402
 import applog                                            # noqa: E402
 import version                                           # noqa: E402
 import settings                                          # noqa: E402
@@ -607,7 +608,7 @@ async def api_update_firmware(_req: web.Request) -> web.Response:
         argv = [sys.executable, str(script)]
 
     def run():
-        return subprocess.run(argv, capture_output=True, text=True, timeout=900)
+        return proc.run(argv, capture_output=True, text=True, timeout=900)
 
     try:
         r = await asyncio.to_thread(run)
@@ -719,7 +720,7 @@ async def api_update_webui(req: web.Request) -> web.Response:
         argv = [sys.executable, str(script), "--tool", tool]
 
     def run():
-        return subprocess.run(argv, capture_output=True, text=True, timeout=600)
+        return proc.run(argv, capture_output=True, text=True, timeout=600)
 
     try:
         r = await asyncio.to_thread(run)
@@ -1209,6 +1210,9 @@ BOUNCE_AFTER_FAILS = 2       # act before Windows gets round to it on its own
 # just inside Windows' own conclusion, and produces ONE transition.
 PROBE_IDLE_S = 6.0
 PROBE_FAILS_NEEDED = 3
+# How many failed bounces before leaving the adapter alone. A failure here is
+# permanent in character, not transient -- see the note at the call site.
+BOUNCE_GIVE_UP = 3
 BOUNCE_COOLDOWN_S  = 10.0    # short: a bounce is now conditional on being misrouted,
                              # so retrying is cheap and the first one after the AP
                              # returns is the one that sticks
@@ -1234,6 +1238,7 @@ async def reconnect_loop(_app: web.Application) -> None:
     fails = 0
     last_bounce = -1e9
     probe_fails = 0
+    bounce_fails = 0
     while True:
         try:
             await asyncio.sleep(1.0)
@@ -1338,12 +1343,30 @@ async def reconnect_loop(_app: web.Application) -> None:
                     host = spec.get("host", "192.168.4.1")
                     via = await asyncio.to_thread(discover.local_ip_for, host)
                     same_subnet = bool(via) and via.rsplit(".", 1)[0] == host.rsplit(".", 1)[0]
-                    if not same_subnet:
+                    if not same_subnet and bounce_fails < BOUNCE_GIVE_UP:
                         last_bounce = now
                         ssid = spec.get("ssid", "NaviCore")
                         ok, msg = await asyncio.to_thread(discover.wifi_bounce, ssid)
                         print(f"routed via {via or 'nothing'} instead of {host} — "
                               f"re-associating {ssid}: {'ok' if ok else 'FAILED'} ({msg})")
+                        # STOP AFTER A FEW FAILURES. A bounce that fails does not
+                        # fail transiently: "no wireless interface is associated
+                        # with X" means the profile is not there or you are
+                        # deliberately on another network, and the thousandth
+                        # attempt fails exactly like the first. Left unbounded it
+                        # ran 4288 times in one session -- flapping the adapter
+                        # every 10 s, spawning netsh (three console windows a go,
+                        # before proc.py), and burying every other line in the log.
+                        #
+                        # Reset on success, so a droid that genuinely comes and
+                        # goes still gets the retries this exists for.
+                        bounce_fails = 0 if ok else bounce_fails + 1
+                        if bounce_fails == BOUNCE_GIVE_UP:
+                            print(f"giving up on re-associating {ssid} after "
+                                  f"{BOUNCE_GIVE_UP} failed attempts — still "
+                                  f"retrying the link itself, but leaving the "
+                                  f"adapter alone. Rejoin {ssid} by hand, or pick "
+                                  f"another connection.")
                         fails = 0
         except asyncio.CancelledError:
             raise

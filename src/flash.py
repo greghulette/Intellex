@@ -32,6 +32,7 @@ import urllib.error
 import urllib.request
 
 import certs
+import proc
 import fwcache
 import settings
 
@@ -375,7 +376,7 @@ def run_esptool(port: str, entries: list[dict], log, progress=None,
 
         log(f"$ esptool --chip {CHIP} --port {port} --baud {baud} write_flash ...")
         try:
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+            p = proc.popen(cmd, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, bufsize=1)
         except FileNotFoundError as e:
             raise FlashError(f"could not start esptool: {e}") from e
