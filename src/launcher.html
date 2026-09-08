@@ -5,186 +5,327 @@
      the alternative is Chrome's blank-page glyph on a page that has a logo. -->
 <link rel="icon" href="/_assets/intellex-favicon-32.png">
 <style>
-  /* --accent IS the mark's ring colour (#4aa6ef), not a colour picked to look
-     like it. The wordmark's LEX sits inches from the ring in the masthead, so
-     any drift between the two reads as a rendering fault. */
-  :root { color-scheme: dark; --bg:#12131a; --panel:#1b1d27; --line:#2c2f3d;
-          --fg:#e8e8ea; --muted:#8b8fa3; --accent:#4aa6ef; --ok:#4ec9a0; --warn:#e0a458; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; padding:22px 24px; }
-  .masthead { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
-  /* flex:none, or the image is a shrinkable flex child and squashes when the
-     text beside it wants the room. */
-  .masthead .mark { flex:none; width:40px; height:40px; display:block; }
-  /* Set in caps with the wordmark's own 0.10em tracking. The drawn wordmark is
-     Chakra Petch, which this app does not ship and cannot fetch offline, so the
-     brand is carried by the case, the tracking and the INTEL/LEX colour split
-     rather than by the typeface. */
-  h1 { font-size:20px; margin:0 0 1px; letter-spacing:.1em; font-weight:600; }
-  h1 span { color:var(--accent); }
-  .sub { color:var(--muted); font-size:12.5px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
-          padding:14px 16px; margin-bottom:12px; }
-  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em;
-             color:var(--muted); margin:0 0 10px; font-weight:600; }
-  .row { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:7px;
-         cursor:pointer; border:1px solid transparent; }
-  .row:hover { background:#232636; border-color:var(--line); }
-  .row .name { flex:1; min-width:0; }
-  .row .name b { display:block; }
-  .row .name small { color:var(--muted); }
-  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none; }
-  .dot.up { background:var(--ok); }
-  .empty { color:var(--muted); font-size:12.5px; padding:6px 10px; }
-  button { font:inherit; background:#273044; color:var(--fg); border:1px solid var(--line);
-           border-radius:7px; padding:7px 13px; cursor:pointer; }
-  button:hover { background:#313c55; }
-  button.primary { background:var(--accent); color:#0d1117; border-color:var(--accent); font-weight:600; }
-  button:disabled { opacity:.5; cursor:default; }
-  button.pick[aria-pressed="true"] { background:var(--accent); color:#0d1117;
-                                     border-color:var(--accent); font-weight:600; }
-  .bar { display:flex; gap:8px; align-items:center; }
-  .bar .grow { flex:1; }
-  .status { font-size:12.5px; color:var(--muted); min-height:18px; margin-top:10px; }
-  .status.err { color:#e5737b; }
-  .stale { color:var(--warn); }
-  h1 #appver { font-size:11.5px; font-weight:400; color:var(--muted); letter-spacing:0; }
-  input { font:inherit; background:#12131a; color:var(--fg); border:1px solid var(--line);
-          border-radius:6px; padding:4px 8px; margin-left:4px; }
-  /* Sub-headings inside one card. The first needs no top gap; the rest are
-     separating sections, so they do. */
-  .card h2 + .bar { margin-top:0; }
-  .card h2:not(:first-child) { margin-top:20px; }
-  /* Plain-language explanation under a control. Deliberately NOT a tooltip:
-     "Update firmware" read as "push firmware to my boards" to the person whose
-     app this is, and a title= attribute cannot correct a misreading nobody
-     knows they are having. */
-  .note { color:var(--muted); font-size:12px; line-height:1.5; margin:6px 2px 0; }
-  .note b { color:#c9cede; font-weight:600; }
-  select { font:inherit; background:#12131a; color:var(--fg); border:1px solid var(--line);
-           border-radius:6px; padding:4px 6px; margin-left:4px; max-width:170px; }
-  details#maint { margin-top:4px; }
-  details#maint > summary {
-    cursor:pointer; list-style:none; color:var(--muted); font-size:12.5px;
-    padding:8px 10px; border:1px solid var(--line); border-radius:8px;
-    background:var(--panel); user-select:none;
+  /* FONTS ARE BUNDLED, NOT FETCHED. The design calls for IBM Plex, and the
+     obvious way to get it is a Google Fonts <link> — which is exactly wrong for
+     this app: the whole premise is that it works on a droid's AP with no route
+     out, and a webfont that only arrives when you are online means the UI is one
+     typeface at the bench and another on the con floor. IBM Plex Sans is a
+     VARIABLE font, so one file covers 400-700; with the latin subset both faces
+     together are 60 KB, which is a rounding error against the firmware cache. */
+  @font-face {
+    font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400 700;
+    font-display: swap; src: url('/_assets/fonts/ibm-plex-sans.woff2') format('woff2');
   }
-  details#maint > summary::-webkit-details-marker { display:none; }
-  details#maint > summary::before { content:'\25B8'; margin-right:7px; display:inline-block; }
-  details#maint[open] > summary::before { transform:rotate(90deg); }
-  details#maint > summary:hover { background:#232636; }
+  @font-face {
+    font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400;
+    font-display: swap; src: url('/_assets/fonts/ibm-plex-mono.woff2') format('woff2');
+  }
+
+  /* Dark is the default and the design's primary. Light is a real second theme
+     rather than an inversion: the accent darkens (#4aa6ef has too little contrast
+     on white) and the "sunk" surfaces become white while the page behind them
+     goes grey, because a light UI reads by shadow-and-paper, not by depth. */
+  :root {
+    color-scheme: dark;
+    --bg:#12131a; --panel:#161822; --sunk:#171924; --line:#23252f; --line-2:#2c2f3d;
+    --fg:#e8e8ea; --muted:#8b8fa3; --dim:#7b8091; --strong:#c3c7d4;
+    --accent:#4aa6ef; --on-accent:#0d1117; --sel-bg:#182437; --sel-line:#35618f;
+    --btn:#1e2130; --btn-hover:#262a3b; --chip:#2b3346; --wifi-bg:#1d3a5c; --wifi-fg:#8fc4f5;
+    --usb-bg:#25303f; --usb-fg:#9fb0c4; --dash:#131521;
+    --ok:#4ec9a0; --warn:#e0a458; --err:#e5737b; --idle:#8b8fa3;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg:#f2f4f8; --panel:#ffffff; --sunk:#ffffff; --line:#e2e6ee; --line-2:#d3d9e4;
+    --fg:#161a22; --muted:#5c6572; --dim:#69707e; --strong:#2b313c;
+    --accent:#1a6fbd; --on-accent:#ffffff; --sel-bg:#e8f1fb; --sel-line:#8dbde8;
+    --btn:#f4f6fa; --btn-hover:#e9edf4; --chip:#dde4ef; --wifi-bg:#dbe9f8; --wifi-fg:#1a5b96;
+    --usb-bg:#e6e9ef; --usb-fg:#4c5563; --dash:#f7f9fc;
+    --ok:#1c8f68; --warn:#a9700f; --err:#c0392f; --idle:#8d95a2;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height:100%; margin:0; }
+  body { background:var(--bg); color:var(--fg); display:flex; flex-direction:column;
+         font:14px/1.5 'IBM Plex Sans', system-ui, -apple-system, Segoe UI, sans-serif; }
+  .mono { font-family:'IBM Plex Mono', ui-monospace, Consolas, monospace; }
+  button { font:inherit; cursor:pointer; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { opacity:.8; }
+
+  .btn { font-size:12.5px; background:var(--btn); color:var(--strong);
+         border:1px solid var(--line-2); border-radius:7px; padding:6px 12px; }
+  .btn:hover { background:var(--btn-hover); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .btn.primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent);
+                 font-size:14.5px; font-weight:600; padding:12px 16px; width:100%; }
+  .btn.primary:hover { opacity:.92; background:var(--accent); }
+
+  /* ── Header ─────────────────────────────────────────────────────────── */
+  #top { flex:0 0 auto; display:flex; align-items:center; gap:12px; padding:14px 20px;
+         border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
+  #top .mark { width:34px; height:34px; object-fit:contain; flex:none; }
+  #top h1 { font-size:18px; font-weight:600; letter-spacing:.1em; line-height:1; margin:0; }
+  #top h1 span { color:var(--accent); }
+  #top .desc { font-size:9.5px; letter-spacing:.2em; color:var(--muted); margin-top:3px; }
+  #top .right { margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  #attn { display:none; align-items:center; gap:7px; padding:5px 11px; border:1px solid var(--line-2);
+          border-radius:999px; background:var(--bg); font-size:12px; color:var(--strong); }
+  #attn .dot { width:7px; height:7px; border-radius:50%; background:var(--warn); }
+  #appver { font-size:11px; color:var(--muted); margin-left:2px; }
+
+  /* ── Two columns ────────────────────────────────────────────────────── */
+  #main { flex:1; display:grid; grid-template-columns:minmax(0,1fr) 340px; min-height:0; }
+  #left { display:flex; flex-direction:column; min-width:0; border-right:1px solid var(--line); }
+  #lefthead { display:flex; align-items:center; gap:12px; padding:16px 22px 12px; flex-wrap:wrap; }
+  #lefthead .title { font-size:15px; font-weight:600; }
+  #tabs { display:flex; gap:2px; padding:2px; background:var(--sunk);
+          border:1px solid var(--line-2); border-radius:8px; }
+  #tabs button { font-size:12.5px; padding:4px 12px; border:none; border-radius:6px;
+                 background:transparent; color:var(--muted); }
+  #tabs button[aria-pressed="true"] { background:var(--chip); color:var(--fg); }
+  #scanstate { font-size:11px; color:var(--muted); }
+
+  #devices { flex:1; overflow:auto; padding:0 16px 16px; display:flex; flex-direction:column; gap:8px; }
+  .row { display:flex; align-items:center; gap:14px; padding:13px 16px; border-radius:9px;
+         border:1px solid var(--line-2); background:var(--sunk); cursor:pointer; }
+  .row:hover { border-color:var(--sel-line); }
+  .row.sel { background:var(--sel-bg); border-color:var(--sel-line); }
+  .row .dot { width:9px; height:9px; border-radius:50%; background:var(--idle); flex:none; }
+  .row .dot.up { background:var(--ok); }
+  .row .name { flex:1; min-width:0; }
+  .row .name b { display:block; font-size:14.5px; font-weight:600; }
+  .row .name small { font-size:12.5px; color:var(--muted); }
+  .row .tag { font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:10px;
+              letter-spacing:.12em; padding:3px 8px; border-radius:4px; flex:none; }
+  .row .tag.wifi { background:var(--wifi-bg); color:var(--wifi-fg); }
+  .row .tag.usb  { background:var(--usb-bg);  color:var(--usb-fg); }
+  .row .selmark { font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:10px;
+                  letter-spacing:.12em; color:var(--accent); display:none; flex:none; }
+  .row.sel .selmark { display:inline; }
+  .empty { color:var(--muted); font-size:12.5px; padding:6px 2px; }
+  /* Hidden by the filter tabs. The two scans render into their own containers and
+     keep doing so — filtering is a view over them, not a third list to keep in
+     step with the other two. */
+  .hidden { display:none !important; }
+
+  #offlinecard { margin-top:auto; display:flex; align-items:center; gap:10px; padding:12px 16px;
+                 border-radius:9px; border:1px dashed var(--line-2); background:var(--dash); }
+  #offlinecard span { font-size:12.5px; color:var(--muted); line-height:1.5; }
+
+  /* ── Right panel ────────────────────────────────────────────────────── */
+  #side { display:flex; flex-direction:column; min-width:0; background:var(--panel); overflow:hidden; }
+  /* The middle scrolls; the maintenance block below it does not move. */
+  #sidescroll { flex:1; overflow:auto; min-height:0; }
+  /* PINNED, both of them. Pinning only the maintenance lines pushed "Connect and
+     open" into the scrolling half -- the button the whole panel exists to lead to
+     became the thing below the fold, which is worse than what it fixed. The
+     scroller keeps what is safe to scroll: the selection detail and the layout
+     choice. */
+  #sidefoot { flex:0 0 auto; border-top:1px solid var(--line); background:var(--panel); }
+  .sect { padding:16px 20px; border-bottom:1px solid var(--line); }
+  .lbl { font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:10px;
+         letter-spacing:.16em; color:var(--dim); }
+  #selTitle { font-size:15px; font-weight:600; margin-top:8px; }
+  #selSub { font-size:12.5px; color:var(--muted); margin-top:3px;
+            display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical;
+            overflow:hidden; }
+  #openwith { display:flex; flex-direction:column; gap:4px; margin-top:8px; }
+  .pick { display:flex; align-items:flex-start; gap:10px; padding:7px 10px; border-radius:8px;
+          border:1px solid transparent; background:transparent; text-align:left; color:inherit; width:100%; }
+  .pick:hover { background:var(--sunk); }
+  .pick[aria-pressed="true"] { border-color:var(--sel-line); background:var(--sel-bg); }
+  .pick .ring { width:14px; height:14px; border-radius:50%; border:1.5px solid var(--line-2);
+                background:var(--bg); flex:none; margin-top:2px; }
+  .pick[aria-pressed="true"] .ring { border:4px solid var(--accent); }
+  .pick b { font-size:13.5px; font-weight:600; display:block; }
+  .pick small { font-size:11.5px; color:var(--muted); line-height:1.4; }
+  #actionNote { font-size:12px; color:var(--muted); line-height:1.5; margin-top:10px; }
+
+  /* margin-top:auto pins this to the bottom when there is room, and the panel
+     scrolls when there is not -- at 800px tall with four view options the
+     maintenance lines fell off the bottom with no way to reach them. */
+  #maintsum { border-top:1px solid var(--line); padding:12px 20px 14px;
+              display:flex; flex-direction:column; gap:8px; background:var(--panel); }
+  .mrow { display:flex; align-items:center; gap:9px; font-size:12.5px; }
+  .mrow .dot { width:6px; height:6px; border-radius:50%; background:var(--ok); flex:none; }
+  .mrow .dot.warn { background:var(--warn); }
+  .mrow span.t { color:var(--strong); flex:1; min-width:0; }
+  .mrow.ok span.t { color:var(--muted); }
+  .mrow a { font-size:12.5px; cursor:pointer; }
+
+  /* ── The full maintenance panel ─────────────────────────────────────── */
+  /* Full width UNDER the columns rather than inside the 340px one: it holds two
+     dropdowns, four buttons and a log tail, and none of that fits a sidebar. The
+     panel summarises up there and expands down here. */
+  #maint { flex:0 0 auto; border-top:1px solid var(--line); background:var(--panel); }
+  #maint > summary { cursor:pointer; list-style:none; color:var(--muted); font-size:12.5px;
+                     padding:10px 20px; user-select:none; }
+  #maint > summary::-webkit-details-marker { display:none; }
+  #maint > summary::before { content:'\25B8'; margin-right:7px; display:inline-block; }
+  #maint[open] > summary::before { transform:rotate(90deg); }
+  #maint > summary:hover { color:var(--fg); }
+  #maintbody { padding:4px 20px 18px; display:grid; gap:20px;
+               grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); }
+  #maintbody h2 { font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:10px;
+                  letter-spacing:.16em; color:var(--dim); margin:0 0 8px; font-weight:400; }
+  .bar { display:flex; gap:8px; align-items:center; }
+  .bar .grow { flex:1; min-width:0; }
+  .note { color:var(--muted); font-size:12px; line-height:1.5; margin:6px 0 0; }
+  .note b { color:var(--strong); font-weight:600; }
+  select, input { font:inherit; font-size:13px; background:var(--bg); color:var(--fg);
+                  border:1px solid var(--line-2); border-radius:6px; padding:4px 7px; }
+  select { max-width:170px; }
+  #logtail { display:none; max-height:220px; overflow:auto; margin:8px 0 0; padding:10px;
+             background:var(--sunk); border:1px solid var(--line); border-radius:7px;
+             font:11.5px/1.45 'IBM Plex Mono',ui-monospace,Consolas,monospace; white-space:pre-wrap; }
+  .stale { color:var(--warn); }
+  #status { flex:0 0 auto; font-size:12.5px; color:var(--muted); min-height:18px;
+            padding:8px 20px; border-top:1px solid var(--line); background:var(--panel); }
+  #status.err { color:var(--err); }
+
+  /* One column when there is not room for two — the right panel drops below the
+     list rather than squeezing both. */
+  @media (max-width: 820px) {
+    #main { grid-template-columns:minmax(0,1fr); }
+    #left { border-right:0; border-bottom:1px solid var(--line); }
+    #side { overflow:visible; }
+    #sidescroll { overflow:visible; }
+  }
 </style>
 
-<header class="masthead">
-  <!-- alt="" on purpose: the <h1> beside it already says the name, so alt text
-       here would just make a screen reader announce "Intellex" twice. -->
-  <!-- THE 128px RASTER, NOT intellex-mark.svg. Every .svg in the design set has
-       an <image> element carrying no href at all, so the R2 in the middle of
-       the housing simply does not draw -- ring and hexagon render, the centre
-       comes out empty, and it looks like a deliberately hollow logo rather than
-       a broken file. The PNG builds are complete. Displayed at 40, sourced at
-       128 so a 2x or 3x screen has real pixels to use. -->
-  <img class="mark" src="/_assets/intellex-mark-128.png" alt="" width="40" height="40">
+<div id="top">
+  <img class="mark" src="/_assets/intellex-mark-128.png" alt="" width="34" height="34">
   <div>
-    <h1>INTEL<span>LEX</span> <span id="appver"></span></h1>
-    <div class="sub">Pick a droid, or a cable.</div>
+    <h1>INTEL<span>LEX</span></h1>
+    <div class="desc mono">NAVICORE / WCB CONFIGURATION TOOL</div>
   </div>
-</header>
-
-<div class="card">
-  <h2>Over WiFi</h2>
-  <div id="wifi"><div class="empty">scanning…</div></div>
+  <div class="right">
+    <div id="attn"><span class="dot"></span><span id="attntext"></span></div>
+    <button class="btn" id="opendocs">Docs</button>
+    <button class="btn" id="showlog">Log</button>
+    <button class="btn" id="theme" style="min-width:86px"></button>
+    <span class="mono" id="appver"></span>
+  </div>
 </div>
 
-<div class="card">
-  <h2>Over USB</h2>
-  <div id="serial"><div class="empty">looking for ports…</div></div>
+<div id="main">
+  <div id="left">
+    <div id="lefthead">
+      <div class="title">Connect to</div>
+      <div id="tabs">
+        <button data-filter="all"  aria-pressed="true">All <span id="c-all">0</span></button>
+        <button data-filter="wifi" aria-pressed="false">WiFi <span id="c-wifi">0</span></button>
+        <button data-filter="usb"  aria-pressed="false">USB <span id="c-usb">0</span></button>
+      </div>
+      <div style="margin-left:auto; display:flex; align-items:center; gap:10px;">
+        <span class="mono" id="scanstate">scanning…</span>
+        <button class="btn" id="rescan">Rescan</button>
+      </div>
+    </div>
+
+    <div id="devices">
+      <!-- Two containers, one visible list. scanWifi() and scan() each own theirs
+           and are unchanged by the filter, which only hides. -->
+      <div id="wifi"><div class="empty">scanning…</div></div>
+      <div id="serial"><div class="empty">looking for ports…</div></div>
+
+      <div id="offlinecard">
+        <span>No board handy? The tool opens on its own — panels, saved configs and
+          editing all work without one.</span>
+        <button class="btn" id="offline" style="margin-left:auto; white-space:nowrap">Open the tool anyway</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="side">
+    <div id="sidescroll">
+    <div class="sect">
+      <div class="lbl">SELECTED</div>
+      <div id="selTitle">Nothing selected</div>
+      <div id="selSub">Pick a droid, a WCB or a cable on the left.</div>
+    </div>
+
+    <div class="sect" id="openwithsect">
+      <div class="lbl">OPEN WITH</div>
+      <div id="openwith"></div>
+    </div>
+
+    </div>
+
+    <div id="sidefoot">
+      <div class="sect" style="border-bottom:0">
+        <button class="btn primary" id="go" disabled>Connect and open</button>
+        <div id="actionNote"></div>
+        <button class="btn" id="back" style="display:none; width:100%; margin-top:8px">Back to the tool</button>
+      </div>
+
+      <div id="maintsum">
+        <div class="lbl">MAINTENANCE</div>
+        <div class="mrow ok" id="m-tools"><span class="dot"></span><span class="t">checking…</span><a id="m-tools-a">Update</a></div>
+        <div class="mrow ok" id="m-fw"><span class="dot"></span><span class="t">checking…</span><a id="m-fw-a">Download</a></div>
+        <div class="mrow ok" id="m-more"><span class="dot"></span><span class="t">checking…</span><a id="m-more-a">More…</a></div>
+      </div>
+    </div>
+  </div>
 </div>
 
-<!-- The layout choice is a preference, not a per-launch decision — it is
-     remembered. One row, no card, no explanatory paragraph: the labels say what
-     they do and the note only appears on hover. -->
-<div class="bar" id="openwith" style="margin:14px 2px 16px">
-  <span style="color:var(--muted);font-size:12.5px;margin-right:2px">Open with</span>
-  <button class="pick" data-view="nc"    title="The droid config tool, full window.">NaviCore tool</button>
-  <button class="pick" data-view="wcb"   title="The WCB config tool, full window. Reaches WCBs over USB, or through a relay over WiFi.">WCB</button>
-  <button class="pick" data-view="split" title="Both tools in one window, with a draggable divider. Both stay connected.">Side by side</button>
-  <button class="pick" data-view="sep"   title="The config tool here, the Wizard in its own window.">Separate windows</button>
-  <span class="grow"></span>
-  <button id="rescan">Rescan</button>
-  <button id="offline">Open the tool anyway</button>
-  <button id="back" class="primary" style="display:none">Back to tool</button>
-</div>
-
-<!-- ── Everything you touch occasionally, folded away ────────────────────────
-     Versions, the firmware cache, the branch and the log are maintenance. They
-     were four stacked cards competing with the one thing this screen is for, so
-     they collapse to a single line.
-
-     THE SUMMARY MUST SURFACE PROBLEMS. Collapsing is only acceptable if nothing
-     that needs attention hides behind it — a stale tool, an uncached firmware
-     set, a branch that is not main. Those turn the line orange and it opens
-     itself, so folding never costs you a warning. -->
 <details id="maint">
-  <summary id="maint-sum">Updates, firmware and logs</summary>
-  <div class="card" style="margin-top:8px">
-    <h2>The tools you are using</h2>
-    <div class="bar">
-      <span class="grow" id="uiver">checking…</span>
-      <button id="update">Update tools</button>
+  <summary id="maint-sum">Updates, firmware, docs and logs</summary>
+  <div id="maintbody">
+    <div>
+      <h2>THE TOOLS YOU ARE USING</h2>
+      <div class="bar">
+        <span class="grow" id="uiver">checking…</span>
+        <button class="btn" id="update">Update tools</button>
+      </div>
+      <div class="note">The config tool and the Wizard — the pages themselves. This
+        fetches the current published version. The copies that shipped inside Intellex
+        are always kept, so a bad update can be undone.</div>
     </div>
-    <div class="note">The config tool and the Wizard — the pages themselves. This
-      fetches the current published version. The copies that shipped inside Intellex
-      are always kept, so a bad update can be undone.</div>
 
-    <h2>Firmware, for flashing later</h2>
-    <div class="bar">
-      <span class="grow" id="fwver">checking…</span>
-      <button id="updatefw">Download firmware</button>
+    <div>
+      <h2>FIRMWARE, FOR FLASHING LATER</h2>
+      <div class="bar">
+        <span class="grow" id="fwver">checking…</span>
+        <button class="btn" id="updatefw">Download firmware</button>
+      </div>
+      <div class="note"><b>This does not touch your boards.</b> It downloads firmware
+        files onto this computer so you can flash with no internet later — including
+        OTA through a relay, which fetches its image the same way.</div>
     </div>
-    <div class="note"><b>This does not touch your boards.</b> It downloads firmware
-      files onto this computer so you can flash with no internet later — on a con
-      floor, or on the droid's own WiFi. Flashing a board is done in the tools, on
-      the board you pick.</div>
 
-    <h2>Which firmware build</h2>
-    <div class="bar">
-      <label style="font-size:12.5px">NaviCore <select id="br-nc"></select></label>
-      <input id="br-nc-txt" size="14" spellcheck="false" placeholder="branch name"
-             style="display:none">
-      <label style="font-size:12.5px">WCB <select id="br-wcb"></select></label>
-      <input id="br-wcb-txt" size="14" spellcheck="false" placeholder="branch name"
-             style="display:none">
-      <button id="br-save">Set</button>
-      <span class="grow"></span>
+    <div>
+      <h2>WHICH FIRMWARE BUILD</h2>
+      <div class="bar">
+        <label style="font-size:12.5px">NaviCore <select id="br-nc"></select></label>
+        <input id="br-nc-txt" size="12" spellcheck="false" placeholder="branch name" style="display:none">
+        <label style="font-size:12.5px">WCB <select id="br-wcb"></select></label>
+        <input id="br-wcb-txt" size="12" spellcheck="false" placeholder="branch name" style="display:none">
+        <button class="btn" id="br-save">Set</button>
+      </div>
+      <div class="note" id="br-note"></div>
     </div>
-    <div class="note" id="br-note"></div>
 
-    <h2>Documentation</h2>
-    <div class="bar">
-      <span class="grow" id="wikiver">checking…</span>
-      <button id="opendocs">Open docs</button>
-      <button id="updatewiki">Download docs</button>
+    <div>
+      <h2>DOCUMENTATION</h2>
+      <div class="bar">
+        <span class="grow" id="wikiver">checking…</span>
+        <button class="btn" id="updatewiki">Download docs</button>
+      </div>
+      <div class="note">The NaviCore, WCB and Intellex wikis, kept on this computer so
+        you can read them on a droid's WiFi with no route to GitHub. Photographs over
+        1&nbsp;MB are left online — the pages link out to them.</div>
+      <div class="bar" style="margin-top:12px">
+        <span class="grow mono" id="logpath" style="font-size:11px; color:var(--muted);
+              overflow:hidden; text-overflow:ellipsis; white-space:nowrap">…</span>
+      </div>
+      <pre id="logtail"></pre>
     </div>
-    <div class="note">The NaviCore, WCB and Intellex wikis, kept on this computer so
-      you can read them on a droid's WiFi with no route to GitHub. Downloading
-      replaces the stored copy; nothing is sent anywhere. Photographs over 1&nbsp;MB
-      are left online — the pages link out to them.</div>
-
-    <h2>Log</h2>
-    <div class="bar">
-      <span class="grow" id="logpath" style="font-size:12px;color:var(--muted);
-            overflow:hidden;text-overflow:ellipsis;white-space:nowrap">…</span>
-      <button id="showlog">Show log</button>
-    </div>
-    <pre id="logtail" style="display:none;max-height:240px;overflow:auto;margin:8px 0 0;
-         padding:10px;background:#0e0f16;border:1px solid var(--line);border-radius:7px;
-         font:11.5px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap"></pre>
   </div>
 </details>
 
-<div class="status" id="status"></div>
+<div id="status"></div>
 
 <script>
 // F5 / Ctrl+R: the window has no browser chrome, so the usual reload keys are
@@ -203,40 +344,198 @@ const setStatus = (t, err) => { const s=$('status'); s.textContent=t; s.classNam
 // behind it. Each check reports its state here; anything wrong turns the line
 // orange AND opens the section, so a stale tool, an uncached firmware set or a
 // non-main branch can never be missed by having collapsed it.
-const _maint = { tools: '', fw: '', branch: '' };
-function paintMaint() {
-  const bad = Object.values(_maint).filter(Boolean);
-  const sum = $('maint-sum');
-  if (bad.length) {
-    sum.innerHTML = 'Updates, firmware and logs &nbsp;·&nbsp; <span class="stale">'
-                  + bad.join(' · ') + '</span>';
-    // Open it once, not on every refresh — reopening a section the user has
-    // deliberately closed is the kind of helpfulness nobody wants.
-    if (!$('maint').dataset.nagged) {
-      $('maint').open = true;
-      $('maint').dataset.nagged = '1';
-    }
-  } else {
-    sum.textContent = 'Updates, firmware and logs · all current';
-  }
+const _maint = { tools: '', fw: '', branch: '', docs: '' };
+
+// One line each in the side panel, plus a count in the header. Folding the full
+// panel away is only acceptable if nothing needing attention hides behind it, so
+// each check reports its state here and anything wrong shows WITHOUT opening it.
+function mline(id, bad, okText, badText, action) {
+  const el = $(id);
+  el.classList.toggle('ok', !bad);
+  el.querySelector('.dot').classList.toggle('warn', !!bad);
+  el.querySelector('.t').textContent = bad ? badText : okText;
+  const a = el.querySelector('a');
+  a.style.display = action ? '' : 'none';
+  if (action) a.textContent = action;
 }
 
+function paintMaint() {
+  const bad = Object.values(_maint).filter(Boolean);
+
+  mline('m-tools', _maint.tools, 'Tools up to date', _maint.tools || '', 'Update');
+  mline('m-fw',    _maint.fw,    'Firmware cached',  _maint.fw    || '', 'Download');
+  // The third line carries whatever is left: the branch warning matters more than
+  // the docs one, so it wins the line when both are set.
+  const rest = _maint.branch || _maint.docs;
+  mline('m-more', rest, 'Branches on main · docs stored', rest || '', 'More…');
+
+  const attn = $('attn');
+  if (bad.length) {
+    attn.style.display = 'flex';
+    $('attntext').textContent = bad.length === 1 ? '1 thing needs attention'
+                                                 : bad.length + ' things need attention';
+  } else {
+    attn.style.display = 'none';
+  }
+
+  $('maint-sum').textContent = bad.length
+    ? 'Updates, firmware, docs and logs · ' + bad.join(' · ')
+    : 'Updates, firmware, docs and logs · all current';
+}
+
+// The summary's own actions just drive the real controls below, so there is one
+// implementation of each and no second copy to keep in step.
+$('m-tools-a').onclick = () => { $('maint').open = true; $('update').click(); };
+$('m-fw-a').onclick    = () => { $('maint').open = true; $('updatefw').click(); };
+$('m-more-a').onclick  = () => {
+  $('maint').open = true;
+  $('maint').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+
+
+// Everything that has to follow the two device lists. Called from BOTH scans,
+// because the WiFi list is redrawn on its own every few seconds while a droid is
+// still coming up -- and a repaint that forgot the counts, or dropped the
+// selection under the cursor, would be worse than not rescanning at all.
+function afterListChanged() {
+  const keep = _sel && _sel._attach ? _sel._attach.label : null;
+  paintFilter();
+  if (!_sel || !_sel.isConnected) reselect(keep);
+  else paintSelection();
+  offerOfflineIfEmpty();
+}
+
+// Deliberately NOT part of afterListChanged. Serial renders first because
+// enumerating ports is instant, so "select the first row" run on every list
+// change always landed on a COM port -- even with a droid on the WiFi that
+// renders a second later and sorts above it. Run once, at the end of a full
+// scan, in document order. Never when something is already chosen: silently
+// moving someone's selection is worse than leaving the panel empty.
+function autoSelectIfNone() {
+  if (_sel && _sel.isConnected) return;
+  const first = document.querySelector('#devices .row');
+  if (first) selectRow(first);
+}
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
   return r.json();
 }
 
-function row(dot, title, sub, onclick) {
+// CLICKING A ROW NO LONGER CONNECTS. It selects, and the panel then says what
+// will happen before "Connect and open" makes it happen. Connecting straight from
+// the list meant the layout choice had to be made BEFORE picking a droid, in a
+// control that had nothing to do with the droid -- and a misclick on the wrong
+// row was an attach, a reconnect and a page load, not a change of mind.
+//
+// `attach` is {body, label}: exactly what connect() wants, carried on the element
+// so the button does not have to reconstruct it from the rendered text.
+function row(dot, title, sub, attach, kind) {
   const d = document.createElement('div');
   d.className = 'row';
+  d.dataset.kind = kind;
   d.innerHTML = `<span class="dot${dot ? ' up' : ''}"></span>
-                 <span class="name"><b></b><small></small></span>`;
+                 <span class="name"><b></b><small></small></span>
+                 <span class="tag ${kind}">${kind === 'wifi' ? 'WIFI' : 'USB'}</span>
+                 <span class="selmark">SELECTED</span>`;
   d.querySelector('b').textContent = title;
   d.querySelector('small').textContent = sub;
-  d.onclick = onclick;
+  d._attach = attach;
+  d.onclick = () => selectRow(d);
   return d;
 }
+
+// ── Selection ───────────────────────────────────────────────────────────────
+// Held as an ELEMENT rather than an id, because a row's subtitle is still being
+// written when it is selected: the serial scan renders "asking…" and upgrades it
+// in place a second later. Reading the live element means the panel follows that
+// instead of showing a snapshot taken before the board answered.
+let _sel = null;
+
+function selectRow(d) {
+  if (_sel && _sel.isConnected) _sel.classList.remove('sel');
+  _sel = d;
+  if (d) d.classList.add('sel');
+  paintSelection();
+}
+
+function paintSelection() {
+  const ok = !!(_sel && _sel.isConnected && _sel._attach);
+  $('go').disabled = !ok;
+  if (!ok) {
+    $('selTitle').textContent = 'Nothing selected';
+    $('selSub').textContent = 'Pick a droid, a WCB or a cable on the left.';
+    $('actionNote').textContent = '';
+    return;
+  }
+  $('selTitle').textContent = _sel.querySelector('b').textContent;
+  $('selSub').textContent = _sel.querySelector('small').textContent;
+  $('actionNote').textContent =
+    'Opens ' + VIEWS[currentView()].label + ' on ' + _sel._attach.label + '.';
+}
+
+// Re-selects the equivalent row after a rescan, so a refresh mid-decision does not
+// silently drop the selection and disable the button under the cursor.
+function reselect(prevLabel) {
+  if (!prevLabel) return;
+  for (const r of document.querySelectorAll('#devices .row'))
+    if (r._attach && r._attach.label === prevLabel) { selectRow(r); return; }
+  selectRow(null);
+}
+
+// ── Filter tabs ─────────────────────────────────────────────────────────────
+// A view over the two containers, never a third list: scanWifi() and scan() keep
+// owning what they render, and this only hides. Counting the rendered rows rather
+// than tracking a parallel model is the same idea -- one source of truth.
+let _filter = 'all';
+
+function paintFilter() {
+  const nWifi = $('wifi').querySelectorAll('.row').length;
+  const nUsb  = $('serial').querySelectorAll('.row').length;
+  $('c-all').textContent  = nWifi + nUsb;
+  $('c-wifi').textContent = nWifi;
+  $('c-usb').textContent  = nUsb;
+  $('wifi').classList.toggle('hidden',   _filter === 'usb');
+  $('serial').classList.toggle('hidden', _filter === 'wifi');
+  for (const b of $('tabs').querySelectorAll('button'))
+    b.setAttribute('aria-pressed', String(b.dataset.filter === _filter));
+}
+
+for (const b of document.querySelectorAll('#tabs button')) {
+  b.onclick = () => { _filter = b.dataset.filter; paintFilter(); };
+}
+
+$('go').onclick = () => {
+  if (_sel && _sel._attach) connect(_sel._attach.body, _sel._attach.label);
+};
+
+// ── Theme ───────────────────────────────────────────────────────────────────
+// Remembered, and defaulting to the OS preference on a first run rather than
+// assuming dark. The attribute goes on <html> so the :root[data-theme] block wins
+// over the bare :root one without every rule needing a duplicate.
+const THEME_KEY = 'intellex_theme';
+function currentTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    if (t === 'light' || t === 'dark') return t;
+  } catch (_) {}
+  try {
+    if (matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+  } catch (_) {}
+  return 'dark';
+}
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem(THEME_KEY, t); } catch (_) {}
+  $('theme').textContent = t === 'light' ? 'Dark mode' : 'Light mode';
+  $('theme').title = t === 'light' ? 'Switch to the dark theme' : 'Switch to the light theme';
+  // The mark has a light-background build of its own: the dark one's near-white
+  // housing outline disappears on a white panel.
+  $('top').querySelector('.mark').src =
+    t === 'light' ? '/_assets/intellex-mark-128-light.png' : '/_assets/intellex-mark-128.png';
+}
+$('theme').onclick = () => applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+applyTheme(currentTheme());
 
 // ── Which tool(s) to open, and how ──────────────────────────────────────────
 // Four ways to arrange two tools, and no one of them is right for everyone: the
@@ -264,24 +563,37 @@ function currentView() {
   return 'nc';
 }
 
+// BUILT FROM VIEWS, not written out in the markup. The two lists were free to
+// drift -- a view added to the object rendered nowhere, and a button whose
+// data-view had a typo silently picked nothing. One source of truth instead.
+function buildViews() {
+  const wrap = $('openwith');
+  wrap.innerHTML = '';
+  for (const [id, v] of Object.entries(VIEWS)) {
+    const b = document.createElement('button');
+    b.className = 'pick';
+    b.dataset.view = id;
+    b.innerHTML = '<span class="ring"></span><span><b></b><small></small></span>';
+    b.querySelector('b').textContent = v.label;
+    b.querySelector('small').textContent = v.note;
+    b.onclick = () => {
+      try { localStorage.setItem(VIEW_KEY, id); } catch (_) {}
+      paintView();
+    };
+    wrap.appendChild(b);
+  }
+}
+
 function paintView() {
   const cur = currentView();
   for (const b of document.querySelectorAll('.pick'))
     b.setAttribute('aria-pressed', String(b.dataset.view === cur));
-  // The per-view description now lives on each button's title rather than a
-  // paragraph under the row. Guarded because this runs at parse time: throwing
-  // here aborts the rest of the script, which is exactly what happened when the
-  // element went away -- every later check silently never ran.
-  const note = $('viewnote');
-  if (note) note.textContent = VIEWS[cur].note;
+  // The chosen layout is half of what the action button is about to do, so the
+  // note under it is repainted here too.
+  paintSelection();
 }
 
-for (const b of document.querySelectorAll('.pick')) {
-  b.onclick = () => {
-    try { localStorage.setItem(VIEW_KEY, b.dataset.view); } catch (_) {}
-    paintView();
-  };
-}
+buildViews();
 paintView();
 
 // Where "open the tool" actually goes. The shell handles nc/wcb/split itself;
@@ -302,7 +614,7 @@ function backToTools() {
 // side-by-side toggle already do this live, with no reload. A second control for
 // the same thing here, whose only way to take effect is the page reload this
 // overlay exists to avoid, is worse than no control.
-if (IN_SHELL) $('openwith').style.display = 'none';
+if (IN_SHELL) $('openwithsect').style.display = 'none';
 
 async function openTools() {
   if (IN_SHELL) { backToTools(); return; }
@@ -380,7 +692,7 @@ async function scanWifi() {
       if (c.isNaviCore) {
         el.appendChild(row(true, `NaviCore at ${c.host}`,
           `${c.version} · direct · via ${c.via}`,
-          () => connect({kind:'ws', host:c.host, role:'navicore'}, c.host)));
+          { body: {kind:'ws', host:c.host, role:'navicore'}, label: c.host }, 'wifi'));
       } else if (c.isMesh) {
         // A doorway to the mesh — either a MgmtRelay or a WCB hosting its own AP.
         // Same row either way, because the decision the user is making is the
@@ -406,8 +718,9 @@ async function scanWifi() {
           // rather than the slot it lands on, and needs the number to route the
           // mesh boards through it. Discovery already read it from the WDP
           // self-row, so pass it on rather than making the page rediscover it.
-          () => connect({kind:'ws', host:c.host, role: isWcb ? 'wcb' : 'relay',
-                         relayId: c.relayId ? parseInt(c.relayId) : undefined}, c.host)));
+          { body: {kind:'ws', host:c.host, role: isWcb ? 'wcb' : 'relay',
+                   relayId: c.relayId ? parseInt(c.relayId) : undefined},
+            label: c.host }, 'wifi'));
       } else if (c.routable) {
         // The adapter is fine and something IS there — very likely a board
         // mid-boot, so tell watchForDroid() to keep looking.
@@ -432,6 +745,8 @@ async function scanWifi() {
   } catch (e) {
     $('wifi').innerHTML = '<div class="empty">scan failed</div>';
   }
+  $('scanstate').textContent = comingUp ? 'watching…' : 'scan complete';
+  afterListChanged();
   return comingUp;
 }
 
@@ -445,8 +760,10 @@ function watchForDroid() {
 }
 
 async function scan() {
+  $('scanstate').textContent = 'scanning…';
   $('wifi').innerHTML = '<div class="empty">scanning…</div>';
   $('serial').innerHTML = '<div class="empty">looking for ports…</div>';
+  paintFilter();
 
   // Serial first — it is instant, so the window never looks frozen while the
   // network probe runs.
@@ -491,7 +808,7 @@ async function scan() {
     for (const p of ports) {
       if (skip(p)) continue;
       const r = row(false, p.path, chipLabel(p),
-        () => connect({kind:'serial', port:p.path}, p.path));
+        { body: {kind:'serial', port:p.path}, label: p.path }, 'usb');
       el.appendChild(r);
       if (worthAsking(p)) asking.push([p, r]);
     }
@@ -521,15 +838,19 @@ async function scan() {
           // honestly know is that it did not answer as a droid.
           sub.textContent = chipLabel(p) + ' — did not answer as a NaviCore';
         }
+        // The row's subtitle is what the panel shows, so a board that answers
+        // after the fact has to repaint it -- otherwise the panel keeps saying
+        // "asking…" for a port that identified itself seconds ago.
+        if (r === _sel) paintSelection();
       }).catch(() => { sub.textContent = chipLabel(p); });
     }
   } catch (e) { $('serial').innerHTML = '<div class="empty">could not list ports</div>'; }
+  afterListChanged();
 
   clearTimeout(watchTimer);
   watchUntil = Date.now() + WATCH_FOR_MS;
   if (await scanWifi()) watchForDroid();
-
-  offerOfflineIfEmpty();
+  autoSelectIfNone();
 }
 
 // One line per bundled tool. Both age independently — they come from different
@@ -736,9 +1057,12 @@ async function checkWiki() {
       ? 'docs stored: ' + have.map(w => `${w.title} (${w.count})`).join('  ·  ')
       : 'no docs stored yet — press Download docs while you have a network';
     $('opendocs').disabled = !have.length;
+    _maint.docs = have.length ? '' : 'docs not downloaded';
+    paintMaint();
   } catch (e) {
     $('wikiver').textContent = 'could not read the stored docs';
     $('opendocs').disabled = true;
+    _maint.docs = ''; paintMaint();
   }
 }
 checkWiki();
@@ -782,11 +1106,14 @@ $('updatewiki').onclick = async () => {
   try {
     const v = await api('/_api/version');
     const bits = [v.commit, v.built].filter(Boolean).join(', ');
-    $('appver').textContent = '· v' + v.version + (bits ? ` (${bits})` : '');
+    // No leading separator: it sits on its own in the header now, not trailing
+    // an <h1> the way it used to.
+    $('appver').textContent = 'v' + v.version + (bits ? ` (${bits})` : '');
   } catch (_) {}
 })();
 
 $('showlog').onclick = async () => {
+  $('maint').open = true;
   const pre = $('logtail');
   if (pre.style.display !== 'none') { pre.style.display = 'none'; $('showlog').textContent = 'Show log'; return; }
   try {

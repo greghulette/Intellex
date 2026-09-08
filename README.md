@@ -51,6 +51,11 @@ src/wikidocs.py    renders the downloaded wikis, and points their links at
                    this app instead of github.com
 src/wiki.html      the docs viewer (a template host.py fills in)
 src/wiki/          the downloaded wikis — fetched, never committed
+src/ghproxy.py     answers the TOOLS' own GitHub firmware calls from the
+                   cache — what makes OTA work with no internet
+src/assets/fonts/  IBM Plex, bundled. A webfont that only arrives when you
+                   are online is the wrong shape for an offline-first app
+design/            the Claude Design source for the launcher
 Intellex.spec      PyInstaller: one .exe on Windows, one .app/.dmg on macOS
 src/shell.html     the window that holds one or both tools (tabs / side by side)
 src/webui/         bundled NaviCore config tool — fetched, never committed

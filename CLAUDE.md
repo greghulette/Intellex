@@ -327,6 +327,30 @@ Intellex-specific string in `config_tool/index.html`. Not to hide anything now, 
 NaviCore's, it ships from Pages to every user whether or not they have ever heard of this
 app, and a string that only makes sense inside Intellex is divergence by another name.
 
+## The launcher picks a droid, THEN acts
+
+`src/launcher.html` is a two-column chooser: devices on the left, and a panel on
+the right that says what is selected, which layout it will open, and what needs
+maintenance. Three rules it is built on, all of which were bugs first:
+
+- **A row selects; it does not connect.** Connecting straight from the list meant
+  choosing the layout *before* the droid, in a control that had nothing to do with
+  it — and a misclick was an attach, a reconnect and a page load rather than a
+  change of mind.
+- **Auto-select runs ONCE, at the end of a full scan, in document order.** Serial
+  renders first because enumerating ports is instant, so "select the first row"
+  run on every list change always landed on a COM port even with a droid on the
+  WiFi. It never moves a selection the user has made.
+- **The action and the maintenance lines are PINNED**, and only the selection
+  detail and layout list scroll. Pinning just the maintenance block pushed
+  "Connect and open" below the fold, which is worse than what it fixed.
+
+The **theme** is remembered in `intellex_theme` and defaults to the OS preference.
+Both marks ship: the dark one's near-white housing outline vanishes on a white
+panel. Fonts are **bundled** (`src/assets/fonts/`, 60 KB) — IBM Plex Sans is a
+variable font, so one file covers 400–700, and fetching it from Google would mean
+one typeface at the bench and another on a con floor.
+
 ## Never spawn a bare subprocess
 
 The app is windowed — `pythonw`, and the frozen build is `console=False`. A GUI
