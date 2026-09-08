@@ -3,8 +3,9 @@
 Desktop companion for NaviCore (Windows + macOS). Talks to a droid over **native serial**
 or **WiFi**, and hosts the existing NaviCore config tool UI rather than reimplementing it.
 
-**This repo is PRIVATE and the work is unannounced.** See [§ Discretion](#discretion) before
-writing anything user-visible or pushing to a public repo.
+**This repo is PUBLIC as of 2026-09-08**, history included. It was private and the work
+unannounced until then; see [§ It is public now](#it-is-public-now) for what that retired
+and the one rule that outlived it.
 
 Ecosystem context: [`../NaviCore/CLAUDE.md`](../NaviCore/CLAUDE.md) and
 `C:\Users\ghulette\.claude\CLAUDE.md`. This file is the authority for **this** repo only.
@@ -291,16 +292,20 @@ AP up and a laptop associated — direct USB, then bridged through a mgmt relay:
 The shared-radio coexistence path works under real load. This was the assumption the whole
 WiFi transport rested on.
 
-## Discretion
+## It is public now
 
-The desktop app is **not announced**. The NaviCore repo and its GitHub Pages tool are public.
+Public since 2026-09-08, opened deliberately once the app worked end to end. The whole
+history went public with it, so every commit made while it was private is readable.
 
-- Keep NaviCore-side commit messages and identifiers **neutral** — "optional SoftAP", "comms
-  endpoint". Not "desktop app".
-- **Never** put an app-revealing string in `config_tool/index.html`; it ships to every user via
-  Pages and is readable with view-source.
-- This is discretion against casual browsing, not secrecy against inspection. `wifiEnabled` is
-  readable in the public repo by anyone who looks. Do not mistake one for the other.
+**The discretion rules are retired.** NaviCore-side commit messages and identifiers no
+longer need to be coy — "optional SoftAP" and "comms endpoint" were phrased that way to
+avoid naming a desktop app that had not been announced. Name it.
+
+**One rule outlived the secrecy, for a different reason.** Still never put an
+Intellex-specific string in `config_tool/index.html`. Not to hide anything now, but because
+**the tool is not forked** (see [§ The UI is NOT forked](#the-ui-is-not-forked)): that file is
+NaviCore's, it ships from Pages to every user whether or not they have ever heard of this
+app, and a string that only makes sense inside Intellex is divergence by another name.
 
 ## Never spawn a bare subprocess
 

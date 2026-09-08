@@ -3,11 +3,13 @@
 Desktop companion for NaviCore — Windows and macOS. Native serial or WiFi, hosting the
 existing NaviCore config tool UI rather than reimplementing it.
 
-**Private / unreleased.** See [CLAUDE.md](CLAUDE.md) before making anything user-visible.
+Public since 2026-09-08. See [CLAUDE.md](CLAUDE.md) before making anything user-visible,
+and the [wiki](https://github.com/greghulette/Intellex/wiki) for how to use it.
 
 ## Status
 
-Scaffold. Nothing runs yet.
+Working on both platforms, and used against real hardware. The table below is the honest
+per-piece state — anything not marked as verified on hardware has not been.
 
 | Piece | State |
 |---|---|
@@ -19,7 +21,7 @@ Scaffold. Nothing runs yet.
 | App shell (window + chooser) | **Working on Windows and macOS** — pywebview opens a window on both; picks a droid or port, updates the tool |
 | UI bundling + update-from-Pages | Working — `tools/fetch_webui.py`, verified byte-identical to Pages; fetched automatically on first run |
 | Flashing (Update Firmware / Full Wipe) | **Written, not yet run against a board** — `src/flash.py` drives native `esptool` (CLAUDE.md §5); the shim intercepts the tool's own buttons and posts to `/_api/flash`. Image selection, flash map and NVS rules verified against the real `firmware/` listing; the write itself is untested on hardware. |
-| Packaging | Not written — port ESP-Flasher-Companion's proven pipeline |
+| Packaging | **Windows verified** — `scripts\build-windows.bat` produces a `dist\Intellex.exe` that runs, carries its own icon, serves both tools and finds hardware. The macOS half (`scripts/build-macos.command`, `.app` + `.dmg`) is written but has not been built on a Mac. |
 
 ## Layout
 
