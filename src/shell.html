@@ -48,10 +48,18 @@
   }
   /* Flex, so the mark and the wordmark are centred against each other rather
      than sharing a text baseline: a default inline <img> sits ON the baseline
-     and hangs the line box's descender space below it, which grows the bar. */
+     and hangs the line box's descender space below it, which grows the bar.
+
+     THE WORDMARK MUST STAY WRAPPED IN ITS OWN ELEMENT. A flex container makes
+     every run of bare text an ANONYMOUS FLEX ITEM, so `INTEL<i>LEX</i>` is two
+     items, not one -- and `gap`, meant to sit between the mark and the word,
+     lands between INTEL and LEX as well and splits the name in half. */
   #bar .brand { display: flex; align-items: center; gap: 6px; margin-right: 8px;
-                font-weight: 600; letter-spacing: .08em; color: #f4f5f2; }
+                font-weight: 600; color: #f4f5f2; }
   #bar .brand img { flex: none; width: 18px; height: 18px; display: block; }
+  /* Tracking belongs on the word, not the flex container: on the container it
+     also applies to the last letter, padding dead space in before the buttons. */
+  #bar .brand .word { letter-spacing: .08em; }
   /* <i> for the accent half purely because it is short; the wordmark's INTEL/LEX
      split is a colour change, not emphasis, hence font-style back to normal. */
   #bar .brand i { font-style: normal; color: #4aa6ef; }
@@ -96,7 +104,7 @@
        the hexagon into a smudge around the R2. The 32 build is the one drawn
        for this size; it is why the set has three. -->
   <span class="brand"><img src="/_assets/intellex-mark-32.png" alt="Intellex"
-                           width="18" height="18">INTEL<i>LEX</i></span>
+                           width="18" height="18"><span class="word">INTEL<i>LEX</i></span></span>
   <button id="t-nc"  aria-pressed="false">NaviCore</button>
   <button id="t-wcb" aria-pressed="false">WCB</button>
   <button id="t-split" aria-pressed="false" title="Show both tools side by side">Side by side</button>
