@@ -149,6 +149,62 @@ Note the remote config encoding: `[MGMT:CONFIG,<n>]` with `^` separators, **not*
 backup with an `End of Backup` marker. The remote pull uses the `[MGMT:CONFIG,` tag as its
 sentinel; only the *direct* pull looks for `End of Backup`.
 
+## Auto-pull behind a doorway that is an ordinary WCB
+
+The section above gets the *mesh boards surfaced*. Pulling their configs is a separate
+mechanism, and it only ever covered half the cases.
+
+**A relay card is created only for a device whose backup carries `?RELAY,1`**
+(`parser.js:499`) — and a real WCB's backup has no such line. That absence is exactly what
+identifies it as a board rather than a relay. So through a WCB doorway there is no relay card,
+`routeMeshThroughRelay()` finds nothing, and the other boards sit surfaced-but-unmanaged: the
+WDP sweep lists them and gives each a section, but nothing pulls their config. The sweep says
+so in as many words — *"Detection just SURFACES the board … We do NOT auto-connect or
+auto-pull"* (`app.js:13139`).
+
+**Routing through a plain WCB is not a workaround — it is the firmware's original design.**
+`WCB.ino` implements the entire relay half of the management protocol (*"Relay side: handle
+`?MGMT,PULL,<targetWCB>`"*, `WCB.ino:3969`), which is how the Wizard has always managed a mesh
+through one USB-cabled board. MgmtRelay is a *second* implementation of that surface, not the
+only one. The page side is equally general: `remoteBoardPull(parent, target)` needs only
+`boardConnections[parent]` live, and `setRemoteConnected(target, parent)` has no relay check in
+it at all. **Only the entry point was relay-shaped.**
+
+### Why not just call `relayRouteAll()` with the WCB's slot
+
+Two reasons, both fatal:
+
+- It reads its targets from `_relayNodes[slot]`, which the sweep fills only
+  `for (const rs of _relaySlots)` (`app.js:13124`) — always empty for an ordinary board.
+- It routes through `relayManageOne()`, which calls `renderRelayCard()` **unconditionally**. That
+  would draw a relay card for a device that is a real board and already in the numbered grid —
+  the duplicate-card bug the Wizard fixed once already.
+
+So `routeMeshThroughBoard()` drives the two generic functions directly, keeping
+`relayRouteAll`'s disciplines, which are **firmware constraints, not relay ones**:
+
+| Discipline | Why |
+|---|---|
+| **Sequentially**, awaiting each pull | The parent reassembles one config reply at a time and the `[MGMT:CONFIG,]` listener is not target-filtered, so overlapping pulls cross-assign configs to the **wrong board**. |
+| **Once per board** | The Wizard deliberately stopped auto-pulling every newly heard peer because it *"fought live traffic and surprised the user"*. Skipping boards that already have a baseline keeps this a one-time catch-up, not a re-pull on every sweep. |
+
+Both loops start after every connect and are mutually exclusive at runtime: this one stands
+down the moment a relay card exists, the other does nothing until one does. Starting both
+rather than choosing means neither has to predict which kind of box the pull is about to
+reveal — the same reason `routeMeshThroughRelay()` is ungated.
+
+**One thing this has that `relayRouteAll` does not: a watchdog.** `remoteBoardPull` signals
+through an `onComplete` **callback**, not by resolving. `relayRouteAll` can rely on that
+because it is user-triggered and reports through toasts; this runs unattended, so a pull that
+never calls back would park the loop forever on board one and silently strand every board
+behind it — indistinguishable from *"it only pulled the first one"*. 45 s clears the tool's own
+worst case (3 × `PULL_TIMEOUT_MS` 6 s + 2 × `PULL_RETRY_MS` 2.5 s = 23 s) with room to spare.
+
+`tools/smoke_mesh_route.js` covers all of this with no hardware, no browser and no droid — it
+*extracts the function's real source text* from the shim rather than restating it, so the test
+cannot drift from what ships. Its last case is that hang, which is not hypothetical: it is what
+the test hit on its own first run.
+
 ## Three doorways, one address: identify by answer, never by address
 
 The WCB firmware can now host its own AP, so **three** kinds of box can be the thing you
@@ -297,6 +353,7 @@ WebSocket has no control lines.
 
 | | ESP32 | ESP32-S3 |
 |---|---|---|
+| 2026-09-07 | _(uncommitted)_ | **Mesh boards behind a WCB doorway were never auto-pulled.** A relay card exists only for a device advertising `?RELAY,1`, which a real WCB by definition lacks, so `routeMeshThroughRelay()` had nothing to act on and the boards stayed surfaced-but-unmanaged. Routing through a plain WCB is the firmware's original design (`WCB.ino:3969` implements the relay side), and `remoteBoardPull`/`setRemoteConnected` were already generic -- only the entry point was relay-shaped. New `routeMeshThroughBoard()` drives them directly, sequentially and once per board (both firmware constraints, not relay ones). Not via `relayRouteAll`: its targets come from `_relayNodes`, filled only for relay slots, and it renders a relay card unconditionally -- the duplicate-card bug again. Adds a 45 s watchdog `relayRouteAll` does not need: `remoteBoardPull` reports through a CALLBACK, so one that never fires would park an unattended loop forever and strand every board behind it. Covered by `tools/smoke_mesh_route.js`. |
 | 2026-09-07 | _(uncommitted)_ | **A WCB hosting its own AP was reported as a MgmtRelay.** Both answer `?WDP,DUMP` with the same `PEER=3` SELF row -- the relay was byte-matched to the firmware on purpose -- and both sit at `192.168.4.1`, since pinning a WCB to `192.168.4.<board>` breaks DHCP (`WCB_WiFi.cpp:122`). `probe()` now sends `?RELAY,WIFI` ahead of the dump and reads both replies in one loop: a relay-only command, no password in its report, no extra round trip. `HW=32` was rejected as a discriminator -- MgmtRelay uses it for "not a real board" but it is also genuine WCB 3.2. New `kind="wcb"`, `isWcb`/`isMesh` on `scan()`, `role="wcb"` through the spec, and the re-associate SSID now uses the `WCB-` prefix rather than `MgmtRelay`. |
 | bootloader | `0x1000` | `0x0` |
 | partition table | `0x8000` | `0x8000` |

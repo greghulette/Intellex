@@ -774,6 +774,13 @@
       // unconditionally costs a timer against a directly-cabled WCB and gets the
       // answer right for every kind of doorway, including ones added later.
       routeMeshThroughRelay();
+      // ...and its counterpart for a doorway that is an ordinary WCB, which
+      // produces no relay card by definition. Both start; they are mutually
+      // exclusive at runtime, because this one stands down the moment a relay
+      // card exists and the other does nothing until one does. Starting both
+      // rather than choosing means neither has to predict which kind of box the
+      // pull is about to reveal — the same reason the call above is ungated.
+      routeMeshThroughBoard();
     } catch (e) {
       console.warn('[NaviLink] WCB auto-connect skipped:', e && e.message);
     }
@@ -865,6 +872,153 @@
     } else if (!bound) {
       console.warn('[NaviLink] the relay card is up but no mesh boards were ever heard. '
         + 'Are the WCBs powered and on the same mesh channel?');
+    }
+  }
+
+  // ── The same thing again, for a doorway that is an ORDINARY WCB ───────────
+  //
+  // A relay card is created only for a device whose backup carries ?RELAY,1
+  // (parser.js:499), and a real WCB's backup has no such line -- that absence is
+  // exactly what identifies it as a board rather than a relay (see discover.py).
+  // So attaching through a WCB hosting its own AP, or through one on USB, renders
+  // NO relay card, routeMeshThroughRelay() above finds nothing, and the other
+  // boards on the mesh sit surfaced-but-unmanaged forever. The WDP sweep DOES
+  // list them and give each a section; nothing pulls their config.
+  //
+  // ROUTING THROUGH A PLAIN WCB IS NOT A TRICK -- it is the firmware's original
+  // design. WCB.ino implements the whole relay half of the management protocol
+  // ("Relay side: handle ?MGMT,PULL,<targetWCB>", WCB.ino:3969), which is how the
+  // Wizard has always managed a mesh through one USB-cabled board. MgmtRelay is a
+  // second implementation of that surface, not the only one.
+  //
+  // The page side is equally general: remoteBoardPull(parent, target) needs only
+  // boardConnections[parent] to be live, and setRemoteConnected(target, parent)
+  // arms the terminal, the ETM listener and the buttons with no relay check in
+  // it. Only the ENTRY POINT was relay-shaped.
+  //
+  // WHY NOT JUST CALL relayRouteAll() WITH THE WCB'S SLOT: two reasons, both
+  // fatal. It reads its targets from _relayNodes[slot], which the sweep fills
+  // only `for (const rs of _relaySlots)` (app.js:13124) -- empty for a board. And
+  // it routes through relayManageOne(), which calls renderRelayCard()
+  // unconditionally, so it would draw a relay card for a device that is a real
+  // board and is already in the numbered grid: the duplicate-card bug the Wizard
+  // fixed once already.
+  //
+  // So drive the two generic functions directly, keeping relayRouteAll's own
+  // disciplines, which are firmware constraints and not relay ones:
+  //   SEQUENTIALLY, awaiting each pull. The parent reassembles one config reply
+  //     at a time and the [MGMT:CONFIG,] listener is not target-filtered, so
+  //     overlapping pulls cross-assign configs to the WRONG board.
+  //   ONCE PER BOARD. The Wizard deliberately stopped auto-pulling every newly
+  //     heard peer because it "fought live traffic and surprised the user"
+  //     (app.js:13139). Skipping boards that already have a baseline is what
+  //     keeps this a one-time catch-up rather than a re-pull on every sweep.
+  const _meshRoutedOnce = new Set();
+
+  // The Wizard's state lives in top-level `let`s. Those are reachable here by
+  // BARE NAME -- the shim is a classic <script> in the same global scope -- but
+  // NOT as window.x, because a top-level let/const goes in the global lexical
+  // environment and never becomes a property of window. (Its top-level
+  // `function`s do, which is why the calls below use window. and the reads do
+  // not.) Grabbed in one guarded shot so a rename in the tool degrades to a
+  // single clear warning instead of a ReferenceError mid-pass.
+  function wizState() {
+    try {
+      return {
+        conns:     boardConnections,
+        baselines: boardBaselines,
+        relayFor:  remoteRelayForBoard,
+        pulling:   _pullingBoards,
+        heard:     typeof _meshBoards !== 'undefined' ? _meshBoards : null,
+      };
+    } catch (_) { return null; }
+  }
+
+  async function routeMeshThroughBoard() {
+    const deadline = Date.now() + RELAY_WATCH_MS;
+    let warned = false;
+    while (Date.now() < deadline) {
+      await new Promise(res => setTimeout(res, RELAY_POLL_MS));
+      // A relay card means the relay path above owns this link. Standing down is
+      // not politeness: both loops pulling would interleave two config replies
+      // through one non-filtered listener, which is the cross-assignment above.
+      if (relayCardSlot() != null) return;
+
+      const parent = typeof window._wdpMeshConn === 'function' ? window._wdpMeshConn() : null;
+      if (!parent) continue;                       // nothing connected yet
+      if (typeof window.setRemoteConnected !== 'function'
+          || typeof window.remoteBoardPull !== 'function') {
+        if (!warned) {
+          warned = true;
+          console.warn('[NaviLink] setRemoteConnected/remoteBoardPull not found — mesh '
+            + 'boards will need their own Connect button.');
+        }
+        continue;
+      }
+      const st = wizState();
+      if (!st) {
+        if (!warned) {
+          warned = true;
+          console.warn('[NaviLink] cannot see the Wizard\'s board state — mesh boards will '
+            + 'need their own Connect button. (Wizard internals renamed?)');
+        }
+        continue;
+      }
+
+      // Which boards the sweep has surfaced. _meshBoards is what the sweep itself
+      // records, so it needs no markup assumptions; the sections it creates are
+      // the fallback when that set is not reachable.
+      const seen = st.heard ? [...st.heard]
+        : [...document.querySelectorAll('[id^="section-board-"]')]
+            .map(el => parseInt(el.id.slice('section-board-'.length), 10));
+
+      const parentNum = parseInt(parent.wcbNum, 10);
+      const targets = seen.filter(n =>
+        Number.isInteger(n) && n >= 1 && n <= 20
+        && n !== parentNum && String(n) !== String(parent.slot)
+        && !st.conns[n]?.isConnected?.()   // a directly-cabled board is not ours to route
+        && !st.baselines[n]                // already pulled — do not re-pull on every sweep
+        && !st.pulling.has(n)
+        && !_meshRoutedOnce.has(n));
+      if (!targets.length) continue;
+
+      console.info(`[NaviLink] ${targets.length} mesh board(s) unmanaged behind WCB `
+        + `${parentNum} — arming and pulling through it`);
+      for (const n of targets) {
+        _meshRoutedOnce.add(n);            // claim it before awaiting, so the next
+                                           // tick cannot pick the same board up again
+        try {
+          if (st.relayFor[n] !== parent.slot) window.setRemoteConnected(n, parent.slot);
+          // remoteBoardPull signals through its onComplete CALLBACK, not by
+          // resolving — the same contract relayRouteAll relies on.
+          //
+          // Raced against a watchdog, which relayRouteAll does not need and this
+          // does: it is user-triggered and reports through toasts, while this
+          // runs unattended in the background. A pull that never calls back would
+          // park this loop forever on board one and silently strand every board
+          // behind it, looking exactly like "it only pulled the first one".
+          // 45 s clears the tool's own worst case with room to spare — 3 attempts
+          // x PULL_TIMEOUT_MS 6 s, plus 2 x PULL_RETRY_MS 2.5 s = 23 s.
+          const PULL_WATCHDOG_MS = 45000;
+          let timer;
+          const done = await Promise.race([
+            new Promise(res => {
+              const p = window.remoteBoardPull(parent.slot, n, 1, 3, res);
+              if (p && p.catch) p.catch(() => res(false));
+            }),
+            new Promise(res => { timer = setTimeout(() => res('timeout'), PULL_WATCHDOG_MS); }),
+          ]);
+          clearTimeout(timer);
+          if (done === 'timeout') {
+            console.warn(`[NaviLink] pull of WCB${n} through ${parentNum} never reported back `
+              + `after ${PULL_WATCHDOG_MS / 1000}s — moving on to the next board. `
+              + 'Use that board\'s own Pull Config button to retry it.');
+          }
+          await new Promise(r => setTimeout(r, 250));   // let reassembly clear
+        } catch (e) {
+          console.warn(`[NaviLink] pull of WCB${n} through ${parentNum} failed:`, e && e.message);
+        }
+      }
     }
   }
 

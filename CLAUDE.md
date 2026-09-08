@@ -342,6 +342,11 @@ powershell -File scripts\install-windows.ps1 # Start Menu shortcut
 # excuse for skipping it after touching Bridge or /_link.
 python tools/smoke_fanout.py
 
+# The shim's mesh auto-pull, run against fakes. Extracts routeMeshThroughBoard's
+# REAL source text out of navilink_shim.js, so it cannot drift from what ships.
+# Run it after touching the mesh routing or the shim's connect path.
+node tools/smoke_mesh_route.js
+
 # Both browser tools have no build step, so a syntax slip silently breaks all
 # event wiring. Run after editing shell.html, launcher.html or the shim.
 node C:\Users\ghulette\tools\jscheck.js src/shell.html      # inline <script> blocks
