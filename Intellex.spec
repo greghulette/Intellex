@@ -100,7 +100,7 @@ if sys.platform == 'darwin':
     # macOS wants a .icns and there is no portable way to build one off a Mac
     # (iconutil is macOS-only). scripts/build-macos.command generates it before
     # calling PyInstaller; without it we still build, just with the default icon.
-    _icns = os.path.join('src', 'assets', 'navicore-icon.icns')
+    _icns = os.path.join('src', 'assets', 'intellex.icns')
     if not os.path.isfile(_icns):
         _icns = None
     exe = EXE(pyz, a.scripts, [], exclude_binaries=True, icon=_icns, **_common)
@@ -122,5 +122,5 @@ if sys.platform == 'darwin':
 else:
     exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
               runtime_tmpdir=None,
-              icon=[os.path.join('src', 'assets', 'navicore-icon.ico')],
+              icon=[os.path.join('src', 'assets', 'intellex.ico')],
               **_common)

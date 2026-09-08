@@ -1,15 +1,29 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>Intellex</title>
+<!-- Only ever seen under --browser; a pywebview window has no tab. Cheap, and
+     the alternative is Chrome's blank-page glyph on a page that has a logo. -->
+<link rel="icon" href="/_assets/intellex-favicon-32.png">
 <style>
+  /* --accent IS the mark's ring colour (#4aa6ef), not a colour picked to look
+     like it. The wordmark's LEX sits inches from the ring in the masthead, so
+     any drift between the two reads as a rendering fault. */
   :root { color-scheme: dark; --bg:#12131a; --panel:#1b1d27; --line:#2c2f3d;
-          --fg:#e8e8ea; --muted:#8b8fa3; --accent:#5cb0ff; --ok:#4ec9a0; --warn:#e0a458; }
+          --fg:#e8e8ea; --muted:#8b8fa3; --accent:#4aa6ef; --ok:#4ec9a0; --warn:#e0a458; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; padding:22px 24px; }
-  h1 { font-size:19px; margin:0 0 2px; letter-spacing:.02em; }
+  .masthead { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
+  /* flex:none, or the image is a shrinkable flex child and squashes when the
+     text beside it wants the room. */
+  .masthead .mark { flex:none; width:40px; height:40px; display:block; }
+  /* Set in caps with the wordmark's own 0.10em tracking. The drawn wordmark is
+     Chakra Petch, which this app does not ship and cannot fetch offline, so the
+     brand is carried by the case, the tracking and the INTEL/LEX colour split
+     rather than by the typeface. */
+  h1 { font-size:20px; margin:0 0 1px; letter-spacing:.1em; font-weight:600; }
   h1 span { color:var(--accent); }
-  .sub { color:var(--muted); font-size:12.5px; margin-bottom:18px; }
+  .sub { color:var(--muted); font-size:12.5px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
           padding:14px 16px; margin-bottom:12px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em;
@@ -50,8 +64,21 @@
   details#maint > summary:hover { background:#232636; }
 </style>
 
-<h1>Navi<span>Link</span> <span id="appver"></span></h1>
-<div class="sub">Pick a droid, or a cable.</div>
+<header class="masthead">
+  <!-- alt="" on purpose: the <h1> beside it already says the name, so alt text
+       here would just make a screen reader announce "Intellex" twice. -->
+  <!-- THE 128px RASTER, NOT intellex-mark.svg. Every .svg in the design set has
+       an <image> element carrying no href at all, so the R2 in the middle of
+       the housing simply does not draw -- ring and hexagon render, the centre
+       comes out empty, and it looks like a deliberately hollow logo rather than
+       a broken file. The PNG builds are complete. Displayed at 40, sourced at
+       128 so a 2x or 3x screen has real pixels to use. -->
+  <img class="mark" src="/_assets/intellex-mark-128.png" alt="" width="40" height="40">
+  <div>
+    <h1>INTEL<span>LEX</span> <span id="appver"></span></h1>
+    <div class="sub">Pick a droid, or a cable.</div>
+  </div>
+</header>
 
 <div class="card">
   <h2>Over WiFi</h2>

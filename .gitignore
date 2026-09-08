@@ -32,3 +32,11 @@ src/firmware/
 
 # Written by the build scripts; an artefact of one build, never source.
 src/build_stamp.py
+# Cut from src/assets/intellex-dock-1024.png by scripts/build-macos.command.
+# iconutil is macOS-only, so committing it would mean a file only one of the
+# two machines can ever regenerate.
+src/assets/*.icns
+
+# A redundant archive of "Intellex logo design/", which is committed. Two copies
+# of 1.4 MB of PNGs that drift apart the first time the art is touched.
+Intellex logo design.zip

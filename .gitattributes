@@ -19,8 +19,8 @@
 *.png      binary
 *.ico      binary
 
-# The .svg is a COPY of NaviCore's, kept so this repo can rebuild its icons alone.
-# Left to autocrlf it would land with CRLF, making it byte-different from the file
-# it was copied from -- and then the only cheap way to ask "has the source art
-# changed?", comparing the two, reports every line as changed instead.
+# The .svg files live only in "Intellex logo design/" -- the app reads the PNG and
+# .ico builds, because every .svg in that set has an <image> element with no href
+# and so draws no R2. Pinned to LF anyway: they are text, they are the master art,
+# and a set regenerated on the Mac should not come back as a whole-file diff.
 *.svg      text eol=lf

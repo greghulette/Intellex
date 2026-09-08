@@ -20,8 +20,8 @@ app never uses. So:
              This is what stops the taskbar filing Intellex under "Python", and it
              is ignored if the window is already up.
           2. WM_SETICON on the window once it exists, which needs a real .ico --
-             LoadImage cannot read a PNG. src/assets/navicore-icon.ico carries
-             seven sizes so Windows picks rather than smears.
+             LoadImage cannot read a PNG. src/assets/intellex.ico carries six
+             sizes (16/24/32/48/64/256) so Windows picks rather than smears.
 
 NOTHING HERE IS ALLOWED TO BREAK THE APP. An icon is decoration; every failure is
 caught and reported as a line of text, because losing the window over a missing
@@ -35,17 +35,19 @@ import sys
 # COMMITTED, unlike src/webui/. That is not a contradiction of "the UI is NOT
 # forked": the config tool is NaviCore's and must never diverge, whereas an app
 # icon is Intellex's own chrome and has to exist before any network does -- the
-# Dock icon is wanted at startup, offline, on a first run. Copied from
-# NaviCore/assets-navicore/navicore-icon.svg, and BOTH raster files are generated
-# from that .svg by tools/make_icon.py (7 sizes, 16..256, PNG-compressed entries).
+# Dock icon is wanted at startup, offline, on a first run.
 #
-# They are NOT a plain rasterisation of the drawing: the generator drops the side
-# ticks and closes the frame onto the hexagon, because at taskbar sizes those ticks
-# cost the logo a quarter of its width while rendering as specks. Read that script's
-# header before regenerating either file by any other means.
+# The master set is authored in "Intellex logo design/assets/intellex/" and the
+# handful of files the app actually reads are copied here. NOTHING IN THIS REPO
+# REGENERATES THEM, and that is deliberate: the .ico carries THREE DIFFERENT
+# DRAWINGS chosen by size -- the full instrument at 48px+, a heavier ring with the
+# ticks dropped at 24-32px, and the R2 alone at 16px. A rasteriser pointed at one
+# .svg cannot produce that, so re-cutting these from the vector at build time
+# would quietly throw away the small sizes' legibility. Edit the design set and
+# copy across.
 ASSETS = pathlib.Path(__file__).resolve().parent / "assets"
-ICON_PNG = ASSETS / "navicore-icon-512.png"
-ICON_ICO = ASSETS / "navicore-icon.ico"
+ICON_PNG = ASSETS / "intellex-icon-512.png"
+ICON_ICO = ASSETS / "intellex.ico"
 
 # Reverse-DNS-ish, stable, and NOT the executable name: Windows keys taskbar
 # pinning and grouping to this string, so changing it later orphans anyone's
@@ -147,7 +149,7 @@ def _win_window_icon(attempts: int = 12, gap: float = 0.25) -> str:
                                  LR_LOADFROMFILE)
 
     # Ask for the exact pixel sizes Windows wants, so it picks the right entry out
-    # of the seven in the file rather than rescaling one of them. Small drives the
+    # of the six in the file rather than rescaling one of them. Small drives the
     # title bar and alt-tab; big drives the taskbar button.
     small = load(user32.GetSystemMetrics(SM_CXSMICON) or 16)
     big   = load(user32.GetSystemMetrics(SM_CXICON) or 32)

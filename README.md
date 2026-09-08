@@ -26,10 +26,13 @@ Scaffold. Nothing runs yet.
 ```
 src/transport.py   the byte-pipe seam; read its docstring first
 src/appicon.py     Dock / taskbar icon — pywebview cannot do this for us
-src/assets/        app icon — the .svg comes from NaviCore; the .ico and .png
-                   are BOTH generated from it by tools/make_icon.py, which
-                   crops to the hexagon and drops the side ticks. Not a plain
-                   rasterisation — read that header before regenerating
+src/assets/        the app's own icon and mark, copied from the design set
+                   below. Nothing here regenerates them: the .ico holds three
+                   DIFFERENT drawings picked by size, which no rasteriser
+                   pointed at one .svg can reproduce
+Intellex logo      the master brand set — icons, lockups, wordmarks, splash,
+  design/          light and dark. Its README carries the palette and the
+                   clear-space rule. Edit here, then copy across
 src/certs.py       TLS trust, because a stock macOS Python has none
 src/flash.py       native esptool flashing — what the browser cannot do here
 src/wcb_flash.py   the same for a WCB: chip + flash-size detection, then write

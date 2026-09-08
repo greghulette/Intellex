@@ -39,10 +39,21 @@ echo "=== Caching firmware (so a fresh install can flash offline) ==="
 .venv/bin/python tools/fetch_firmware.py || echo "  (firmware fetch incomplete - see above)"
 
 # ── The Dock icon ───────────────────────────────────────────────────────────
-# iconutil is macOS-only, which is why this is not in tools/make_icon.py with the
-# .ico and .png: those are generated on either platform, this one cannot be.
-ICNS="src/assets/navicore-icon.icns"
-PNG="src/assets/navicore-icon-512.png"
+# iconutil is macOS-only, so the .icns is cut here rather than committed like the
+# .ico. It is a build artefact and gitignored to match.
+#
+# FROM THE 1024 TILE, NOT THE 512. An .iconset wants icon_512x512@2x.png, which
+# IS 1024 -- generated from a 512 source that is an upscale, and the Dock shows
+# the 1024 entry on every Retina Mac, so the one size most people actually see
+# was the softest in the file.
+#
+# THE SQUIRCLE TILE, NOT THE TRANSPARENT MARK. macOS draws app icons as rounded
+# tiles and does NOT add the shape itself: a bare transparent mark renders as
+# free-floating art among neighbours that all have a tile, reading as smaller and
+# unfinished. intellex-dock-1024.png carries the tile; the transparent icon-512
+# is right for the RUNNING process's Dock icon (src/appicon.py) and wrong here.
+ICNS="src/assets/intellex.icns"
+PNG="src/assets/intellex-dock-1024.png"
 if [ ! -f "$ICNS" ] && [ -f "$PNG" ]; then
     echo "=== Generating $ICNS ==="
     ICONSET="$(mktemp -d)/Intellex.iconset"

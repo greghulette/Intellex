@@ -7,6 +7,7 @@
                     ┌─ GET /             → the bundled NaviCore config tool
                     ├─ GET /wcb/Wizard/  → the bundled WCB Wizard
                     ├─ GET /_shell       → the window that holds one or both
+                    ├─ GET /_assets/*    → the app's own icon and mark
   browser/webview ──┼─ GET /_api/*       → control (list ports, attach, detach)
                     └─ WS  /_link        → the byte pipe (one per open page)
                                               │
@@ -626,6 +627,12 @@ async def api_update_firmware(_req: web.Request) -> web.Response:
 
 LAUNCHER_FILE = paths.BUNDLE_DIR / "launcher.html"
 SHELL_FILE = paths.BUNDLE_DIR / "shell.html"
+
+# The app's own chrome -- the mark the launcher and the shell wear. NOT under
+# paths.data_dir(): unlike the two browser tools this is never updated from the
+# network, so there is no user copy to prefer and no atomic swap to survive. It
+# ships inside the app and is read from there, frozen or not.
+ASSETS_DIR = paths.BUNDLE_DIR / "assets"
 
 
 async def launcher(_req: web.Request) -> web.StreamResponse:
@@ -1496,6 +1503,11 @@ def build_app() -> web.Application:
     # static mount matches every path, so registering it first would swallow
     # /wcb/Wizard/app.js and answer 404 from the NaviCore bundle instead.
     app.router.add_static("/wcb/", WEBUI_WCB_DIR, show_index=False)
+    # Same ordering rule as /wcb/ above: "/" swallows everything, so the app's
+    # own art has to be mounted ahead of it or the launcher's logo 404s out of
+    # the NaviCore bundle. Underscore-prefixed like every other route that is
+    # the host's rather than a tool's, so it cannot collide with either bundle.
+    app.router.add_static("/_assets/", ASSETS_DIR, show_index=False)
     app.router.add_static("/", WEBUI_DIR, show_index=False)
     return app
 
