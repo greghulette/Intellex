@@ -117,6 +117,28 @@ def data_dir(name: str) -> pathlib.Path:
     return BUNDLE_DIR / name
 
 
+def data_subdir(name: str, sub: str) -> pathlib.Path:
+    """data_dir(), but the user-or-bundled choice is made PER SUBDIRECTORY.
+
+    THE WIKIS NEEDED THIS AND THE TOOL BUNDLES DID NOT. data_dir() decides once
+    for a whole directory, which is right when its contents are one indivisible
+    thing -- src/webui/ is a config tool, and half of one is not useful. But
+    src/wiki/ holds THREE independent wikis that are downloaded and swapped
+    separately, so deciding for the parent means the first one written to the user
+    directory hides every sibling that only exists in the bundle.
+
+    Observed on the frozen build: fetching just the Intellex wiki left NaviCore
+    and WCB reporting `have=False` while both sat inside the app, perfectly good.
+    A partial download is a normal outcome -- one wiki can fail while the others
+    succeed -- so this is not an edge case.
+    """
+    if FROZEN:
+        user = user_data_dir() / name / sub
+        if user.is_dir() and any(user.iterdir()):
+            return user
+    return BUNDLE_DIR / name / sub
+
+
 def write_dir(name: str) -> pathlib.Path:
     """Where an UPDATE should land. Never inside the app when frozen."""
     return (user_data_dir() / name) if FROZEN else (BUNDLE_DIR / name)

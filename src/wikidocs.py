@@ -47,7 +47,9 @@ _WIKILINK = re.compile(r"\[\[([^\]]+)\]\]")
 
 
 def root(product: str) -> pathlib.Path:
-    return paths.data_dir("wiki") / product
+    """Where one wiki's files are. PER PRODUCT -- see paths.data_subdir for why
+    asking about the parent directory hides bundled wikis behind downloaded ones."""
+    return paths.data_subdir("wiki", product)
 
 
 def available() -> list[dict]:
