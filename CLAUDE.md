@@ -1,4 +1,4 @@
-# NaviLink — Working Notes
+# Intellex — Working Notes
 
 Desktop companion for NaviCore (Windows + macOS). Talks to a droid over **native serial**
 or **WiFi**, and hosts the existing NaviCore config tool UI rather than reimplementing it.
@@ -8,6 +8,23 @@ writing anything user-visible or pushing to a public repo.
 
 Ecosystem context: [`../NaviCore/CLAUDE.md`](../NaviCore/CLAUDE.md) and
 `C:\Users\ghulette\.claude\CLAUDE.md`. This file is the authority for **this** repo only.
+
+## The app was called NaviLink until 2026-09-08
+
+Named for the Intellex, the droid brain Industrial Automaton ships in an R2-series
+astromech. **The old name is still all over the places code cannot reach**, and none of
+these are bugs to go fix:
+
+- The **GitHub remote and the local clone directory** are still `NaviLink`. Renaming the
+  remote is a separate, deliberate act — it breaks every existing clone's origin URL.
+- **Git history** is entirely under the old name. So is every commit message before the
+  rename commit.
+- **`docs/` revision-log rows were swept along with everything else**, so historical rows
+  say "Intellex" for events that happened when it was NaviLink. That was chosen over
+  leaving two names scattered through the docs; the rename's own row records it.
+- **`src/paths.py` still knows the old name on purpose** — `_LEGACY_DIR_NAME`, a one-shot
+  move of the user data directory. `src/applog.py` likewise still globs `navilink-*.log`
+  when pruning. Deleting either silently orphans real user state.
 
 ---
 
@@ -43,7 +60,7 @@ what arrived and re-read anything you were about to edit — do not force.
 **The page talks to one WebSocket. The host process decides what's on the other end.**
 
 ```
-  config tool UI  ──ws://127.0.0.1:PORT──►  NaviLink (Python)  ──►  COM port   (pyserial)
+  config tool UI  ──ws://127.0.0.1:PORT──►  Intellex (Python)  ──►  COM port   (pyserial)
    (unmodified)                                                └──►  ws://192.168.4.1  (droid AP)
 ```
 
@@ -80,7 +97,7 @@ toolchain plus an unofficial community serial crate on the critical path, for a 
 
 ## Two tools, one link
 
-NaviLink hosts **both** browser tools and attaches them to the same droid link:
+Intellex hosts **both** browser tools and attaches them to the same droid link:
 
 | Path | Tool | Source repo |
 |---|---|---|
@@ -224,7 +241,7 @@ setting" rather than as anything version-shaped.
   tool stopped updating", which nobody would connect back to it.
 - **The tools resolve their own branch from `localStorage`** (`wcb_fw_branch`,
   `rc_fw_branch`) — documented escape hatches, so setting them is using the page's own
-  mechanism. `host.py` prepends `window.__navilinkBranches` to the served shim because
+  mechanism. `host.py` prepends `window.__intellexBranches` to the served shim because
   the tools read that key during *init*: an async fetch resolves after they have already
   looked, and the page would report main's firmware while the host flashed the branch's.
 
@@ -333,8 +350,8 @@ because the board looks healthy and the link is simply gone.
 python -m py_compile src/*.py tools/*.py     # the bar for everything else
 
 # Packaging. Fetches both tools AND the firmware cache first, then builds.
-scripts\build-windows.bat                    # -> dist\NaviLink.exe
-scripts/build-macos.command                  # -> dist/NaviLink.app + .dmg
+scripts\build-windows.bat                    # -> dist\Intellex.exe
+scripts/build-macos.command                  # -> dist/Intellex.app + .dmg
 powershell -File scripts\install-windows.ps1 # Start Menu shortcut
 
 # The one real test. Fake transport, real Bridge, real aiohttp, real WebSockets —
@@ -343,14 +360,14 @@ powershell -File scripts\install-windows.ps1 # Start Menu shortcut
 python tools/smoke_fanout.py
 
 # The shim's mesh auto-pull, run against fakes. Extracts routeMeshThroughBoard's
-# REAL source text out of navilink_shim.js, so it cannot drift from what ships.
+# REAL source text out of intellex_shim.js, so it cannot drift from what ships.
 # Run it after touching the mesh routing or the shim's connect path.
 node tools/smoke_mesh_route.js
 
 # Both browser tools have no build step, so a syntax slip silently breaks all
 # event wiring. Run after editing shell.html, launcher.html or the shim.
 node C:\Users\ghulette\tools\jscheck.js src/shell.html      # inline <script> blocks
-node --check src/navilink_shim.js                           # bare .js — jscheck reads HTML only
+node --check src/intellex_shim.js                           # bare .js — jscheck reads HTML only
 ```
 
 Everything else needs hardware. Say "compiles" and mean it; do not imply testing that did not

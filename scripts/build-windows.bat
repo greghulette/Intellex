@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM  build-windows.bat - build dist\NaviLink.exe
+REM  build-windows.bat - build dist\Intellex.exe
 REM
 REM  Mirrors ESP-Flasher-Companion's build script, which is the proven pipeline
 REM  for this stack. Run it from anywhere; it works from the repo root.
@@ -52,10 +52,10 @@ REM "find" resolves to Git's UNIX find, the pipe fails and the guard silently
 REM PASSES -- which is exactly how a build then died with the app open. Full
 REM System32 paths did not fix it either (%SystemRoot% did not expand usefully
 REM there). We already depend on this interpreter two lines below, so use it.
-.venv\Scripts\python.exe -c "import subprocess,sys; o=subprocess.run(['tasklist','/FI','IMAGENAME eq NaviLink.exe'],capture_output=True,text=True).stdout; sys.exit(1 if 'NaviLink.exe' in o else 0)"
+.venv\Scripts\python.exe -c "import subprocess,sys; o=subprocess.run(['tasklist','/FI','IMAGENAME eq Intellex.exe'],capture_output=True,text=True).stdout; sys.exit(1 if 'Intellex.exe' in o else 0)"
 if errorlevel 1 (
     echo.
-    echo NaviLink is currently RUNNING, and Windows locks a running .exe.
+    echo Intellex is currently RUNNING, and Windows locks a running .exe.
     echo Close it and run this again.
     exit /b 1
 )
@@ -67,10 +67,10 @@ if "%NLSHA%"=="" set NLSHA=unknown
 
 echo.
 echo === Building ===
-.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean NaviLink.spec || goto :fail
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean Intellex.spec || goto :fail
 
 echo.
-echo Built: dist\NaviLink.exe
+echo Built: dist\Intellex.exe
 echo Install it (Start Menu shortcut) with:
 echo    powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 exit /b 0

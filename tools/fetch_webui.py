@@ -133,7 +133,7 @@ WCB_FILES = [
     "favicon.png",
     "manifest.json",
 ]
-# Vendored flash libraries. Bundled even though NaviLink flashes natively and
+# Vendored flash libraries. Bundled even though Intellex flashes natively and
 # never loads them: the whole contract is that the bundled copy is the published
 # copy, and a deliberately incomplete one is a fork with extra steps. They also
 # cost 227 KB and make the bundle work unchanged if it is ever opened directly.
@@ -382,7 +382,7 @@ def fetch_wcb(base: str, check: bool, force: bool) -> int:
         print("[wcb] update available (run without --check to apply)")
         return 0
 
-    staged = pathlib.Path(tempfile.mkdtemp(prefix="navilink-wcbui-"))
+    staged = pathlib.Path(tempfile.mkdtemp(prefix="intellex-wcbui-"))
     try:
         wiz = staged / WCB_SUBDIR
         wiz.mkdir(parents=True)
@@ -517,7 +517,7 @@ def _fetch_navicore(base: str, check: bool, force: bool) -> int:
         print("update available (run without --check to apply)")
         return 0
 
-    staged = pathlib.Path(tempfile.mkdtemp(prefix="navilink-webui-"))
+    staged = pathlib.Path(tempfile.mkdtemp(prefix="intellex-webui-"))
     try:
         (staged / "index.html").write_bytes(index_bytes)   # bytes, never text
         got = 1

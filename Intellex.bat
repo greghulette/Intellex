@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM  NaviLink — double-click this.
+REM  Intellex — double-click this.
 REM ============================================================================
 REM  At the repo root on purpose: scripts\ is where build and dev helpers live,
 REM  and "how do I open the app" should not require knowing that.
@@ -9,10 +9,10 @@ REM  Uses pythonw.exe, which has no console, so the app opens as a window instea
 REM  of a window plus a black box that must be left open. The first run falls back
 REM  to python.exe because setup prints progress worth seeing.
 REM
-REM    NaviLink.bat                     window + chooser
-REM    NaviLink.bat --ws 192.168.4.1    skip the chooser
-REM    NaviLink.bat --serial COM5
-REM    NaviLink.bat --browser           no window, use the default browser
+REM    Intellex.bat                     window + chooser
+REM    Intellex.bat --ws 192.168.4.1    skip the chooser
+REM    Intellex.bat --serial COM5
+REM    Intellex.bat --browser           no window, use the default browser
 REM ============================================================================
 setlocal
 cd /d "%~dp0"
@@ -51,7 +51,7 @@ REM the macOS launchers' actual problem, not this one's.
 "%PY%" -c "import sys; raise SystemExit(sys.version_info < (3,11))" >nul 2>&1
 if errorlevel 1 (
   echo.
-  echo Note: this venv is older than Python 3.11. NaviLink is developed on 3.14
+  echo Note: this venv is older than Python 3.11. Intellex is developed on 3.14
   echo       and only 3.11+ is exercised. It works, but nothing tests it -- to
   echo       move up, install a newer Python, delete .venv, and run this again.
   echo.
@@ -67,7 +67,7 @@ REM pipe work without the bundle.
 if not exist "src\webui\index.html" (
   echo Fetching the config tool -- it is not in the repo, see README.
   "%PY%" tools\fetch_webui.py
-  if errorlevel 1 echo Could not fetch it. NaviLink will start and explain.
+  if errorlevel 1 echo Could not fetch it. Intellex will start and explain.
 )
 
 REM start "" detaches, so the launching console (if any) does not stay tied to it.

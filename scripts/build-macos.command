@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-#  build-macos.command - build dist/NaviLink.app and dist/NaviLink.dmg
+#  build-macos.command - build dist/Intellex.app and dist/Intellex.dmg
 #
 #  Double-clickable in Finder, like ESP-Flasher-Companion's equivalent.
 #
@@ -45,7 +45,7 @@ ICNS="src/assets/navicore-icon.icns"
 PNG="src/assets/navicore-icon-512.png"
 if [ ! -f "$ICNS" ] && [ -f "$PNG" ]; then
     echo "=== Generating $ICNS ==="
-    ICONSET="$(mktemp -d)/NaviLink.iconset"
+    ICONSET="$(mktemp -d)/Intellex.iconset"
     mkdir -p "$ICONSET"
     for sz in 16 32 64 128 256 512; do
         sips -z $sz $sz "$PNG" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null
@@ -61,25 +61,25 @@ NLSHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 echo
 echo "=== Building ==="
-.venv/bin/python -m PyInstaller --noconfirm --clean NaviLink.spec
+.venv/bin/python -m PyInstaller --noconfirm --clean Intellex.spec
 
 # ── The disk image ──────────────────────────────────────────────────────────
 # A .dmg with an /Applications symlink beside the app is the drag-to-install
 # convention every Mac user already knows; a bare .app in a zip is not.
-if [ -d "dist/NaviLink.app" ]; then
+if [ -d "dist/Intellex.app" ]; then
     echo
     echo "=== Building the disk image ==="
-    STAGE="$(mktemp -d)/NaviLink"
+    STAGE="$(mktemp -d)/Intellex"
     mkdir -p "$STAGE"
-    cp -R "dist/NaviLink.app" "$STAGE/"
+    cp -R "dist/Intellex.app" "$STAGE/"
     ln -s /Applications "$STAGE/Applications"
-    rm -f "dist/NaviLink.dmg"
-    hdiutil create -volname "NaviLink" -srcfolder "$STAGE" \
-                   -ov -format UDZO "dist/NaviLink.dmg" >/dev/null
-    echo "Built: dist/NaviLink.dmg"
+    rm -f "dist/Intellex.dmg"
+    hdiutil create -volname "Intellex" -srcfolder "$STAGE" \
+                   -ov -format UDZO "dist/Intellex.dmg" >/dev/null
+    echo "Built: dist/Intellex.dmg"
 fi
 
 echo
-echo "Built: dist/NaviLink.app"
-echo "Install it by opening dist/NaviLink.dmg and dragging NaviLink to Applications."
+echo "Built: dist/Intellex.app"
+echo "Install it by opening dist/Intellex.dmg and dragging Intellex to Applications."
 echo "First launch: right-click the app -> Open (unsigned; see docs/MACOS_FIRST_RUN.md)."

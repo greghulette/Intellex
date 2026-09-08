@@ -1,7 +1,7 @@
 """Flash NaviCore firmware natively, because the browser cannot get there from here.
 
 WHY THIS EXISTS. The config tool flashes with esptool-js over Web Serial, and that
-is the right answer in a browser. It is not available to this app: navilink_shim.js
+is the right answer in a browser. It is not available to this app: intellex_shim.js
 presents the host's byte pipe AS a Web Serial port, and esptool-js drives a real one
 far harder than a pipe can fake -- it toggles DTR/RTS in a timing-sensitive reset
 dance to enter the bootloader, polls readable.locked / writable.locked, and cancels
@@ -166,7 +166,7 @@ def _get(url: str, log, attempts: int = 4, timeout: float = 60.0) -> bytes:
     last: BaseException = FlashError("no attempt made")
     for i in range(attempts):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "NaviLink"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Intellex"})
             with urllib.request.urlopen(req, timeout=timeout,
                                         context=certs.context()) as r:
                 return r.read()
@@ -357,7 +357,7 @@ def run_esptool(port: str, entries: list[dict], log, progress=None,
     failure and writes to stdout, neither of which an aiohttp worker should inherit,
     and a crash in a flasher must not take the app down with it.
     """
-    with tempfile.TemporaryDirectory(prefix="navilink-flash-") as td:
+    with tempfile.TemporaryDirectory(prefix="intellex-flash-") as td:
         args = []
         for i, e in enumerate(entries):
             f = pathlib.Path(td) / f"{i}_{e['address']:#x}.bin"

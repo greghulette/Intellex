@@ -1,26 +1,26 @@
 #!/bin/bash
 # ============================================================================
-#  NaviLink — double-click this.
+#  Intellex — double-click this.
 # ============================================================================
-#  The macOS counterpart to NaviLink.bat, and at the repo root for the same
+#  The macOS counterpart to Intellex.bat, and at the repo root for the same
 #  reason: "how do I open it" should not require knowing that scripts/ exists.
 #  scripts/run-macos.command still works and does the same thing; this is the
 #  one to hand somebody.
 #
 #  Unlike Windows there is no pythonw, so double-clicking opens a Terminal
 #  window and it stays open while the app runs. Closing that window quits
-#  NaviLink. That is the same relationship the .bat has with its console — on
+#  Intellex. That is the same relationship the .bat has with its console — on
 #  macOS it is simply visible.
 #
-#    NaviLink.command                                window + chooser
-#    NaviLink.command --ws 192.168.4.1               skip the chooser
-#    NaviLink.command --serial /dev/cu.usbmodem1101
-#    NaviLink.command --browser                      no window, use the browser
+#    Intellex.command                                window + chooser
+#    Intellex.command --ws 192.168.4.1               skip the chooser
+#    Intellex.command --serial /dev/cu.usbmodem1101
+#    Intellex.command --browser                      no window, use the browser
 #
 #  If Finder refuses to open it ("unidentified developer"), this copy was
 #  downloaded rather than cloned: a download carries com.apple.quarantine and a
 #  clone does not. Right-click → Open once, or:
-#      xattr -d com.apple.quarantine NaviLink.command
+#      xattr -d com.apple.quarantine Intellex.command
 # ============================================================================
 set -e
 
@@ -35,7 +35,7 @@ on_error() {
   status=$?
   [ $status -eq 0 ] && exit 0
   echo
-  echo "NaviLink could not start (exit $status)."
+  echo "Intellex could not start (exit $status)."
   if [ -t 0 ]; then
     read -n 1 -s -r -p "Press any key to close."
     echo
@@ -70,7 +70,7 @@ note_if_old() {
   "$PY" -c 'import sys
 if sys.version_info < (3, 11):
     print("")
-    print("Note: this venv is Python %d.%d. NaviLink is developed on 3.14 and only" % sys.version_info[:2])
+    print("Note: this venv is Python %d.%d. Intellex is developed on 3.14 and only" % sys.version_info[:2])
     print("      3.11+ is exercised. It works today, but nothing tests it -- to move")
     print("      up, install a newer Python, delete .venv, and run this again.")
     print("")
@@ -112,7 +112,7 @@ note_if_old
 # bundle: the control API and the /_link byte pipe do not need it.
 if [ ! -f src/webui/index.html ]; then
   echo "Fetching the config tool -- it is not in the repo, see README."
-  "$PY" tools/fetch_webui.py || echo "Could not fetch it. NaviLink will start and explain."
+  "$PY" tools/fetch_webui.py || echo "Could not fetch it. Intellex will start and explain."
 fi
 
 # exec: the app becomes this process, so closing the Terminal window closes the

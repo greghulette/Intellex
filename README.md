@@ -1,4 +1,4 @@
-# NaviLink
+# Intellex
 
 Desktop companion for NaviCore — Windows and macOS. Native serial or WiFi, hosting the
 existing NaviCore config tool UI rather than reimplementing it.
@@ -39,7 +39,7 @@ src/paths.py       where things live, run from source AND frozen — updates go 
 src/fwcache.py     local copy of every firmware image, so flashing works with no
                    internet (join the droid's AP and there is no route to GitHub)
 src/firmware/      that cache — fetched, never committed
-NaviLink.spec      PyInstaller: one .exe on Windows, one .app/.dmg on macOS
+Intellex.spec      PyInstaller: one .exe on Windows, one .app/.dmg on macOS
 src/shell.html     the window that holds one or both tools (tabs / side by side)
 src/webui/         bundled NaviCore config tool — fetched, never committed
 src/webui/Images/  footer art the tool loads as "../Images/<name>" (see below)
@@ -47,8 +47,8 @@ src/webui_wcb/     bundled WCB Wizard — also fetched, also never committed.
                    Laid out as Wizard/ + Images/ SIBLINGS, mirroring gh-pages,
                    and mounted at /wcb/ so the Wizard's own "../Images/<name>"
                    resolves with no path rewriting
-NaviLink.bat       double-click launcher — Windows
-NaviLink.command   double-click launcher — macOS
+Intellex.bat       double-click launcher — Windows
+Intellex.command   double-click launcher — macOS
 docs/WCB_WIZARD.md how the Wizard is hosted, flashed and laid out — read first
 docs/WIP_NOTES.md  firmware-side change tracker + removal recipe
 scripts/           cross-platform build scripts
@@ -70,31 +70,31 @@ file is then served byte-identically. See
 
 ## Running it
 
-Double-click **`NaviLink.bat`** (Windows) or **`NaviLink.command`** (macOS), both at
+Double-click **`Intellex.bat`** (Windows) or **`Intellex.command`** (macOS), both at
 the repo root. First run creates the venv, installs dependencies **and fetches the
 config tool** — `src/webui/` is gitignored, so a fresh clone has no UI until that
 runs. After that it just opens. If the fetch cannot reach Pages the app still starts
 and explains itself; `.venv/bin/python3 tools/fetch_webui.py` retries it.
 
-    NaviLink.bat                     window + chooser
-    NaviLink.bat --ws 192.168.4.1    skip the chooser
-    NaviLink.bat --serial COM5
-    NaviLink.bat --browser           no window, use the default browser
+    Intellex.bat                     window + chooser
+    Intellex.bat --ws 192.168.4.1    skip the chooser
+    Intellex.bat --serial COM5
+    Intellex.bat --browser           no window, use the default browser
 
-    ./NaviLink.command               same flags, macOS paths
-    ./NaviLink.command --serial /dev/cu.usbmodem1101
+    ./Intellex.command               same flags, macOS paths
+    ./Intellex.command --serial /dev/cu.usbmodem1101
 
 The chooser also has **Open the tool anyway** — the config tool does not need a
 board to be useful. Panels, saved configs and editing all work offline; attach
 later from the status line at the top of the tool.
 
 On macOS there is no `pythonw`, so a double-click opens a Terminal window that
-stays up while the app runs — closing it quits NaviLink. That is the same
+stays up while the app runs — closing it quits Intellex. That is the same
 relationship the `.bat` has with its console; here it is just visible.
 
 If Finder refuses with "unidentified developer", that copy was **downloaded**
 rather than cloned — a download carries `com.apple.quarantine` and a clone does
-not. Right-click → Open once, or `xattr -d com.apple.quarantine NaviLink.command`.
+not. Right-click → Open once, or `xattr -d com.apple.quarantine Intellex.command`.
 
 `scripts/run-windows.bat` and `scripts/run-macos.command` still exist and do the
 same thing; the root launchers are the ones to hand somebody.
@@ -128,11 +128,11 @@ the auto-bounce is a convenience, and it reports a clear error when it cannot ru
 
 | Changed | What to do |
 |---|---|
-| `navilink_shim.js`, `launcher.html`, the bundled tool | **F5** in the window — everything UI is served `no-store` |
+| `intellex_shim.js`, `launcher.html`, the bundled tool | **F5** in the window — everything UI is served `no-store` |
 | `host.py`, `discover.py`, `*_transport.py`, `app.py` | **Restart the app** — Python is loaded once at startup |
 
 The window has no browser chrome, so F5 / Ctrl+R are wired up in the page itself.
-`NaviLink.bat --dev` adds devtools and a right-click menu for when a reload is not
+`Intellex.bat --dev` adds devtools and a right-click menu for when a reload is not
 enough.
 
 ## Development

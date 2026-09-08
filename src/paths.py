@@ -41,6 +41,43 @@ BUNDLE_DIR = pathlib.Path(getattr(sys, "_MEIPASS", "")) if FROZEN \
     else pathlib.Path(__file__).resolve().parent
 
 
+# The app was called NaviLink until 2026-09-08, and this directory carried that
+# name. Renaming without moving the old one would silently orphan every piece of
+# user state at once: the per-product branch settings, both updated tool bundles,
+# and -- the one that actually bites -- the offline firmware cache. That cache is
+# what makes flashing work on a con floor with no network, so its loss would not
+# surface until exactly the moment there is no way to refill it, and it would
+# look like "flashing broke", nowhere near a rename.
+_LEGACY_DIR_NAME = "NaviLink"
+
+_migrated = False
+
+
+def _migrate_legacy(new: pathlib.Path) -> None:
+    """Move a pre-rename user directory to `new`, at most once per process.
+
+    Only ever when `new` does not exist. An existing new directory is the newer
+    truth and is never merged into or overwritten -- a half-merge of two tool
+    bundles is worse than either one alone.
+
+    Failure is deliberately silent. If the move cannot happen the app falls back
+    to the bundled copies and shipped defaults, which is precisely what it would
+    have done had there been no legacy directory at all.
+    """
+    global _migrated
+    if _migrated:
+        return
+    _migrated = True
+    try:
+        if new.exists():
+            return
+        old = new.parent / _LEGACY_DIR_NAME
+        if old.is_dir():
+            old.rename(new)
+    except OSError:
+        pass
+
+
 def user_data_dir() -> pathlib.Path:
     """Per-user, writable, and survives an app update.
 
@@ -51,11 +88,14 @@ def user_data_dir() -> pathlib.Path:
     """
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
-        return pathlib.Path(base) / "NaviLink"
-    if sys.platform == "darwin":
-        return pathlib.Path.home() / "Library" / "Application Support" / "NaviLink"
-    return pathlib.Path(os.environ.get("XDG_DATA_HOME")
-                        or (pathlib.Path.home() / ".local" / "share")) / "NaviLink"
+        d = pathlib.Path(base) / "Intellex"
+    elif sys.platform == "darwin":
+        d = pathlib.Path.home() / "Library" / "Application Support" / "Intellex"
+    else:
+        d = pathlib.Path(os.environ.get("XDG_DATA_HOME")
+                         or (pathlib.Path.home() / ".local" / "share")) / "Intellex"
+    _migrate_legacy(d)
+    return d
 
 
 def data_dir(name: str) -> pathlib.Path:

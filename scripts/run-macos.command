@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run the NaviLink host on macOS.
+# Run the Intellex host on macOS.
 #
 # Creates the venv and installs dependencies on first run. Double-clickable in
 # Finder (that is what .command gets you), which is why it cd's to its own
@@ -38,7 +38,7 @@ note_if_old() {
   "$PY" -c 'import sys
 if sys.version_info < (3, 11):
     print("")
-    print("Note: this venv is Python %d.%d. NaviLink is developed on 3.14 and only" % sys.version_info[:2])
+    print("Note: this venv is Python %d.%d. Intellex is developed on 3.14 and only" % sys.version_info[:2])
     print("      3.11+ is exercised. It works today, but nothing tests it -- to move")
     print("      up, install a newer Python, delete .venv, and run this again.")
     print("")
@@ -71,7 +71,7 @@ note_if_old
 # bundle: the control API and the /_link byte pipe do not need it.
 if [ ! -f src/webui/index.html ]; then
   echo "Fetching the config tool -- it is not in the repo, see README."
-  "$PY" tools/fetch_webui.py || echo "Could not fetch it. NaviLink will start and explain."
+  "$PY" tools/fetch_webui.py || echo "Could not fetch it. Intellex will start and explain."
 fi
 
 # On macOS a NaviCore enumerates as /dev/cu.usbmodem* (native USB CDC); a bridge

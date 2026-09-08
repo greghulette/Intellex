@@ -1,4 +1,4 @@
-"""Give NaviLink its own face in the Dock and on the taskbar.
+"""Give Intellex its own face in the Dock and on the taskbar.
 
 Without this the app borrows the interpreter's identity: a generic Python rocket
 in the macOS Dock, and on Windows a window grouped under "Python" wearing python's
@@ -17,7 +17,7 @@ app never uses. So:
 
   Windows Two separate things, both required, in this order:
           1. SetCurrentProcessExplicitAppUserModelID BEFORE the window exists.
-             This is what stops the taskbar filing NaviLink under "Python", and it
+             This is what stops the taskbar filing Intellex under "Python", and it
              is ignored if the window is already up.
           2. WM_SETICON on the window once it exists, which needs a real .ico --
              LoadImage cannot read a PNG. src/assets/navicore-icon.ico carries
@@ -34,7 +34,7 @@ import sys
 
 # COMMITTED, unlike src/webui/. That is not a contradiction of "the UI is NOT
 # forked": the config tool is NaviCore's and must never diverge, whereas an app
-# icon is NaviLink's own chrome and has to exist before any network does -- the
+# icon is Intellex's own chrome and has to exist before any network does -- the
 # Dock icon is wanted at startup, offline, on a first run. Copied from
 # NaviCore/assets-navicore/navicore-icon.svg, and BOTH raster files are generated
 # from that .svg by tools/make_icon.py (7 sizes, 16..256, PNG-compressed entries).
@@ -50,7 +50,7 @@ ICON_ICO = ASSETS / "navicore-icon.ico"
 # Reverse-DNS-ish, stable, and NOT the executable name: Windows keys taskbar
 # pinning and grouping to this string, so changing it later orphans anyone's
 # pinned shortcut.
-APP_ID = "NaviCore.NaviLink"
+APP_ID = "NaviCore.Intellex"
 
 
 def prepare() -> str:

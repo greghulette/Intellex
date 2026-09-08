@@ -1,5 +1,5 @@
 // =============================================================================
-//  navilink_shim.js — present the host's byte pipe as a Web Serial port
+//  intellex_shim.js — present the host's byte pipe as a Web Serial port
 // =============================================================================
 //
 //  Injected by host.py BEFORE the config tool's own scripts run. It defines
@@ -30,8 +30,8 @@
 (() => {
   'use strict';
 
-  if (window.__navilinkShimInstalled) return;
-  window.__navilinkShimInstalled = true;
+  if (window.__intellexShimInstalled) return;
+  window.__intellexShimInstalled = true;
 
   const LINK_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/_link';
 
@@ -53,7 +53,7 @@
   let lastLossAt = 0;
   const LOSS_GRACE_MS = 60000;
 
-  class NaviLinkPort {
+  class IntellexPort {
     constructor() {
       this._ws = null;
       this.readable = null;
@@ -73,7 +73,7 @@
       ws.binaryType = 'arraybuffer';
       await new Promise((resolve, reject) => {
         ws.addEventListener('open', resolve, { once: true });
-        ws.addEventListener('error', () => reject(new Error('cannot reach the NaviLink host')), { once: true });
+        ws.addEventListener('error', () => reject(new Error('cannot reach the Intellex host')), { once: true });
       });
       this._ws = ws;
       linkOpen = true;
@@ -260,7 +260,7 @@
     }
   }
 
-  const thePort = new NaviLinkPort();
+  const thePort = new IntellexPort();
   const listeners = { connect: [], disconnect: [] };
 
   const shim = {
@@ -290,15 +290,15 @@
       value: shim, configurable: true, writable: true, enumerable: false,
     });
   } catch (e) {
-    console.error('[NaviLink] could not install the serial shim:', e);
+    console.error('[Intellex] could not install the serial shim:', e);
     return;   // real Web Serial stays; the tool still works with a cable
   }
   if (navigator.serial !== shim) {
-    console.error('[NaviLink] serial shim did not take effect — the tool will use real Web Serial');
+    console.error('[Intellex] serial shim did not take effect — the tool will use real Web Serial');
     return;
   }
 
-  console.info('[NaviLink] navigator.serial is backed by', LINK_URL);
+  console.info('[Intellex] navigator.serial is backed by', LINK_URL);
 
   // ── Which tool is this? ───────────────────────────────────────────────────
   // One shim serves both. Everything above is genuinely shared -- the fake port,
@@ -311,9 +311,9 @@
   // /wcb/Wizard/), not off page content, which would mean guessing from markup that
   // is not ours and may change upstream at any time.
   const IS_WCB = location.pathname.startsWith('/wcb/');
-  console.info('[NaviLink] tool:', IS_WCB ? 'WCB Wizard' : 'NaviCore config tool');
+  console.info('[Intellex] tool:', IS_WCB ? 'WCB Wizard' : 'NaviCore config tool');
 
-  // ── Tell the tool which firmware branch NaviLink is set to ────────────────
+  // ── Tell the tool which firmware branch Intellex is set to ────────────────
   // Both tools resolve a branch themselves and default to 'main': the Wizard's
   // getFirmwareBranch() reads localStorage 'wcb_fw_branch', the config tool's
   // reads 'rc_fw_branch'. Each is a documented escape hatch, which makes it the
@@ -334,11 +334,11 @@
   // deliberate mark of a non-default branch rather than something that merely
   // accumulated.
   try {
-    const br = (window.__navilinkBranches || {})[IS_WCB ? 'wcb' : 'navicore'] || 'main';
+    const br = (window.__intellexBranches || {})[IS_WCB ? 'wcb' : 'navicore'] || 'main';
     const key = IS_WCB ? 'wcb_fw_branch' : 'rc_fw_branch';
     if (br && br !== 'main') {
       localStorage.setItem(key, br);
-      console.info('[NaviLink] firmware branch for this tool:', br);
+      console.info('[Intellex] firmware branch for this tool:', br);
     } else {
       localStorage.removeItem(key);
     }
@@ -346,7 +346,7 @@
 
   // ── Point the Wizard's cross-link at OUR NaviCore tool ────────────────────
   // The Wizard offers "open the RC Config Tool", defaulting to the copy on GitHub
-  // Pages (RC_TOOL_URL_DEFAULT in its app.js). Inside NaviLink that default is
+  // Pages (RC_TOOL_URL_DEFAULT in its app.js). Inside Intellex that default is
   // wrong twice over: it needs the internet, which a con floor does not have, and
   // it lands on a DIFFERENT ORIGIN that cannot reach this host's byte pipe -- so
   // the tool it opens would be unable to talk to the droid at all.
@@ -398,17 +398,17 @@
       const r = await fetch('/_api/status');
       const st = await r.json();
       if (!st.attached) {
-        console.info('[NaviLink] host has no transport attached — not auto-connecting');
+        console.info('[Intellex] host has no transport attached — not auto-connecting');
         return;
       }
       if (typeof window.connectDirect !== 'function') {
-        console.warn('[NaviLink] connectDirect() not found; click Connect manually');
+        console.warn('[Intellex] connectDirect() not found; click Connect manually');
         return;
       }
-      console.info('[NaviLink] auto-connecting to', st.target);
+      console.info('[Intellex] auto-connecting to', st.target);
       await window.connectDirect();
     } catch (e) {
-      console.warn('[NaviLink] auto-connect skipped:', e && e.message);
+      console.warn('[Intellex] auto-connect skipped:', e && e.message);
     }
   }
 
@@ -432,10 +432,10 @@
 
   // ── Is the HOST new enough to flash? ──────────────────────────────────────
   // This file is re-read from disk on every request; host.py is loaded once, at
-  // startup. So a NaviLink left running across an update serves a NEW page to an
+  // startup. So a Intellex left running across an update serves a NEW page to an
   // OLD host -- the page POSTs /_api/flash, that route does not exist yet, the
   // static handler takes the request and answers 405, and the user is told "the
-  // host refused" when the true answer is "restart NaviLink". That happened, so
+  // host refused" when the true answer is "restart Intellex". That happened, so
   // ask first and say the useful thing instead.
   //
   // Only a positive result is cached: a failed probe may just be a host that is
@@ -451,8 +451,8 @@
     return hostCanFlash;
   }
 
-  const STALE_HOST_MSG = 'This page is newer than the running NaviLink host — '
-                       + 'quit and reopen NaviLink to enable flashing.';
+  const STALE_HOST_MSG = 'This page is newer than the running Intellex host — '
+                       + 'quit and reopen Intellex to enable flashing.';
 
   const FLASH_BTNS = [
     ['btn-fw-flash', false, 'Update Firmware',
@@ -508,8 +508,8 @@
         if (!flashBusy) { b.disabled = true; b.title = NOT_USB_MSG; }
         continue;
       }
-      if (!b.__navilinkWired) {
-        b.__navilinkWired = true;
+      if (!b.__intellexWired) {
+        b.__intellexWired = true;
         b.addEventListener('click', ev => {
           ev.preventDefault();
           ev.stopImmediatePropagation();   // the page's esptool-js path must not run
@@ -620,7 +620,7 @@
   // others proxy their bytes through it.
   //
   // THAT RULE DOES NOT APPLY HERE, and the workaround is actively harmful.
-  // Under NaviLink the "port" is a WebSocket to the host, every page opens its own,
+  // Under Intellex the "port" is a WebSocket to the host, every page opens its own,
   // and the host fans the droid's bytes to all of them (Bridge._pages). Both tools
   // already have independent, first-class access to the same link.
   //
@@ -641,13 +641,13 @@
   // browser".
   function disableWcbPortSharing() {
     const orig = window.establishConnection;
-    if (typeof orig !== 'function' || orig.__navilinkNoShare) return;
+    if (typeof orig !== 'function' || orig.__intellexNoShare) return;
     const wrapped = function (n, port, usedPorts, _allowShare) {
       return orig.call(this, n, port, usedPorts, false);
     };
-    wrapped.__navilinkNoShare = true;
+    wrapped.__intellexNoShare = true;
     window.establishConnection = wrapped;
-    console.info('[NaviLink] cross-tab port sharing disabled — the host already '
+    console.info('[Intellex] cross-tab port sharing disabled — the host already '
                + 'serves every page its own link');
   }
 
@@ -657,7 +657,7 @@
   // worth shouting about. Its own comment says it "must not vanish before the
   // user flashes".
   //
-  // Inside NaviLink two things change. The advice is WRONG -- it says to run
+  // Inside Intellex two things change. The advice is WRONG -- it says to run
   // localStorage.removeItem('wcb_fw_branch') in the console, but that key is set
   // from the launcher's branch field on every load, so doing that reverts on the
   // next reload and the real control is somewhere else entirely. And the warning
@@ -674,8 +674,8 @@
       if (Date.now() > until) { clearInterval(tick); return; }
       for (const t of document.querySelectorAll('#toast-container .toast.warning')) {
         if (!/Firmware source is overridden/i.test(t.textContent || '')) continue;
-        if (t.__navilinkTimed) continue;
-        t.__navilinkTimed = true;
+        if (t.__intellexTimed) continue;
+        t.__intellexTimed = true;
         // Dismiss with the toast's OWN button, so whatever teardown it does --
         // transition, removal, bookkeeping -- happens exactly as it would if the
         // user had clicked it.
@@ -690,7 +690,7 @@
   }
 
   // ── Dismiss the Wizard's "Setup Wizard / Config Tool" splash ──────────────
-  // It asks which way you want to start, every single load. Inside NaviLink that
+  // It asks which way you want to start, every single load. Inside Intellex that
   // question has already been answered by opening the WCB pane at all, and the
   // shell PRELOADS that pane — so the modal appears over a tool nobody has looked
   // at yet, and again in a second window, for a choice nobody asked to make.
@@ -723,9 +723,9 @@
         try {
           if (typeof window.splashGoConfig === 'function') window.splashGoConfig();
           else el.classList.remove('open');   // the function was renamed; still dismiss
-          console.info('[NaviLink] dismissed the Wizard start-up splash');
+          console.info('[Intellex] dismissed the Wizard start-up splash');
         } catch (e) {
-          console.warn('[NaviLink] could not dismiss the splash:', e && e.message);
+          console.warn('[Intellex] could not dismiss the splash:', e && e.message);
         }
         clearInterval(tick);
         return;
@@ -742,19 +742,19 @@
       const r = await fetch('/_api/status');
       const st = await r.json();
       if (!st.attached) {
-        console.info('[NaviLink] host has no transport attached — not auto-connecting');
+        console.info('[Intellex] host has no transport attached — not auto-connecting');
         return;
       }
       wcbRole    = st.role || '';
       wcbRelayId = st.relayId || null;
       if (typeof window._modalDoConnect !== 'function') {
-        console.warn('[NaviLink] _modalDoConnect() not found; connect board 1 manually');
+        console.warn('[Intellex] _modalDoConnect() not found; connect board 1 manually');
         return;
       }
       // Already connected (a reload that raced us, or the user was quicker)? Leave it.
       const conns = window.boardConnections || {};
       if (conns[1] && conns[1].isConnected && conns[1].isConnected()) return;
-      console.info('[NaviLink] auto-connecting WCB slot 1 to', st.target,
+      console.info('[Intellex] auto-connecting WCB slot 1 to', st.target,
                    wcbRole ? `(role: ${wcbRole})` : '');
       await window._modalDoConnect(1, await navigator.serial.requestPort());
       // _modalDoConnect schedules its own pull 3 s out. That pull is what reveals
@@ -782,7 +782,7 @@
       // pull is about to reveal — the same reason the call above is ungated.
       routeMeshThroughBoard();
     } catch (e) {
-      console.warn('[NaviLink] WCB auto-connect skipped:', e && e.message);
+      console.warn('[Intellex] WCB auto-connect skipped:', e && e.message);
     }
   }
 
@@ -844,7 +844,7 @@
   const RELAY_WATCH_MS = 300000;   // 5 min of attention, then stop nagging
   async function routeMeshThroughRelay() {
     if (typeof window.relayRouteAll !== 'function') {
-      console.warn('[NaviLink] relayRouteAll() not found — click "Manage all" on the relay card');
+      console.warn('[Intellex] relayRouteAll() not found — click "Manage all" on the relay card');
       return;
     }
     const deadline = Date.now() + RELAY_WATCH_MS;
@@ -855,22 +855,22 @@
       if (slot == null) continue;
       if (!sawCard) {
         sawCard = true;
-        console.info('[NaviLink] relay card is up at slot', slot);
+        console.info('[Intellex] relay card is up at slot', slot);
       }
       const n = unmanagedOnCard(slot);
       if (!n) continue;
       bound += n;
-      console.info(`[NaviLink] ${n} mesh board(s) unmanaged — routing them through relay ${slot}`);
+      console.info(`[Intellex] ${n} mesh board(s) unmanaged — routing them through relay ${slot}`);
       try { window.relayRouteAll(slot); } catch (e) {
-        console.warn('[NaviLink] relayRouteAll failed:', e && e.message);
+        console.warn('[Intellex] relayRouteAll failed:', e && e.message);
       }
     }
     // Say WHICH half fell short — they need different things looked at.
     if (!sawCard) {
-      console.warn('[NaviLink] no relay card appeared — the config pull never returned '
+      console.warn('[Intellex] no relay card appeared — the config pull never returned '
         + 'a backup. Check the terminal pane for what came back.');
     } else if (!bound) {
-      console.warn('[NaviLink] the relay card is up but no mesh boards were ever heard. '
+      console.warn('[Intellex] the relay card is up but no mesh boards were ever heard. '
         + 'Are the WCBs powered and on the same mesh channel?');
     }
   }
@@ -934,12 +934,12 @@
   let _lastWdpNodes = null;
   function watchWdpSweeps() {
     const orig = window.renderWdpMesh;
-    if (typeof orig !== 'function' || orig.__navilinkWrapped) return;
+    if (typeof orig !== 'function' || orig.__intellexWrapped) return;
     const wrapped = function (nodes) {
       if (Array.isArray(nodes) && nodes.length) _lastWdpNodes = nodes;
       return orig.apply(this, arguments);
     };
-    wrapped.__navilinkWrapped = true;
+    wrapped.__intellexWrapped = true;
     window.renderWdpMesh = wrapped;
   }
 
@@ -982,7 +982,7 @@
           || typeof window.remoteBoardPull !== 'function') {
         if (!warned) {
           warned = true;
-          console.warn('[NaviLink] setRemoteConnected/remoteBoardPull not found — mesh '
+          console.warn('[Intellex] setRemoteConnected/remoteBoardPull not found — mesh '
             + 'boards will need their own Connect button.');
         }
         continue;
@@ -991,7 +991,7 @@
       if (!st) {
         if (!warned) {
           warned = true;
-          console.warn('[NaviLink] cannot see the Wizard\'s board state — mesh boards will '
+          console.warn('[Intellex] cannot see the Wizard\'s board state — mesh boards will '
             + 'need their own Connect button. (Wizard internals renamed?)');
         }
         continue;
@@ -1025,7 +1025,7 @@
         && !_meshRoutedOnce.has(n));
       if (!targets.length) continue;
 
-      console.info(`[NaviLink] ${targets.length} mesh board(s) unmanaged behind WCB `
+      console.info(`[Intellex] ${targets.length} mesh board(s) unmanaged behind WCB `
         + `${parentNum} — arming and pulling through it`);
       for (const n of targets) {
         _meshRoutedOnce.add(n);            // claim it before awaiting, so the next
@@ -1053,13 +1053,13 @@
           ]);
           clearTimeout(timer);
           if (done === 'timeout') {
-            console.warn(`[NaviLink] pull of WCB${n} through ${parentNum} never reported back `
+            console.warn(`[Intellex] pull of WCB${n} through ${parentNum} never reported back `
               + `after ${PULL_WATCHDOG_MS / 1000}s — moving on to the next board. `
               + 'Use that board\'s own Pull Config button to retry it.');
           }
           await new Promise(r => setTimeout(r, 250));   // let reassembly clear
         } catch (e) {
-          console.warn(`[NaviLink] pull of WCB${n} through ${parentNum} failed:`, e && e.message);
+          console.warn(`[Intellex] pull of WCB${n} through ${parentNum} failed:`, e && e.message);
         }
       }
     }
@@ -1086,8 +1086,8 @@
   // auto-detection is authoritative, and the host detects for real before it
   // downloads anything, so passing the guess along could only make things worse.
   function installWcbFlash() {
-    if (window.__navilinkWcbFlash) return;
-    window.__navilinkWcbFlash = true;
+    if (window.__intellexWcbFlash) return;
+    window.__intellexWcbFlash = true;
 
     window.flashFirmware = async function (_port, _hwVersion, opts) {
       const o = opts || {};
@@ -1108,7 +1108,7 @@
       if (linkKind && linkKind !== 'serial') throw new Error(NOT_USB_MSG);
 
       onStatus('Starting native flash…');
-      onLog('NaviLink: flashing through the host (esptool), not the browser.');
+      onLog('Intellex: flashing through the host (esptool), not the browser.');
       onLog(appOnly ? 'Mode: Update — app only, configuration preserved.'
                     : eraseNvs ? 'Mode: Factory Reset — NVS will be erased.'
                                : 'Mode: full flash — bootloader + partitions + app.');
@@ -1161,7 +1161,7 @@
         return;
       }
     };
-    console.info('[NaviLink] flashFirmware() now runs on the host');
+    console.info('[Intellex] flashFirmware() now runs on the host');
   }
 
   // ── Say which transport is actually in use ────────────────────────────────
@@ -1184,12 +1184,12 @@
   let lastTarget = '';
 
   function labelEl() {
-    let el = document.getElementById('navilink-transport');
+    let el = document.getElementById('intellex-transport');
     if (el) return el;
     const host = document.getElementById('status-text');
     if (!host || !host.parentNode) return null;
     el = document.createElement('span');
-    el.id = 'navilink-transport';
+    el.id = 'intellex-transport';
     // Inherit, so it reads as part of the status line rather than a bolt-on.
     el.style.cssText = 'font:inherit;color:inherit;opacity:.85;cursor:pointer';
     el.title = 'Change connection (USB / WiFi)';
@@ -1262,7 +1262,7 @@
   function openChooser() {
     if (IN_SHELL) {
       try {
-        window.parent.postMessage({ navilink: 'open-chooser' }, location.origin);
+        window.parent.postMessage({ intellex: 'open-chooser' }, location.origin);
         return;
       } catch (_) { /* fall through to navigating */ }
     }
@@ -1271,16 +1271,16 @@
 
   function wcbChip() {
     if (IN_SHELL) return null;
-    let el = document.getElementById('navilink-chip');
+    let el = document.getElementById('intellex-chip');
     if (el) return el;
     if (!document.body) return null;
     el = document.createElement('div');
-    el.id = 'navilink-chip';
+    el.id = 'intellex-chip';
     el.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:99998;'
       + 'background:#1d2733;color:#cfe3ff;border:1px solid #35506e;border-radius:14px;'
       + 'padding:5px 11px;font:12px/1.3 system-ui,sans-serif;cursor:pointer;'
       + 'box-shadow:0 2px 10px rgba(0,0,0,.35);opacity:.92';
-    el.title = 'NaviLink connection — click to change it';
+    el.title = 'Intellex connection — click to change it';
     // THE WAY BACK, same problem as the NaviCore label solves: an app window has
     // no browser chrome, so without this there is no route from the Wizard to the
     // chooser and switching from USB to WiFi means restarting the app.
@@ -1293,7 +1293,7 @@
     const el = wcbChip();
     if (!el) return;
     const label = labelFor(lastTarget);
-    const want = label ? 'NaviLink · ' + label + ' ▾' : 'NaviLink · not attached ▾';
+    const want = label ? 'Intellex · ' + label + ' ▾' : 'Intellex · not attached ▾';
     if (el.textContent !== want) el.textContent = want;
   }
 
@@ -1312,11 +1312,11 @@
   let downSince = 0;
 
   function banner(html) {
-    let b = document.getElementById('navilink-banner');
+    let b = document.getElementById('intellex-banner');
     if (!html) { if (b) b.remove(); return; }
     if (!b) {
       b = document.createElement('div');
-      b.id = 'navilink-banner';
+      b.id = 'intellex-banner';
       b.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;'
         + 'background:#4a3a1e;color:#ffd79a;border-bottom:1px solid #7a5f2e;'
         + 'padding:9px 14px;font:13px/1.45 system-ui,sans-serif;text-align:center';
@@ -1339,7 +1339,7 @@
     // half-finished connects on top of each other.
     if (st.attached && !linkOpen && !userClosed && Date.now() >= reconnectAt) {
       reconnectAt = Date.now() + 5000;
-      console.info('[NaviLink] host is attached but the page is not — reconnecting');
+      console.info('[Intellex] host is attached but the page is not — reconnecting');
       // KEEP RETRYING. The tool's own auto-reconnect is deliberately one-shot and
       // disarms after a single failure, which is the right call for real hardware
       // (it must never grab the wrong serial device). Here the target is not

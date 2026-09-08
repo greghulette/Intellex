@@ -1,11 +1,11 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>NaviLink</title>
+<title>Intellex</title>
 <!--
   shell.html — holds the two tools in one window and lets you switch or split them.
 
   WHY A SHELL AT ALL
-  NaviLink now serves two independent browser tools: the NaviCore config tool at /
+  Intellex now serves two independent browser tools: the NaviCore config tool at /
   and the WCB Wizard at /wcb/Wizard/. Both are whole applications with their own
   chrome, and neither knows the other exists. An app window has no tabs and no
   address bar, so without something above them there is no way to get from one to
@@ -77,7 +77,7 @@
 </style>
 
 <div id="bar">
-  <span class="brand">NaviLink</span>
+  <span class="brand">Intellex</span>
   <button id="t-nc"  aria-pressed="false">NaviCore</button>
   <button id="t-wcb" aria-pressed="false">WCB</button>
   <button id="t-split" aria-pressed="false" title="Show both tools side by side">Side by side</button>
@@ -98,7 +98,7 @@
   const $ = id => document.getElementById(id);
   const SRC = { nc: '/', wcb: '/wcb/Wizard/' };
   const VIEWS = ['nc', 'wcb', 'split'];
-  const KEY = 'navilink_view';
+  const KEY = 'intellex_view';
 
   // URL first, then what was used last, then the config tool. The URL wins so the
   // launcher can send you somewhere specific and a bookmark/reload keeps it.
@@ -175,7 +175,7 @@
     if (both) {
       // Restore the last drag, or start even.
       let pct = 50;
-      try { pct = parseFloat(localStorage.getItem('navilink_split') || '50') || 50; } catch (_) {}
+      try { pct = parseFloat(localStorage.getItem('intellex_split') || '50') || 50; } catch (_) {}
       setSplit(pct);
     } else {
       $('p-nc').style.flex = '1';
@@ -290,7 +290,7 @@
     dragging = false;
     document.querySelectorAll('iframe').forEach(f => { f.style.pointerEvents = ''; });
     const pct = parseFloat($('p-nc').style.flex) || 50;
-    try { localStorage.setItem('navilink_split', String(pct)); } catch (_) {}
+    try { localStorage.setItem('intellex_split', String(pct)); } catch (_) {}
   }
   $('split').addEventListener('pointerup', endDrag);
   $('split').addEventListener('pointercancel', endDrag);
@@ -411,7 +411,7 @@
   // arrive here as a postMessage; ignore anything from another origin.
   window.addEventListener('message', (ev) => {
     if (ev.origin !== location.origin) return;
-    const t = ev.data && ev.data.navilink;
+    const t = ev.data && ev.data.intellex;
     if (t === 'close-chooser') closeChooser();
     else if (t === 'open-chooser') openChooser();
   });

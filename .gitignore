@@ -17,7 +17,7 @@ src/webui/
 # Local user state
 *.log
 logs/
-navilink_config.json
+intellex_config.json
 src/webui.prev/
 
 # Bundled copy of the WCB Wizard — same rule as src/webui/ above. The public WCB

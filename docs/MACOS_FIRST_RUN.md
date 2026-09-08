@@ -12,22 +12,22 @@ That only becomes a question if you later hand someone a downloaded `.app`.
 
 ## Run it
 
-Double-click **`NaviLink.command`** at the repo root. That is the whole answer —
-it is the counterpart to `NaviLink.bat`, and `.gitattributes` pins `*.command` to
+Double-click **`Intellex.command`** at the repo root. That is the whole answer —
+it is the counterpart to `Intellex.bat`, and `.gitattributes` pins `*.command` to
 LF so the shebang survives being authored on Windows (a CRLF one fails as
 `bad interpreter: /bin/bash^M`, which reads like a broken script).
 
 From a shell, if you prefer:
 
 ```bash
-cd ~/Documents/GitHub/NaviLink      # wherever you cloned it
-./NaviLink.command
+cd ~/Documents/GitHub/Intellex      # wherever you cloned it
+./Intellex.command
 ```
 
 First run builds the venv, installs dependencies, **and fetches the config tool**,
 which takes a minute or two. It should then open a window on the chooser. The
 Terminal window stays up while the app runs — there is no `pythonw` on macOS — and
-closing it quits NaviLink.
+closing it quits Intellex.
 
 That fetch is not optional and it is easy to miss why: `src/webui/` is gitignored,
 because the public NaviCore repo is the single source of truth for the UI. A fresh
@@ -50,13 +50,13 @@ do it by hand at any time:
 
 If Finder refuses with "unidentified developer", this copy was **downloaded**
 rather than cloned: a download carries `com.apple.quarantine`, a clone does not.
-Right-click → Open once, or `xattr -d com.apple.quarantine NaviLink.command`.
+Right-click → Open once, or `xattr -d com.apple.quarantine Intellex.command`.
 
 If the window is the part that fails, this still works and is the fastest way to
 find out whether everything *else* is fine:
 
 ```bash
-./NaviLink.command --browser
+./Intellex.command --browser
 ```
 
 ## What is most likely to break, in order
@@ -230,8 +230,9 @@ running before debugging the window.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-09-08 | _(uncommitted)_ | Renamed NaviLink -> Intellex, so the macOS launcher at the repo root is now `Intellex.command` and the build products are `Intellex.app` / `Intellex.dmg`. The quarantine command changes with it. Rows above this one were swept too and name the app Intellex for work done while it was still NaviLink. |
 | 2026-09-01 | _(uncommitted)_ | **First real run on a Mac.** Four things, in the order they bit. (1) A fresh clone has no UI — `src/webui/` is gitignored — so the first screen was "No bundled config tool". All four launchers now fetch it when `src/webui/index.html` is absent, non-fatally. (2) The fetch then failed anyway: python.org Python ships an EMPTY CA store, so every HTTPS request died as `CERTIFICATE_VERIFY_FAILED` while reporting itself as *"cannot reach ... (offline is fine)"*. Added `certifi` to requirements and `src/certs.py`, shared by the fetcher and the app's update probe; a cert failure is now told apart from being offline everywhere it surfaces, including the launcher's version line, which had been saying "offline — cannot compare" on a networked machine. (3) `fetch_webui.py` had no retry, and Pages throttled the ~35-file burst with a 503 partway through cmdlib, aborting the whole update with a traceback that named `urlopen` but not the file. It now retries what is worth retrying, skips what is not (404s, cert failures), and names the URL that lost. (4) `_wifi_bounce_macos()` confirmed broken on real hardware — see item 3 above; diagnosed and written up, not yet fixed. Also: pywebview/WKWebView verified working first try, serial `cu.*`/VID handling verified, and `smoke_host.py` no longer needs 3.11. |
-| 2026-08-31 | _(uncommitted)_ | Added `NaviLink.command` at the repo root, so "how do I open it" has the same answer on both platforms — the Windows launcher was at the root while macOS users had to know `scripts/` existed. Added `.gitattributes` pinning `*.command`/`*.sh` to LF and `*.bat` to CRLF: these are authored on a Windows box with `core.autocrlf=true`, and a CRLF shebang fails on macOS as `bad interpreter: /bin/bash^M`, which does not look like a line-ending problem. Recorded the quarantine distinction (downloads carry it, clones do not) where someone hitting it will look. |
+| 2026-08-31 | _(uncommitted)_ | Added `Intellex.command` at the repo root, so "how do I open it" has the same answer on both platforms — the Windows launcher was at the root while macOS users had to know `scripts/` existed. Added `.gitattributes` pinning `*.command`/`*.sh` to LF and `*.bat` to CRLF: these are authored on a Windows box with `core.autocrlf=true`, and a CRLF shebang fails on macOS as `bad interpreter: /bin/bash^M`, which does not look like a line-ending problem. Recorded the quarantine distinction (downloads carry it, clones do not) where someone hitting it will look. |
 | 2026-08-31 | _(uncommitted)_ | The chooser no longer guesses a product from the USB description. It reports the chip from the VID (platform-independent, so the old Windows-vs-macOS description matching is gone) and ASKS Espressif ports what they are. The old heuristic was wrong on half a normal bench: a NaviCore and an SBUS controller are both ESP32-S3 native USB and enumerate identically as 303A:1001 "USB Serial Device", so both read as "probably a NaviCore", while a CP210x dev board running the mgmt relay read as "probably a WCB bridge". |
 | 2026-08-30 | _(uncommitted)_ | Three of the four macOS risks on this page are now addressed in code rather than only described. The Wi-Fi bounce matched the SSID as a substring of the whole `networksetup` reply, so a house network called `NaviCore_Guest` would have power-cycled the wrong radio every ~10 s — it now parses the network name out and matches exactly, or as `<ssid>-<suffix>` for a default-named AP (the firmware derives `NaviCore-<deviceId>` when `wifiSsid` is blank, which the old exact-match Windows path never matched either). A window-backend failure falls back to the browser instead of killing the app. The chooser filters `/dev/tty.*`, whose open blocks on carrier detect. The parser logic is covered by a stubbed test; whether real `networksetup` output matches the stub is still unverified. |
 | 2026-08-30 | _(uncommitted)_ | Created. First-run test plan for macOS, written without a Mac to verify against: how to run it, the three things most likely to fail and what each costs, and the headless checks that isolate the app from the window. Records that no Apple Developer account is needed for a locally cloned repo, since Gatekeeper only acts on quarantined downloads. |

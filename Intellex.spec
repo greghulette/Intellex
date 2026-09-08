@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-#  NaviLink.spec — one-file app for Windows and macOS.
+#  Intellex.spec — one-file app for Windows and macOS.
 #
 #  Modelled on ESP-Flasher-Companion's spec, which is the proven pipeline for this
 #  exact stack (pyserial + esptool frozen with PyInstaller). Its collect_all calls
@@ -44,7 +44,7 @@ for _d in ('webui', 'webui_wcb', 'firmware'):
         datas.append((os.path.join('src', _d), _d))
 
 # Served at runtime, so they must be real files in the bundle.
-for _f in ('launcher.html', 'shell.html', 'navilink_shim.js'):
+for _f in ('launcher.html', 'shell.html', 'intellex_shim.js'):
     datas.append((os.path.join('src', _f), '.'))
 datas.append((os.path.join('src', 'assets'), 'assets'))
 
@@ -76,7 +76,7 @@ pyz = PYZ(a.pure)
 # Mac gets the onedir layout wrapped in the bundle; Windows keeps the single
 # self-contained .exe, which is what makes it trivial to copy and install.
 _common = dict(
-    name='NaviLink',
+    name='Intellex',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -105,15 +105,15 @@ if sys.platform == 'darwin':
         _icns = None
     exe = EXE(pyz, a.scripts, [], exclude_binaries=True, icon=_icns, **_common)
     coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False,
-                   upx_exclude=[], name='NaviLink')
+                   upx_exclude=[], name='Intellex')
     app = BUNDLE(
         coll,
-        name='NaviLink.app',
+        name='Intellex.app',
         icon=_icns,
-        bundle_identifier='com.greghulette.navilink',
+        bundle_identifier='com.greghulette.intellex',
         info_plist={
-            'CFBundleName': 'NaviLink',
-            'CFBundleDisplayName': 'NaviLink',
+            'CFBundleName': 'Intellex',
+            'CFBundleDisplayName': 'Intellex',
             'NSHighResolutionCapable': True,
             # Not a background agent: it owns a window and belongs in the Dock.
             'LSUIElement': False,

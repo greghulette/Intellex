@@ -1,12 +1,12 @@
-# The WCB Wizard inside NaviLink
+# The WCB Wizard inside Intellex
 
-NaviLink hosts **two** browser tools: the NaviCore config tool at `/` and the WCB Wizard at
+Intellex hosts **two** browser tools: the NaviCore config tool at `/` and the WCB Wizard at
 `/wcb/Wizard/`. Both are unmodified copies of what the public repos publish, both are shimmed
 at serve time, and both talk to the same droid link.
 
 This page covers what is specific to the Wizard. The shared machinery — the byte pipe, the
 transports, the shim's fake `navigator.serial` — is in [`../CLAUDE.md`](../CLAUDE.md) and the
-header comments of `src/host.py` and `src/navilink_shim.js`.
+header comments of `src/host.py` and `src/intellex_shim.js`.
 
 ---
 
@@ -24,7 +24,7 @@ the same wire contract as NaviCore's**:
 >
 > — `WCBClient/examples/MgmtRelay/mgmt_wsserver.h`, header comment
 
-So NaviLink needed **no new transport** for the Wizard. `WebSocketTransport` already carries
+So Intellex needed **no new transport** for the Wizard. `WebSocketTransport` already carries
 it, and `src/discover.py` already finds a relay at `192.168.4.19` and attaches it with
 `role: "relay"`. A WCB hosting its own AP is a doorway too, and takes more than an address to
 recognise — see [Three doorways, one address](#three-doorways-one-address-identify-by-answer-never-by-address).
@@ -72,7 +72,7 @@ browsing context*, so the Wizard and the NaviCore tool cannot each hold their ow
 the same USB board. It elects a leader over Web Locks and proxies the other tabs' bytes over a
 BroadcastChannel.
 
-**That rule does not apply inside NaviLink, and the workaround breaks things.** The "port" is a
+**That rule does not apply inside Intellex, and the workaround breaks things.** The "port" is a
 WebSocket to the host, every page opens its own, and the host fans the droid's bytes to all of
 them. Both tools already have independent, first-class access to the same link. Left on, the hub:
 
@@ -406,7 +406,7 @@ Two places `wcb_flash.py` is deliberately **stricter than `flasher.js`**:
 The shim **replaces `window.flashFirmware`** rather than intercepting buttons. Flashing in the
 Wizard is one branch of `boardGo()` for any of N board slots, wrapped in per-card bookkeeping —
 save the port, close the connection, drive a progress bar, then reconnect, re-share the port
-and re-push config. All of that is correct and none of it is NaviLink's to reimplement. Every
+and re-push config. All of that is correct and none of it is Intellex's to reimplement. Every
 path funnels into one call:
 
 ```js
@@ -427,7 +427,7 @@ port.
 
 ## Window layouts
 
-The launcher offers four, remembered in `localStorage.navilink_view`:
+The launcher offers four, remembered in `localStorage.intellex_view`:
 
 | | |
 |---|---|
@@ -466,7 +466,7 @@ Two things that do not work here, both measured:
 not import webview (it runs standalone), so the hook is registered by `app.py` and the route
 answers 501 when there is none; the caller then falls back to `window.open()`. The route
 accepts **local paths only** — an absolute URL would let a page render an arbitrary site inside
-NaviLink's own window, wearing its title.
+Intellex's own window, wearing its title.
 
 ## Things that would break it
 
@@ -489,6 +489,9 @@ NaviLink's own window, wearing its title.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-09-08 | _(uncommitted)_ | Renamed NaviLink -> Intellex. Affects this page in two places worth knowing before grepping for either: the shim is `src/intellex_shim.js` and it is served at `/_intellex.js`. Behaviour is unchanged — the `` / `
+` / `
+` line splitting and the `flashFirmware()` interception are untouched. Rows above this one were swept too and name the app Intellex for work done while it was still NaviLink. |
 | 2026-09-02 | _(uncommitted)_ | **Reversed the earlier "NaviCore cannot be the WCB relay" call — it already is one, for OTA.** `?OTA,*` relays to WCBs today, NaviCore already dispatches `?`-commands through one handler shared by USB and its WebSocket, and its `onRawPacket` hook already demuxes by length and ignores unknown sizes (so it extends cleanly rather than conflicting — the blocker first flagged here was wrong). The Wizard surface is therefore extracted to `WCB_Client/src/WCB_Mgmt.h` rather than copied: it is a wire protocol byte-matched to `WCB.ino` and to the Wizard's parser, so two copies would drift silently. The module registers nothing with `WCB_Client` — the host feeds it from its own dispatcher and hook, because `onRawPacket` takes one callback and NaviCore already owns it for OTA. Compiles standalone against a NaviCore-shaped host (ESP32-S3, 67% flash). |
 | 2026-09-02 | _(uncommitted)_ | **The Wizard's commands were never being transmitted.** The shim frames outgoing bytes one line per WebSocket message and split on `
 ` alone — correct while the NaviCore tool was its only caller, but the Wizard ends every command with `

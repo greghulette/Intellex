@@ -1,4 +1,4 @@
-"""NaviLink host — serves the config tool locally and bridges it to a droid.
+"""Intellex host — serves the config tool locally and bridges it to a droid.
 
     python src/host.py                       # serve + open nothing
     python src/host.py --serial COM5         # attach a port at startup
@@ -71,7 +71,7 @@ except ImportError:                                      # pragma: no cover
     # the dependencies live in .venv, and `python src/host.py` uses whatever is on
     # PATH. Say so, because the bare ModuleNotFoundError reads like a broken app.
     sys.stderr.write(
-        "\nNaviLink: aiohttp is not available to this interpreter.\n"
+        "\nIntellex: aiohttp is not available to this interpreter.\n"
         f"  running: {sys.executable}\n\n"
         "Use the launcher, which creates the venv and installs deps on first run:\n"
         "  Windows:  scripts\\run-windows.bat --serial COM5\n"
@@ -663,11 +663,11 @@ async def api_open_window(req: web.Request) -> web.Response:
     except Exception:
         body = {}
     url = body.get("url", "/")
-    title = body.get("title", "NaviLink")
+    title = body.get("title", "Intellex")
     # LOCAL PATHS ONLY. This opens a window in the user's app on whatever it is
     # given; accepting an absolute URL would let any page that gets a POST past
-    # the origin guard render an arbitrary site inside NaviLink's own window,
-    # wearing NaviLink's title.
+    # the origin guard render an arbitrary site inside Intellex's own window,
+    # wearing Intellex's title.
     if not isinstance(url, str) or not url.startswith("/") or url.startswith("//"):
         return web.json_response({"ok": False, "error": "url must be a local path"},
                                  status=400)
@@ -740,7 +740,7 @@ async def api_update_webui(req: web.Request) -> web.Response:
 
 
 # ── Native flashing ─────────────────────────────────────────────────────────
-# The page CANNOT flash through this app: navilink_shim.js presents the host's byte
+# The page CANNOT flash through this app: intellex_shim.js presents the host's byte
 # pipe as a Web Serial port, and esptool-js needs real DTR/RTS to walk the board
 # into download mode. Over a WebSocket there are no control lines, so it waits
 # forever. The host has the actual port and esptool as a Python package, which is
@@ -1088,8 +1088,8 @@ async def ws_link(req: web.Request) -> web.WebSocketResponse:
 
 
 # ── static UI ───────────────────────────────────────────────────────────────────
-SHIM_FILE = paths.BUNDLE_DIR / "navilink_shim.js"
-SHIM_TAG = '<script src="/_navilink.js"></script>'
+SHIM_FILE = paths.BUNDLE_DIR / "intellex_shim.js"
+SHIM_TAG = '<script src="/_intellex.js"></script>'
 
 
 async def shim_js(_req: web.Request) -> web.StreamResponse:
@@ -1107,7 +1107,7 @@ async def shim_js(_req: web.Request) -> web.StreamResponse:
     no-fork rule is about not editing THEIR files, and this is ours.
     """
     src = SHIM_FILE.read_text(encoding="utf-8", errors="replace")
-    prelude = ("window.__navilinkBranches = "
+    prelude = ("window.__intellexBranches = "
                + json.dumps(settings.branches(), separators=(",", ":")) + ";\n")
     return web.Response(
         text=prelude + src,
@@ -1462,7 +1462,7 @@ def build_app() -> web.Application:
         web.post("/_api/detach", api_detach),
         web.post("/_api/identify", api_identify),
         web.post("/_api/signals", api_signals),
-        web.get("/_navilink.js", shim_js),
+        web.get("/_intellex.js", shim_js),
         web.get("/_link", ws_link),
         # THREE spellings, because all three are reachable and only two of them
         # would work by accident.
@@ -1501,7 +1501,7 @@ def build_app() -> web.Application:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="NaviLink host")
+    ap = argparse.ArgumentParser(description="Intellex host")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--serial", help="attach this COM port at startup")
     ap.add_argument("--ws", help="attach this droid host at startup")

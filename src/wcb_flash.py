@@ -1,7 +1,7 @@
 """Flash WCB firmware natively, for the same reason flash.py exists for NaviCore.
 
 WHY THIS EXISTS. The Wizard flashes with esptool-js over Web Serial, which is the
-right answer in a browser and unavailable to this app: navilink_shim.js presents the
+right answer in a browser and unavailable to this app: intellex_shim.js presents the
 host's byte pipe AS a Web Serial port, and esptool-js drives a real one far harder
 than a pipe can fake -- timing-sensitive DTR/RTS to enter the bootloader, polling
 readable.locked, cancelling readers mid-stream. Over a WebSocket there are no control
@@ -352,7 +352,7 @@ def run_esptool(port: str, chip: str, entries: list[dict], log, progress=None,
     esptool 5 still accepts the underscore forms but warns they are deprecated, and
     those warnings land in the user's flash log looking like problems.
     """
-    with tempfile.TemporaryDirectory(prefix="navilink-wcbflash-") as td:
+    with tempfile.TemporaryDirectory(prefix="intellex-wcbflash-") as td:
         args = []
         for i, e in enumerate(entries):
             f = pathlib.Path(td) / f"{i}_{e['address']:#x}.bin"

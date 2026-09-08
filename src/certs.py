@@ -10,7 +10,7 @@ Certificates.command" by hand afterwards. Almost nobody does -- it is a step in 
 ReadMe nobody opens. Every HTTPS request from that interpreter then fails with
 CERTIFICATE_VERIFY_FAILED.
 
-Not a theoretical failure: it is exactly how the first Mac run of NaviLink went.
+Not a theoretical failure: it is exactly how the first Mac run of Intellex went.
 fetch_webui.py reported "cannot reach greghulette.github.io ... (offline is fine)"
 on a machine with a perfectly good network, and the launcher's version line said
 "offline -- cannot compare" for the same reason. Both described the symptom

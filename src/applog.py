@@ -3,7 +3,7 @@
 WHY THIS EXISTS
 The host is chatty and useful -- it prints every attach, drop, reconnect, probe
 result, flash line and cross-origin refusal. Run from a terminal you can read all
-of it. But the app is WINDOWED: NaviLink.bat launches with pythonw and the frozen
+of it. But the app is WINDOWED: Intellex.bat launches with pythonw and the frozen
 build is built console=False, so stdout and stderr are attached to nothing at all.
 Every one of those lines was being written into a void, and the first question
 about any misbehaviour -- "what did it actually do?" -- had no answer.
@@ -90,7 +90,16 @@ def path():
 
 def _prune(d) -> None:
     try:
-        runs = sorted(d.glob("navilink-*.log"))
+        # Both prefixes: logs written before the NaviLink -> Intellex rename are
+        # still in this directory, and a glob that only matched the new name
+        # would leave them to accumulate forever with nothing ever pruning them.
+        #
+        # Sorted on the TIMESTAMP, not the whole filename. Two prefixes sorted
+        # lexically would group by name first -- every intellex-* ahead of every
+        # navilink-* whatever their dates -- and this list is ordered oldest-first
+        # so that the tail is kept, which would then delete new logs and keep old.
+        runs = sorted(list(d.glob("intellex-*.log")) + list(d.glob("navilink-*.log")),
+                      key=lambda p: p.name.split("-", 1)[-1])
         for old in runs[:-KEEP_RUNS]:
             old.unlink(missing_ok=True)
     except Exception:
@@ -110,7 +119,7 @@ def start() -> Optional[str]:
         d.mkdir(parents=True, exist_ok=True)
         _prune(d)
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        _log_path = d / f"navilink-{stamp}.log"
+        _log_path = d / f"intellex-{stamp}.log"
         _log_file = open(_log_path, "w", encoding="utf-8", errors="replace")
     except Exception:
         _log_file = None
@@ -119,7 +128,7 @@ def start() -> Optional[str]:
 
     # Version FIRST. Every question that starts "it is doing X" needs "which build?"
     # answered before anything else in the file is worth reading.
-    _log_file.write(f"NaviLink {version.describe()}\n")
+    _log_file.write(f"Intellex {version.describe()}\n")
     _log_file.write(f"  started  {datetime.datetime.now().isoformat(timespec='seconds')}\n")
     _log_file.write(f"  python   {sys.version.split()[0]}\n")
     _log_file.write(f"  frozen   {paths.FROZEN}\n")

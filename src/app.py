@@ -1,4 +1,4 @@
-"""NaviLink — the desktop app.
+"""Intellex — the desktop app.
 
     python src/app.py                  # window, pick a droid or a port
     python src/app.py --serial COM5    # skip the chooser, attach on launch
@@ -45,7 +45,7 @@ _serve_error: list = []
 def _bind(port: int):
     """Claim the port on the MAIN thread, before anything else happens.
 
-    _wait_until_up cannot tell our server from somebody else's: an older NaviLink
+    _wait_until_up cannot tell our server from somebody else's: an older Intellex
     answers /_api/status exactly as ours would. And it could answer before our
     background thread had even got as far as failing to bind -- measured returning
     True against a two-day-old instance while our own server thread was already
@@ -87,7 +87,7 @@ def _serve(sock) -> None:
 def _tell_user(msg: str) -> None:
     """Say something the user can actually see.
 
-    NaviLink.bat launches with pythonw, which has NO CONSOLE -- so a message on
+    Intellex.bat launches with pythonw, which has NO CONSOLE -- so a message on
     stderr goes precisely nowhere. Refusing to start was therefore completely
     silent: double-click, nothing appears, no explanation. Worse, the reason it
     refuses is usually "an older copy is still running", so the user goes on using
@@ -105,7 +105,7 @@ def _tell_user(msg: str) -> None:
         import ctypes
         MB_OK, MB_ICONWARNING, MB_TOPMOST = 0x0, 0x30, 0x40000
         ctypes.windll.user32.MessageBoxW(
-            None, msg, "NaviLink", MB_OK | MB_ICONWARNING | MB_TOPMOST)
+            None, msg, "Intellex", MB_OK | MB_ICONWARNING | MB_TOPMOST)
     except Exception:
         pass
 
@@ -113,7 +113,7 @@ def _tell_user(msg: str) -> None:
 def _wait_until_up(port: int, timeout: float = 10.0) -> bool:
     """Wait for OUR server, not merely for something listening.
 
-    A bare TCP connect answers yes when a PREVIOUS NaviLink (or anything else) already
+    A bare TCP connect answers yes when a PREVIOUS Intellex (or anything else) already
     holds the port. Our own bind then failed with WinError 10048, this process opened a
     window onto the other instance, and -- because a command-line target attaches BEFORE
     the server thread starts -- it also sat holding COM5, which the live instance then
@@ -150,7 +150,7 @@ def main() -> int:
 
     # Same trick, same reason, for the config-tool fetcher: a frozen build has no
     # python to run tools/fetch_webui.py with, and no tools/ directory either. The
-    # module is bundled (see NaviLink.spec) so importing it here is the whole job.
+    # module is bundled (see Intellex.spec) so importing it here is the whole job.
     if len(sys.argv) > 1 and sys.argv[1] == "--run-fetch-webui":
         import fetch_webui
         sys.argv = ["fetch_webui"] + sys.argv[2:]
@@ -172,7 +172,7 @@ def main() -> int:
     # fetcher and exit, and each would otherwise open a log of its own.
     _log = applog.start()
 
-    ap = argparse.ArgumentParser(description="NaviLink desktop app")
+    ap = argparse.ArgumentParser(description="Intellex desktop app")
     ap.add_argument("--port", type=int, default=hostmod.DEFAULT_PORT)
     ap.add_argument("--serial", help="attach this port at launch and skip the chooser")
     ap.add_argument("--ws", help="attach this droid at launch and skip the chooser")
@@ -204,15 +204,15 @@ def main() -> int:
             f"--remote-debugging-port={a.inspect}")
         print(f"devtools protocol on http://127.0.0.1:{a.inspect}/json")
 
-    # BEFORE anything else. A failed bind here means another NaviLink owns the
+    # BEFORE anything else. A failed bind here means another Intellex owns the
     # port; carrying on would open a window onto that one and -- because the
     # command-line attach below runs first -- would also grab the serial port the
     # live instance is trying to use, which it then retries forever with
     # "Access is denied".
     sock, bind_err = _bind(a.port)
     if sock is None:
-        msg = (f"NaviLink is already running on {hostmod.BIND_HOST}:{a.port}.\n\n"
-               "Close the existing NaviLink window, then start this one again.")
+        msg = (f"Intellex is already running on {hostmod.BIND_HOST}:{a.port}.\n\n"
+               "Close the existing Intellex window, then start this one again.")
         print(msg, file=sys.stderr)
         print(f"  ({bind_err})", file=sys.stderr)
         _tell_user(msg)
@@ -230,11 +230,11 @@ def main() -> int:
             # the chooser meanwhile rather than refusing to start.
             print(f"attach failed ({e}) — will keep retrying")
 
-    threading.Thread(target=_serve, args=(sock,), daemon=True, name="navilink-host").start()
+    threading.Thread(target=_serve, args=(sock,), daemon=True, name="intellex-host").start()
     if not _wait_until_up(a.port):
         why = f": {_serve_error[0]}" if _serve_error else ""
         print(f"host did not start on {hostmod.BIND_HOST}:{a.port}{why}", file=sys.stderr)
-        _tell_user(f"NaviLink could not start its server on "
+        _tell_user(f"Intellex could not start its server on "
                    f"{hostmod.BIND_HOST}:{a.port}.{why}")
         # Release anything the early attach opened, or it stays held by this dying
         # process and no other instance can have it.
@@ -289,7 +289,7 @@ def main() -> int:
         print(_icon_msg)
 
     try:
-        webview.create_window("NaviLink", url, width=1280, height=880,
+        webview.create_window("Intellex", url, width=1280, height=880,
                               min_size=(900, 640), text_select=True)
     except Exception as e:
         print(f"could not create the window ({type(e).__name__}: {e}) "

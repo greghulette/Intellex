@@ -129,7 +129,7 @@ def cropped_svg() -> str:
 
 
 def render(browser: str) -> Image.Image:
-    with tempfile.TemporaryDirectory(prefix="navilink-icon-") as td:
+    with tempfile.TemporaryDirectory(prefix="intellex-icon-") as td:
         tmp = pathlib.Path(td)
         page = tmp / "icon.html"
         # margin:0 or the screenshot inherits the body's default 8px inset, which

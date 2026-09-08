@@ -7,7 +7,7 @@
 // the relay path cannot help. It runs unattended in the background, which is
 // what makes it worth testing: every way it can go wrong is silent.
 //
-// It EXTRACTS the function from navilink_shim.js rather than restating it, so
+// It EXTRACTS the function from intellex_shim.js rather than restating it, so
 // the test cannot quietly drift from what actually ships. Only one constant is
 // rewritten -- the 45 s watchdog, shrunk to 40 ms so it is testable -- and the
 // race, the cleanup and the reporting around it are the shipped text.
@@ -18,7 +18,7 @@
 // first board and strands every board behind it. Set PULL_WATCHDOG_MS high and
 // this file stops terminating at all -- which is precisely the bug.
 const fs = require('fs');
-const shimPath = require('path').join(__dirname, '..', 'src', 'navilink_shim.js');
+const shimPath = require('path').join(__dirname, '..', 'src', 'intellex_shim.js');
 const src = fs.readFileSync(shimPath, 'utf8');
 
 const start = src.indexOf('  const _meshRoutedOnce = new Set();');

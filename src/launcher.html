@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>NaviLink</title>
+<title>Intellex</title>
 <style>
   :root { color-scheme: dark; --bg:#12131a; --panel:#1b1d27; --line:#2c2f3d;
           --fg:#e8e8ea; --muted:#8b8fa3; --accent:#5cb0ff; --ok:#4ec9a0; --warn:#e0a458; }
@@ -184,7 +184,7 @@ function row(dot, title, sub, onclick) {
 //
 // Remembered, because it is a working style rather than a per-session decision —
 // having to re-pick it on every launch would be the annoying half of offering it.
-const VIEW_KEY = 'navilink_view';
+const VIEW_KEY = 'intellex_view';
 const VIEWS = {
   nc:    { label: 'NaviCore tool',    note: 'The droid config tool, full window.' },
   wcb:   { label: 'WCB',              note: 'The WCB config tool, full window. Reaches WCBs over USB, '
@@ -233,7 +233,7 @@ paintView();
 // board's pulled config, which through a relay is a slow sequential re-pull).
 const IN_SHELL = (() => { try { return window.parent !== window; } catch (_) { return false; } })();
 function backToTools() {
-  window.parent.postMessage({ navilink: 'close-chooser' }, location.origin);
+  window.parent.postMessage({ intellex: 'close-chooser' }, location.origin);
 }
 
 // The layout picker is the SHELL's job once the shell exists — its tabs and its
@@ -489,7 +489,7 @@ function uiLine(name, v) {
 async function checkUi() {
   try {
     const v = await api('/_api/webui-version');
-    // wcb is absent when an OLD host serves this NEW page — a NaviLink left
+    // wcb is absent when an OLD host serves this NEW page — a Intellex left
     // running across an update. Treat it as "not bundled" rather than throwing,
     // which would blank the NaviCore line too and hide both answers at once.
     const w = v.wcb || null;

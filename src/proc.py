@@ -1,7 +1,7 @@
 """Spawn a child process without flashing a console window at the user.
 
 WHY THIS EXISTS
-The app is windowed: NaviLink.bat launches with pythonw and the frozen build is
+The app is windowed: Intellex.bat launches with pythonw and the frozen build is
 built console=False. A GUI process on Windows has no console, so when it spawns a
 console program -- netsh, esptool, git, or this executable re-invoking itself --
 Windows CREATES ONE, and the user sees a black window flash open and shut.
