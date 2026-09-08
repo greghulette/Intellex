@@ -214,6 +214,16 @@ of use is broken by design.
   the cache when the network is gone. `tools/fetch_firmware.py` fills it deliberately —
   both WCB families *and* both S3 flash sizes, because which one a board needs is only
   known once esptool has answered, and that happens offline.
+- **The wikis are downloaded too** (`tools/fetch_wiki.py` → `src/wiki/`,
+  served at `/wiki/`). Documentation is the thing you reach for when something
+  is not going the way you expected, which on a con floor is exactly when there
+  is no route to GitHub. There is **no API for wikis** and codeload 404s on
+  them; what works is the `_pages` index for the list plus
+  `raw.githubusercontent.com/wiki/<owner>/<repo>/<Page>.md` for content, with a
+  link-crawl as the fallback when the scrape breaks. **Images are capped at
+  1 MB**: fetched whole the WCB wiki alone is 123 MB of assembly photographs,
+  against 10.4 MB for all three wikis with the cap, and a skipped image renders
+  as a link to the online copy rather than a broken picture.
 - **The GitHub file listing is cached too.** Caching only the images is not enough: both
   flashers call the Contents API *first* to discover what exists, and that call fails
   before any download is attempted — so the cache could never be reached.
@@ -378,6 +388,11 @@ python tools/smoke_probe_identity.py
 # REAL source text out of intellex_shim.js, so it cannot drift from what ships.
 # Run it after touching the mesh routing or the shim's connect path.
 node tools/smoke_mesh_route.js
+
+# The docs viewer, end to end: fetch nothing, render everything already on
+# disk, and prove no page is left pointing at a relative image or an
+# un-rewritten link. Run after touching fetch_wiki.py or wikidocs.py.
+python tools/smoke_wiki.py
 
 # Both browser tools have no build step, so a syntax slip silently breaks all
 # event wiring. Run after editing shell.html, launcher.html or the shim.

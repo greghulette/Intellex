@@ -1,0 +1,130 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>__TITLE__ · Intellex Docs</title>
+<link rel="icon" href="/_assets/intellex-favicon-32.png">
+<!--
+  wiki.html — the offline documentation viewer.
+
+  A TEMPLATE, not a page: host.py substitutes the double-underscore markers below. The
+  markdown is rendered server-side (src/wikidocs.py) because it has to work with
+  no network, and shipping a markdown parser to the browser would mean vendoring
+  one — a third-party file to keep current for a job Python already does here.
+
+  So the only script below is the page filter. Everything else is plain links,
+  which also means Back and Forward behave, and a page can be printed.
+-->
+<style>
+  :root { color-scheme: dark; --bg:#12131a; --panel:#1b1d27; --line:#2c2f3d;
+          --fg:#e8e8ea; --muted:#8b8fa3; --accent:#4aa6ef; --code:#0e0f16; }
+  * { box-sizing: border-box; }
+  html, body { height:100%; margin:0; }
+  body { background:var(--bg); color:var(--fg); display:flex; flex-direction:column;
+         font:14.5px/1.65 system-ui,-apple-system,Segoe UI,sans-serif; }
+
+  #bar { flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:7px 12px;
+         background:#16202b; border-bottom:1px solid var(--line); }
+  #bar .brand { display:flex; align-items:center; gap:6px; font-weight:600;
+                color:#f4f5f2; margin-right:6px; }
+  #bar .brand img { width:18px; height:18px; display:block; }
+  #bar .brand i { font-style:normal; color:var(--accent); }
+  #bar a.tab { color:#cfe3ff; text-decoration:none; padding:4px 11px; border-radius:6px;
+               border:1px solid var(--line); background:#223042; font-size:13px; }
+  #bar a.tab:hover { background:#2b3d52; }
+  #bar a.tab[aria-current="page"] { background:var(--accent); border-color:var(--accent);
+                                    color:#0d1117; font-weight:600; }
+  #bar .grow { flex:1; }
+  #find { font:inherit; font-size:13px; background:var(--bg); color:var(--fg);
+          border:1px solid var(--line); border-radius:6px; padding:4px 9px; width:210px; }
+
+  #wrap { flex:1; display:flex; min-height:0; }
+  /* The sidebar scrolls independently: the WCB wiki's nav is longer than most
+     screens, and a page-level scroll would take it out of reach on every page. */
+  #side { flex:0 0 250px; overflow:auto; padding:14px 12px 40px; border-right:1px solid var(--line);
+          background:var(--panel); font-size:13.5px; }
+  #side ul { list-style:none; margin:4px 0 12px; padding:0; }
+  #side li { margin:1px 0; }
+  /* inline-block, not block: sidebar entries are sometimes "[[Page]] — note",
+     and a block link pushes that trailing note onto a line of its own. */
+  #side a { color:#c9cede; text-decoration:none; display:inline-block;
+            padding:3px 7px; border-radius:5px; }
+  #side a:hover { background:#232636; color:#fff; }
+  #side h1, #side h2, #side h3 { font-size:11.5px; text-transform:uppercase;
+          letter-spacing:.08em; color:var(--muted); margin:14px 0 4px; }
+  #side hr { border:0; border-top:1px solid var(--line); margin:12px 0; }
+  #side p { margin:6px 0; }
+  #side .hidden { display:none; }
+
+  #doc { flex:1; overflow:auto; padding:26px 34px 80px; max-width:900px; }
+  #doc h1 { font-size:26px; margin:0 0 14px; letter-spacing:.01em; }
+  #doc h2 { font-size:19px; margin:30px 0 10px; padding-bottom:5px;
+            border-bottom:1px solid var(--line); }
+  #doc h3 { font-size:16px; margin:22px 0 8px; }
+  #doc a { color:var(--accent); }
+  #doc code { background:var(--code); border:1px solid var(--line); border-radius:4px;
+              padding:1px 5px; font:12.5px/1.5 ui-monospace,Consolas,monospace; }
+  #doc pre { background:var(--code); border:1px solid var(--line); border-radius:8px;
+             padding:12px 14px; overflow-x:auto; }
+  #doc pre code { background:none; border:0; padding:0; }
+  /* Wide tables scroll inside themselves rather than stretching the page —
+     the WCB command reference has some very wide ones. */
+  #doc .tablewrap { overflow-x:auto; margin:14px 0; }
+  #doc table { border-collapse:collapse; font-size:13.5px; }
+  #doc th, #doc td { border:1px solid var(--line); padding:6px 10px; text-align:left;
+                     vertical-align:top; }
+  #doc th { background:#20232f; }
+  #doc blockquote { margin:14px 0; padding:8px 14px; border-left:3px solid var(--accent);
+                    background:#171922; color:#d3d7e4; }
+  #doc img { max-width:100%; border-radius:8px; }
+  #doc .offimg { display:inline-block; padding:7px 11px; border:1px dashed var(--line);
+                 border-radius:8px; color:var(--muted); text-decoration:none; font-size:13px; }
+  #doc .offimg:hover { color:var(--fg); border-color:var(--accent); }
+  #doc hr { border:0; border-top:1px solid var(--line); margin:24px 0; }
+  .missing { color:var(--muted); }
+  .missing code { color:var(--fg); }
+</style>
+
+<div id="bar">
+  <span class="brand"><img src="/_assets/intellex-mark-32.png" alt="">INTEL<i>LEX</i></span>
+  __TABS__
+  <span class="grow"></span>
+  <input id="find" type="search" placeholder="Filter pages…" autocomplete="off">
+</div>
+
+<div id="wrap">
+  <nav id="side">__SIDEBAR__</nav>
+  <main id="doc">__BODY__</main>
+</div>
+
+<script>
+// Filter the sidebar, not the page text. The sidebar IS the table of contents for
+// every one of these wikis, so narrowing it is the fast way to "where is the page
+// about X" — and it needs no index, no fetch and works with the network gone.
+const find = document.getElementById('find');
+const side = document.getElementById('side');
+find.addEventListener('input', () => {
+  const q = find.value.trim().toLowerCase();
+  for (const li of side.querySelectorAll('li')) {
+    const a = li.querySelector('a');
+    li.classList.toggle('hidden', !!q && !(a && a.textContent.toLowerCase().includes(q)));
+  }
+  // Headings and rules are noise once the list under them is empty.
+  for (const h of side.querySelectorAll('h1,h2,h3,hr,p')) {
+    let n = h.nextElementSibling, any = !q;
+    while (n && !/^(H1|H2|H3|HR)$/.test(n.tagName)) {
+      if (n.tagName === 'UL' && [...n.querySelectorAll('li')].some(li => !li.classList.contains('hidden'))) any = true;
+      n = n.nextElementSibling;
+    }
+    h.classList.toggle('hidden', !any);
+  }
+});
+// "/" focuses the filter, the way it does in most doc sites.
+addEventListener('keydown', e => {
+  if (e.key === '/' && document.activeElement !== find) { e.preventDefault(); find.focus(); }
+  if (e.key === 'Escape' && document.activeElement === find) { find.value=''; find.dispatchEvent(new Event('input')); find.blur(); }
+});
+// Tables come out of markdown bare; wrapping them here keeps the renderer plain.
+for (const t of document.querySelectorAll('#doc table')) {
+  const w = document.createElement('div'); w.className = 'tablewrap';
+  t.parentNode.insertBefore(w, t); w.appendChild(t);
+}
+</script>

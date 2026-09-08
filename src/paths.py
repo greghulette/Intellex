@@ -101,8 +101,9 @@ def user_data_dir() -> pathlib.Path:
 def data_dir(name: str) -> pathlib.Path:
     """Where to READ a bundled directory from: the updated copy if there is one.
 
-    `name` is "webui" (NaviCore config tool), "webui_wcb" (WCB Wizard) or
-    "firmware" (the offline flash cache -- see src/fwcache.py).
+    `name` is "webui" (NaviCore config tool), "webui_wcb" (WCB Wizard),
+    "firmware" (the offline flash cache -- see src/fwcache.py) or "wiki" (the
+    downloaded project wikis -- see tools/fetch_wiki.py).
 
     Non-empty is the test, not merely present. An update that is interrupted
     between creating the directory and filling it would otherwise shadow a

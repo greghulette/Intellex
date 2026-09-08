@@ -47,6 +47,10 @@ src/paths.py       where things live, run from source AND frozen — updates go 
 src/fwcache.py     local copy of every firmware image, so flashing works with no
                    internet (join the droid's AP and there is no route to GitHub)
 src/firmware/      that cache — fetched, never committed
+src/wikidocs.py    renders the downloaded wikis, and points their links at
+                   this app instead of github.com
+src/wiki.html      the docs viewer (a template host.py fills in)
+src/wiki/          the downloaded wikis — fetched, never committed
 Intellex.spec      PyInstaller: one .exe on Windows, one .app/.dmg on macOS
 src/shell.html     the window that holds one or both tools (tabs / side by side)
 src/webui/         bundled NaviCore config tool — fetched, never committed

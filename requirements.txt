@@ -7,6 +7,10 @@ websockets>=12.0
 
 # Talking to the droid's SoftAP over WiFi (the second transport, same page code).
 aiohttp>=3.9
+# Renders the downloaded wikis (src/wikidocs.py). It was already present as a
+# transitive dependency, which is not the same as being depended on -- a package
+# that stops pulling it in would break the docs viewer with no warning.
+markdown-it-py>=3.0
 
 # Flashing. Same package ESP-Flasher-Companion uses; do NOT shell out to a separate
 # esptool binary — see the --run-esptool note in CLAUDE.md.

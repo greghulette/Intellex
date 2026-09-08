@@ -25,6 +25,12 @@ src/webui.prev/
 src/webui_wcb/
 src/webui_wcb.prev/
 
+# Downloaded copies of the three wikis — fetched with tools/fetch_wiki.py, same
+# rule as the tool bundles above. The wikis are their own repos and are the
+# single source of truth; a committed copy here is a fork waiting to happen.
+src/wiki/
+src/wiki.prev/
+
 # Downloaded firmware images, kept so flashing works with no internet (see
 # src/fwcache.py). Several MB, refetchable, and each file is already versioned by
 # its own name — committing them would just be a slower copy of GitHub.

@@ -8,6 +8,7 @@
                     ├─ GET /wcb/Wizard/  → the bundled WCB Wizard
                     ├─ GET /_shell       → the window that holds one or both
                     ├─ GET /_assets/*    → the app's own icon and mark
+                    ├─ GET /wiki/*       → the downloaded wikis, rendered
   browser/webview ──┼─ GET /_api/*       → control (list ports, attach, detach)
                     └─ WS  /_link        → the byte pipe (one per open page)
                                               │
@@ -48,6 +49,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import html
 import pathlib
 import sys
 import threading
@@ -61,6 +63,7 @@ import proc                                              # noqa: E402
 import applog                                            # noqa: E402
 import version                                           # noqa: E402
 import branchlist
+import wikidocs
 import settings                                          # noqa: E402
 import flash                                             # noqa: E402
 import fwcache                                           # noqa: E402
@@ -649,6 +652,118 @@ SHELL_FILE = paths.BUNDLE_DIR / "shell.html"
 # network, so there is no user copy to prefer and no atomic swap to survive. It
 # ships inside the app and is read from there, frozen or not.
 ASSETS_DIR = paths.BUNDLE_DIR / "assets"
+WIKI_TEMPLATE = paths.BUNDLE_DIR / "wiki.html"
+
+
+def _wiki_shell(product: str, title: str, sidebar: str, body: str) -> web.Response:
+    """Fill wiki.html. Substitution, not a template engine, because the whole
+    variable set is four strings and a dependency would outweigh the feature."""
+    tabs = []
+    for w in wikidocs.available():
+        if not w["have"]:
+            continue
+        cur = ' aria-current="page"' if w["product"] == product else ""
+        tabs.append(f'<a class="tab" href="/wiki/{w["product"]}/"{cur}>{w["title"]}</a>')
+    page = WIKI_TEMPLATE.read_text(encoding="utf-8")
+    for marker, value in (("__TITLE__", title), ("__TABS__", "".join(tabs)),
+                          ("__SIDEBAR__", sidebar), ("__BODY__", body)):
+        page = page.replace(marker, value)
+    return web.Response(text=page, content_type="text/html",
+                        headers={"Cache-Control": "no-store"})
+
+
+def _wiki_missing(product: str = "") -> web.Response:
+    """Nothing downloaded yet. This is a normal first-run state, not an error, so
+    it says how to fix it rather than reporting a 404 the user cannot act on."""
+    have_any = any(w["have"] for w in wikidocs.available())
+    body = ("<h1>No offline docs yet</h1><p class='missing'>The wikis have not been "
+            "downloaded. Open the launcher, expand <b>Updates, firmware and logs</b> "
+            "and press <b>Download docs</b> while you still have a network — after "
+            "that they work with none.</p>")
+    if product and have_any:
+        body = ("<h1>Not downloaded</h1><p class='missing'>The "
+                f"<b>{html.escape(product)}</b> wiki is not on disk. Press "
+                "<b>Download docs</b> in the launcher.</p>")
+    return _wiki_shell(product, "Docs", "", body)
+
+
+async def wiki_index(_req: web.Request) -> web.StreamResponse:
+    """/wiki/ — go straight to the first wiki that is actually here."""
+    for w in wikidocs.available():
+        if w["have"]:
+            raise web.HTTPFound(f"/wiki/{w['product']}/")
+    return _wiki_missing()
+
+
+async def wiki_page(req: web.Request) -> web.StreamResponse:
+    """/wiki/{product}/{name} — a rendered page, or an asset from the same tree."""
+    product = req.match_info["product"]
+    name = req.match_info.get("name") or "Home"
+    if product not in wikidocs.WIKIS:
+        raise web.HTTPNotFound(text="no such wiki")
+
+    # ASSETS SHARE THIS ROUTE because a wiki's own links do not distinguish them:
+    # "Images/foo.png" and "Getting-Started" are both just relative paths in the
+    # markdown.
+    #
+    # PAGE FIRST, AND BY WHAT EXISTS -- not by whether the name looks like it has
+    # a file extension. The WCB wiki has a page called "version3.2_build", whose
+    # apparent suffix is ".2_build", so an extension test served it as a missing
+    # asset and 404'd a page that was sitting right there.
+    rendered = wikidocs.render_page(product, name)
+    if rendered is None:
+        base = wikidocs.root(product).resolve()
+        f = base / name
+        try:
+            ok = f.resolve().is_relative_to(base) and f.is_file()
+        except (OSError, ValueError):
+            ok = False                       # resolves outside, or is not a path
+        if ok:
+            return web.FileResponse(f)
+    if rendered is None:
+        if not wikidocs.root(product).is_dir():
+            return _wiki_missing(product)
+        return _wiki_shell(
+            product, name, wikidocs.render_sidebar(product),
+            f"<h1>{html.escape(name.replace('-', ' '))}</h1>"
+            "<p class='missing'>That page is not in the downloaded copy. It may be "
+            "new, or a link to a page that was never written.</p>")
+    title, body = rendered
+    return _wiki_shell(product, title, wikidocs.render_sidebar(product), body)
+
+
+async def api_wiki(_req: web.Request) -> web.Response:
+    """What documentation is on disk, for the launcher."""
+    return web.json_response({"wikis": wikidocs.available()})
+
+
+async def api_update_wiki(_req: web.Request) -> web.Response:
+    """Download the wikis. Invoked exactly as the tool fetcher is -- see
+    api_update_webui for why this is a subprocess and how a frozen build reaches
+    a script that is not on disk."""
+    if getattr(sys, "frozen", False):
+        argv = [sys.executable, "--run-fetch-wiki", "--wiki", "all"]
+    else:
+        script = pathlib.Path(__file__).resolve().parent.parent / "tools" / "fetch_wiki.py"
+        argv = [sys.executable, str(script), "--wiki", "all"]
+
+    def run():
+        return proc.run(argv, capture_output=True, text=True, timeout=900)
+
+    try:
+        r = await asyncio.to_thread(run)
+    except Exception as e:                                # noqa: BLE001
+        return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"},
+                                 status=500)
+    # A partial result is real: the three wikis are separate atomic swaps, so one
+    # failing still leaves the others correctly updated. Report what is on disk
+    # either way rather than only on success.
+    return web.json_response({
+        "ok": r.returncode == 0,
+        "error": "" if r.returncode == 0 else (r.stdout or r.stderr or "fetch failed").strip()[-300:],
+        "wikis": wikidocs.available(),
+        "log": (r.stdout or "").strip()[-600:],
+    })
 
 
 async def launcher(_req: web.Request) -> web.StreamResponse:
@@ -1495,6 +1610,12 @@ def build_app() -> web.Application:
         web.post("/_api/flash", api_flash),
         web.post("/_api/flash-wcb", api_flash_wcb),
         web.get("/_api/flash-status", api_flash_status),
+        web.get("/_api/wiki", api_wiki),
+        web.post("/_api/update-wiki", api_update_wiki),
+        web.get("/wiki/", wiki_index),
+        web.get("/wiki", lambda _r: web.HTTPMovedPermanently("/wiki/")),
+        web.get("/wiki/{product}/", wiki_page),
+        web.get("/wiki/{product}/{name:.+}", wiki_page),
         web.get("/_launcher", launcher),
         web.get("/_shell", shell),
         web.post("/_api/open-window", api_open_window),

@@ -71,7 +71,7 @@
     background:var(--panel); user-select:none;
   }
   details#maint > summary::-webkit-details-marker { display:none; }
-  details#maint > summary::before { content:'B8'; margin-right:7px; display:inline-block; }
+  details#maint > summary::before { content:'\25B8'; margin-right:7px; display:inline-block; }
   details#maint[open] > summary::before { transform:rotate(90deg); }
   details#maint > summary:hover { background:#232636; }
 </style>
@@ -160,6 +160,17 @@
       <span class="grow"></span>
     </div>
     <div class="note" id="br-note"></div>
+
+    <h2>Documentation</h2>
+    <div class="bar">
+      <span class="grow" id="wikiver">checking…</span>
+      <button id="opendocs">Open docs</button>
+      <button id="updatewiki">Download docs</button>
+    </div>
+    <div class="note">The NaviCore, WCB and Intellex wikis, kept on this computer so
+      you can read them on a droid's WiFi with no route to GitHub. Downloading
+      replaces the stored copy; nothing is sent anywhere. Photographs over 1&nbsp;MB
+      are left online — the pages link out to them.</div>
 
     <h2>Log</h2>
     <div class="bar">
@@ -714,6 +725,54 @@ $('br-save').onclick = async () => {
   $('br-save').disabled = false;
   checkBranches();
   checkFw();
+};
+
+// ── Documentation ─────────────────────────────────────────────────────────
+async function checkWiki() {
+  try {
+    const r = await api('/_api/wiki');
+    const have = r.wikis.filter(w => w.have);
+    $('wikiver').textContent = have.length
+      ? 'docs stored: ' + have.map(w => `${w.title} (${w.count})`).join('  ·  ')
+      : 'no docs stored yet — press Download docs while you have a network';
+    $('opendocs').disabled = !have.length;
+  } catch (e) {
+    $('wikiver').textContent = 'could not read the stored docs';
+    $('opendocs').disabled = true;
+  }
+}
+checkWiki();
+
+// A SECOND WINDOW, not a navigation. The launcher IS this window, so opening the
+// docs in place would throw away the chooser you were half way through using --
+// and looking something up is usually the reason you paused there. Same
+// open-window path the shell uses, with the same window.open() fallback for
+// --browser and for a backend that has no second window to give.
+$('opendocs').onclick = async () => {
+  let opened = false;
+  try {
+    const r = await fetch('/_api/open-window', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ url: '/wiki/', title: 'Intellex Docs' }),
+    });
+    opened = !!(await r.json().catch(() => ({}))).ok;
+  } catch (_) { /* fall through */ }
+  if (!opened) window.open('/wiki/', '_blank');
+};
+
+$('updatewiki').onclick = async () => {
+  $('updatewiki').disabled = true;
+  setStatus('downloading the wikis…');
+  try {
+    const r = await api('/_api/update-wiki', { method: 'POST' });
+    // Three separate atomic swaps, so a partial result is real and worth showing
+    // rather than collapsing into "failed".
+    setStatus(r.ok ? 'docs updated' : ('docs update incomplete: ' + (r.error || '')), !r.ok);
+  } catch (e) {
+    setStatus('could not download the docs: ' + e.message, true);
+  }
+  $('updatewiki').disabled = false;
+  checkWiki();
 };
 
 // Which build this is. Shown because a frozen app is copied around by hand and a

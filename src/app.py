@@ -163,6 +163,11 @@ def main() -> int:
         sys.argv = ["fetch_firmware"] + sys.argv[2:]
         return fetch_firmware.main()
 
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-fetch-wiki":
+        import fetch_wiki
+        sys.argv = ["fetch_wiki"] + sys.argv[2:]
+        return fetch_wiki.main()
+
     # FIRST thing the app proper does. Everything below prints -- attaches, drops,
     # reconnects, probe results, flash output -- and in a windowed build (pythonw,
     # or the frozen console=False exe) stdout is attached to nothing, so all of it
