@@ -393,10 +393,19 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
     elif self_id is not None:
         info["kind"] = "relay" if said_relay else "wcb"
     elif mesh_pong_id is not None:
-        # Something answered and nothing claimed to be a doorway -- no evidence
-        # this is anything but the droid that PONGed.
-        info["kind"] = "navicore"
-        info["version"] = version
+        # A PONG THAT CAME OVER THE MESH, and no SELF row to name the host.
+        #
+        # Not a droid. Only something that MIRRORS mesh traffic can put a mesh
+        # PONG on this socket -- a NaviCore answering for itself replies bare,
+        # over its own console, with no id. So this is a doorway whose ?WDP,DUMP
+        # did not land inside the window, and the same discriminator the branch
+        # above uses still applies: a relay announces itself with [relay].
+        #
+        # Calling it "navicore" here is precisely the misidentification this
+        # whole path exists to stop -- it would just MOVE the flap rather than
+        # remove it, reporting "WCB" on the scans where the dump arrives and
+        # "NaviCore" on the scans where it does not.
+        info["kind"] = "relay" if said_relay else "wcb"
     return info
 
 

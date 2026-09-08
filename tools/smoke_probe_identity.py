@@ -100,6 +100,22 @@ CASE_RELAY_PONG = [
     "[WDP:END,count=1]",
 ]
 
+# The doorway answered, the relayed PONG landed, and ?WDP,DUMP did NOT arrive
+# inside the window. Same coin flip as CASE_WCB_PONG vs CASE_WCB_NO_PONG, one
+# level down: if this returns "navicore" the flap has only MOVED, showing "WCB"
+# on scans where the dump lands and "NaviCore" on scans where it does not.
+CASE_WCB_PONG_NO_DUMP = [
+    '{"sys":1,"type":"PONG","id":20,"version":"v0.2.0_030003QSEP26","model":2,"mode":1}',
+    _RC_HB, _RC_CH, _RC_CH,
+]
+
+# Same, behind a relay that did announce itself.
+CASE_RELAY_PONG_NO_DUMP = [
+    '{"sys":1,"type":"PONG","id":20,"version":"v0.2.0_030003QSEP26","model":2,"mode":1}',
+    "[relay] mode=AP ssid=NaviCore",
+    _RC_CH,
+]
+
 # Something on port 80 that is none of the three.
 CASE_SILENT: list[str] = []
 
@@ -157,6 +173,8 @@ CASES = [
      {"kind": "navicore", "version": "v0.2.0_030003QSEP26"}),
     ("relay doorway, relayed PONG arrives", CASE_RELAY_PONG,
      {"kind": "relay", "alias": "Mgmt Relay", "relayId": "19"}),
+    ("WCB doorway, PONG but no dump", CASE_WCB_PONG_NO_DUMP, {"kind": "wcb"}),
+    ("relay doorway, PONG but no dump", CASE_RELAY_PONG_NO_DUMP, {"kind": "relay"}),
     ("nothing answers", CASE_SILENT, {"kind": "unknown"}),
 ]
 
