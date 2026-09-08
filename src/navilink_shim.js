@@ -915,6 +915,34 @@
   //     keeps this a one-time catch-up rather than a re-pull on every sweep.
   const _meshRoutedOnce = new Set();
 
+  // ── Which nodes are actually BOARDS ──────────────────────────────────────
+  // Not every device on the mesh is a configurable WCB. A WDP row carries
+  // CLIENT=1 for a WCB_Client host -- a MgmtRelay, or NaviCore itself -- and
+  // those have no WCB config to pull at all. The Wizard gives them a lightweight
+  // client card (cfg.type = 'client'), never a board section's config.
+  //
+  // _meshBoards is NOT the set of boards, which is the trap this fell into. It
+  // means "has a numbered section", and upsertClientCard() calls
+  // addDiscoveredBoards() for clients too (app.js:13045) -- so a relay at 19 and
+  // a NaviCore at 20 sat in it looking exactly like boards, and got pulled.
+  //
+  // The authoritative flag lives on the sweep's own parsed nodes
+  // (`client: m[2] === '1'`, app.js:12803), so take it from there: wrap the
+  // renderWdpMesh() the sweep already calls on every tick and keep the list. No
+  // extra ?WDP,DUMP of our own -- that would fight the tool's sweep for the same
+  // connection, and the tool guards its own with _meshDiscoverBusy for a reason.
+  let _lastWdpNodes = null;
+  function watchWdpSweeps() {
+    const orig = window.renderWdpMesh;
+    if (typeof orig !== 'function' || orig.__navilinkWrapped) return;
+    const wrapped = function (nodes) {
+      if (Array.isArray(nodes) && nodes.length) _lastWdpNodes = nodes;
+      return orig.apply(this, arguments);
+    };
+    wrapped.__navilinkWrapped = true;
+    window.renderWdpMesh = wrapped;
+  }
+
   // The Wizard's state lives in top-level `let`s. Those are reachable here by
   // BARE NAME -- the shim is a classic <script> in the same global scope -- but
   // NOT as window.x, because a top-level let/const goes in the global lexical
@@ -929,12 +957,16 @@
         baselines: boardBaselines,
         relayFor:  remoteRelayForBoard,
         pulling:   _pullingBoards,
-        heard:     typeof _meshBoards !== 'undefined' ? _meshBoards : null,
+        configs:   typeof boardConfigs   !== 'undefined' ? boardConfigs   : {},
+        clients:   typeof _meshClients   !== 'undefined' ? _meshClients   : null,
+        heard:     typeof _meshBoards    !== 'undefined' ? _meshBoards    : null,
       };
     } catch (_) { return null; }
   }
 
   async function routeMeshThroughBoard() {
+    // Before the first poll, so no sweep goes uncaptured. Idempotent.
+    watchWdpSweeps();
     const deadline = Date.now() + RELAY_WATCH_MS;
     let warned = false;
     while (Date.now() < deadline) {
@@ -965,14 +997,25 @@
         continue;
       }
 
-      // Which boards the sweep has surfaced. _meshBoards is what the sweep itself
-      // records, so it needs no markup assumptions; the sections it creates are
-      // the fallback when that set is not reachable.
-      const seen = st.heard ? [...st.heard]
-        : [...document.querySelectorAll('[id^="section-board-"]')]
-            .map(el => parseInt(el.id.slice('section-board-'.length), 10));
-
+      // PREFER the sweep's own nodes: they carry CLIENT, so a relay or a NaviCore
+      // is excluded on the authoritative flag rather than on a guess.
       const parentNum = parseInt(parent.wcbNum, 10);
+      let seen;
+      if (_lastWdpNodes) {
+        seen = _lastWdpNodes.filter(nd => !nd.client).map(nd => nd.n);
+      } else {
+        // No sweep captured yet. _meshBoards mixes clients in, so subtract every
+        // way the page knows one: its client roster, and the slot type it flipped
+        // the card to. Belt and braces because they populate at different moments
+        // -- upsertClientCard bails before _meshClients.set() on the first sweep,
+        // when the section exists but boardConfigs[n] does not yet.
+        const raw = st.heard ? [...st.heard]
+          : [...document.querySelectorAll('[id^="section-board-"]')]
+              .map(el => parseInt(el.id.slice('section-board-'.length), 10));
+        seen = raw.filter(n =>
+          !(st.clients && st.clients.has(n)) && st.configs[n]?.type !== 'client');
+      }
+
       const targets = seen.filter(n =>
         Number.isInteger(n) && n >= 1 && n <= 20
         && n !== parentNum && String(n) !== String(parent.slot)

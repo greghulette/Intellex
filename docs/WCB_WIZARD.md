@@ -187,6 +187,26 @@ So `routeMeshThroughBoard()` drives the two generic functions directly, keeping
 |---|---|
 | **Sequentially**, awaiting each pull | The parent reassembles one config reply at a time and the `[MGMT:CONFIG,]` listener is not target-filtered, so overlapping pulls cross-assign configs to the **wrong board**. |
 | **Once per board** | The Wizard deliberately stopped auto-pulling every newly heard peer because it *"fought live traffic and surprised the user"*. Skipping boards that already have a baseline keeps this a one-time catch-up, not a re-pull on every sweep. |
+| **Boards only, never clients** | See below — this one shipped broken. |
+
+### `_meshBoards` is not the set of boards
+
+It means **"has a numbered section"**. `upsertClientCard()` calls `addDiscoveredBoards()` for
+clients too (`app.js:13045`), so a MgmtRelay at 19 and a NaviCore at 20 sit in it looking
+exactly like boards. Trusting it pulled both on hardware. A `CLIENT=1` device is a `WCB_Client`
+host with **no WCB config to pull at all** — the Wizard gives it a lightweight client card
+(`cfg.type = 'client'`), never a board config — so the pull can only fail.
+
+The authoritative flag is on the sweep's own parsed nodes (`client: m[2] === '1'`,
+`app.js:12803`, straight from `CLIENT=` in the WDP row). The shim wraps the `renderWdpMesh()`
+that the sweep already calls every tick and keeps the list. **Not** by issuing its own
+`?WDP,DUMP`: that would fight the tool's sweep for the same connection, which is why the tool
+guards its own with `_meshDiscoverBusy`.
+
+The fallback, for the window before any sweep is captured, subtracts clients two ways —
+`_meshClients` and `boardConfigs[n].type` — because they populate at different moments:
+`upsertClientCard` returns early *before* `_meshClients.set()` on the first sweep, when the
+section exists but `boardConfigs[n]` does not yet.
 
 Both loops start after every connect and are mutually exclusive at runtime: this one stands
 down the moment a relay card exists, the other does nothing until one does. Starting both
@@ -353,6 +373,7 @@ WebSocket has no control lines.
 
 | | ESP32 | ESP32-S3 |
 |---|---|---|
+| 2026-09-07 | _(uncommitted)_ | **Auto-pull tried to pull CLIENTS: a MgmtRelay at 19 and a NaviCore at 20.** Reported from hardware. `_meshBoards` means "has a numbered section", not "is a board" -- `upsertClientCard()` calls `addDiscoveredBoards()` for clients too (`app.js:13045`), so both sat in it looking like boards. A `CLIENT=1` device is a WCB_Client host with no WCB config to pull, so the pull can only fail. Targets now come from the sweep's own parsed nodes, which carry the authoritative flag (`app.js:12803`), captured by wrapping the `renderWdpMesh()` the sweep already calls -- not by issuing a competing `?WDP,DUMP`. The pre-sweep fallback subtracts clients via BOTH `_meshClients` and `boardConfigs[n].type`, which populate at different moments. `smoke_mesh_route.js` now models the real mesh (2 boards + 2 clients) and reproduces the bug exactly without the fix. |
 | 2026-09-07 | _(uncommitted)_ | **Mesh boards behind a WCB doorway were never auto-pulled.** A relay card exists only for a device advertising `?RELAY,1`, which a real WCB by definition lacks, so `routeMeshThroughRelay()` had nothing to act on and the boards stayed surfaced-but-unmanaged. Routing through a plain WCB is the firmware's original design (`WCB.ino:3969` implements the relay side), and `remoteBoardPull`/`setRemoteConnected` were already generic -- only the entry point was relay-shaped. New `routeMeshThroughBoard()` drives them directly, sequentially and once per board (both firmware constraints, not relay ones). Not via `relayRouteAll`: its targets come from `_relayNodes`, filled only for relay slots, and it renders a relay card unconditionally -- the duplicate-card bug again. Adds a 45 s watchdog `relayRouteAll` does not need: `remoteBoardPull` reports through a CALLBACK, so one that never fires would park an unattended loop forever and strand every board behind it. Covered by `tools/smoke_mesh_route.js`. |
 | 2026-09-07 | _(uncommitted)_ | **A WCB hosting its own AP was reported as a MgmtRelay.** Both answer `?WDP,DUMP` with the same `PEER=3` SELF row -- the relay was byte-matched to the firmware on purpose -- and both sit at `192.168.4.1`, since pinning a WCB to `192.168.4.<board>` breaks DHCP (`WCB_WiFi.cpp:122`). `probe()` now sends `?RELAY,WIFI` ahead of the dump and reads both replies in one loop: a relay-only command, no password in its report, no extra round trip. `HW=32` was rejected as a discriminator -- MgmtRelay uses it for "not a real board" but it is also genuine WCB 3.2. New `kind="wcb"`, `isWcb`/`isMesh` on `scan()`, `role="wcb"` through the spec, and the re-associate SSID now uses the `WCB-` prefix rather than `MgmtRelay`. |
 | bootloader | `0x1000` | `0x0` |

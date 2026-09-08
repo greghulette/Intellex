@@ -32,7 +32,8 @@ body = body.replace('const PULL_WATCHDOG_MS = 45000;', 'const PULL_WATCHDOG_MS =
 
 let pulls = [], armed = [], concurrent = 0, maxConcurrent = 0;
 let relayCardPresent = false;
-let hangOn = null;   // board number whose pull never calls back
+let hangOn = null;    // board number whose pull never calls back
+let wdpNodes = null;  // the sweep's parsed nodes, or null for "no sweep yet"
 // On globalThis, not module scope: `new Function` bodies resolve free identifiers
 // against the GLOBAL scope, which is also how they resolve in the page.
 
@@ -40,6 +41,9 @@ function makeScope() {
   const RELAY_POLL_MS = 1, RELAY_WATCH_MS = 60;
   const relayCardSlot = () => (relayCardPresent ? 19 : null);
   const window = {
+    // The sweep calls this on every tick with its parsed nodes; the shim wraps it
+    // to learn which of them are CLIENTS. Fired once here to stand in for a sweep.
+    renderWdpMesh: () => {},
     _wdpMeshConn: () => (globalThis.boardConnections[21]?.isConnected() ? {slot:'21', conn:{}, fc:'?', wcbNum:21} : null),
     setRemoteConnected: (n, p) => { armed.push([n, p]); globalThis.remoteRelayForBoard[n] = p; },
     // NB the 5th arg: the Wizard signals completion through onComplete, NOT by
@@ -57,23 +61,45 @@ function makeScope() {
   };
   const document = { querySelectorAll: () => [] };
   // eslint-disable-next-line no-new-func
-  return new Function('RELAY_POLL_MS','RELAY_WATCH_MS','relayCardSlot','window','document','console',
-    body + '; return routeMeshThroughBoard;')
+  const made = new Function('RELAY_POLL_MS','RELAY_WATCH_MS','relayCardSlot','window','document','console',
+    body + '; return {run: routeMeshThroughBoard, watch: watchWdpSweeps};')
     (RELAY_POLL_MS, RELAY_WATCH_MS, relayCardSlot, window, document,
      {info(){}, warn(){}});
+  // Deliver a sweep the way the tool does — through the function the shim wrapped.
+  return async () => {
+    made.watch();
+    if (wdpNodes) window.renderWdpMesh(wdpNodes, 21, {});
+    return made.run();
+  };
 }
 
 // The extracted body reads boardConnections & co. as FREE identifiers, exactly as
 // it does in the page. `new Function` bodies resolve free identifiers against the
 // GLOBAL scope, so the globalThis assignments below stand in for app.js globals.
 
+// The mesh this test models, and the one that produced the bug: a doorway WCB at
+// 21, two real boards (1 Body, 2 Dome), and TWO CLIENTS — a MgmtRelay at 19 and a
+// NaviCore at 20. Clients are WCB_Client hosts with no WCB config to pull, and the
+// Wizard gives them a lightweight client card, never a board config.
 function reset() {
   pulls = []; armed = []; concurrent = 0; maxConcurrent = 0;
   globalThis.boardConnections = { 21: { isConnected: () => true } };  // the doorway WCB
   globalThis.boardBaselines = { 21: {} };                             // its own config is pulled
   globalThis.remoteRelayForBoard = {};
   globalThis._pullingBoards = new Set();
-  globalThis._meshBoards = new Set([21, 1, 2]);                       // sweep heard two others
+  // _meshBoards is "has a numbered section", NOT "is a board": upsertClientCard
+  // calls addDiscoveredBoards for clients too, so 19 and 20 sit in here as well.
+  // That conflation is exactly what made this pull a relay and a NaviCore.
+  globalThis._meshBoards = new Set([21, 1, 2, 19, 20]);
+  globalThis._meshClients = new Map([[19, {}], [20, {}]]);
+  globalThis.boardConfigs = { 19: {type:'client'}, 20: {type:'client'} };
+  wdpNodes = [
+    { n: 21, client: false, alias: 'Doorway' },   // the board we are attached to
+    { n: 1,  client: false, alias: 'Body'    },
+    { n: 2,  client: false, alias: 'Dome'    },
+    { n: 19, client: true,  alias: 'Mgmt Relay' },
+    { n: 20, client: true,  alias: 'NaviCore'   },
+  ];
   relayCardPresent = false;
 }
 
@@ -127,6 +153,27 @@ const check = (name, cond, extra='') => {
   check('a silent pull did not strand the board behind it',
         pulls.some(p => p[1] === 2), JSON.stringify(pulls));
   hangOn = null;
+
+  // 7 — CLIENTS ARE NOT BOARDS. Reported from hardware: a MgmtRelay at 19 and a
+  //     NaviCore at 20 were both pulled, because _meshBoards holds clients too.
+  //     They have no WCB config; the pull can only fail.
+  reset();
+  await makeScope()();
+  check('did not pull the MgmtRelay client at 19', !pulls.some(p => p[1] === 19),
+        JSON.stringify(pulls));
+  check('did not pull the NaviCore client at 20', !pulls.some(p => p[1] === 20),
+        JSON.stringify(pulls));
+  check('still pulled both REAL boards',
+        JSON.stringify(pulls) === JSON.stringify([['21',1],['21',2]]), JSON.stringify(pulls));
+
+  // 8 — same, before any sweep has been captured: the fallback must subtract
+  //     clients too, or the first poll pulls them in the window before a sweep.
+  reset(); wdpNodes = null;
+  await makeScope()();
+  check('no sweep yet → fallback still excluded both clients',
+        !pulls.some(p => p[1] === 19 || p[1] === 20), JSON.stringify(pulls));
+  check('no sweep yet → still pulled the real boards',
+        JSON.stringify(pulls) === JSON.stringify([['21',1],['21',2]]), JSON.stringify(pulls));
 
   console.log(failed ? `\nmesh-route: ${failed} FAILURE(S)` : '\nmesh-route: OK');
   process.exitCode = failed ? 1 : 0;
