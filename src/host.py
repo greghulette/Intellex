@@ -931,9 +931,12 @@ async def api_attach(req: web.Request) -> web.Response:
         spec = {"kind": "serial", "port": port}
     elif kind == "ws":
         # role/ssid ride along with the target.
-        #   role  "navicore" (default) or "relay" — the relay is a BRIDGE, so the
-        #         tool auto-switches itself to Via WCB once it gets no direct PONG.
-        #         Recorded so the label and the UI can say which one you picked.
+        #   role  "navicore" (default), "relay" or "wcb" — which of the three kinds
+        #         of box this address turned out to be. The last two are DOORWAYS
+        #         to the mesh, so the tool auto-switches itself to Via WCB once it
+        #         gets no direct PONG. Recorded so the label and the UI can say
+        #         which one you picked; the address cannot say, since all three
+        #         sit at 192.168.4.1 when they host the AP.
         #   ssid  which network to re-associate if the link drops. It is not
         #         derivable from the address: on the relay's own AP that is
         #         MgmtRelay-<id>, but with the relay JOINED to NaviCore's AP the
@@ -941,7 +944,7 @@ async def api_attach(req: web.Request) -> web.Response:
         #         chooser knows which case it saw, so it tells us.
         spec = {"kind": "ws", "host": body.get("host", "192.168.4.1")}
         role = body.get("role")
-        if role in ("navicore", "relay"):
+        if role in ("navicore", "relay", "wcb"):
             spec["role"] = role
         ssid = body.get("ssid")
         if isinstance(ssid, str) and ssid.strip():
@@ -1382,11 +1385,13 @@ def _label_for(spec: Optional[dict]) -> str:
     if spec.get("kind") == "serial":
         return f"serial {spec.get('port')}"
     host = spec.get("host", "192.168.4.1")
-    if spec.get("role") == "relay":
-        # Say so. Through a relay everything rides the mesh -- 187-byte payloads,
-        # fragmented config, the slower OTA path -- and that is worth seeing in the
-        # status line rather than inferring from a bare address.
-        return f"relay {host} → mesh"
+    if spec.get("role") in ("relay", "wcb"):
+        # Say so. Through either doorway everything rides the mesh -- 187-byte
+        # payloads, fragmented config, the slower OTA path -- and that is worth
+        # seeing in the status line rather than inferring from a bare address,
+        # which cannot tell them apart anyway: both answer on 192.168.4.1.
+        who = "relay" if spec["role"] == "relay" else "WCB"
+        return f"{who} {host} → mesh"
     return f"ws://{host}/ws"
 
 

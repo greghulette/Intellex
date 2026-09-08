@@ -651,6 +651,44 @@
                + 'serves every page its own link');
   }
 
+  // ── Retire the branch-override warning after a few seconds ────────────────
+  // The Wizard raises a PERSISTENT toast when a firmware branch override is set,
+  // and it is right to: flashing a dev build unknowingly is exactly the mistake
+  // worth shouting about. Its own comment says it "must not vanish before the
+  // user flashes".
+  //
+  // Inside NaviLink two things change. The advice is WRONG -- it says to run
+  // localStorage.removeItem('wcb_fw_branch') in the console, but that key is set
+  // from the launcher's branch field on every load, so doing that reverts on the
+  // next reload and the real control is somewhere else entirely. And the warning
+  // is not the only one: the launcher shows "not on main: WCB -> WIFI" in orange,
+  // permanently, next to the field that actually changes it.
+  //
+  // So let it be seen and then let it go. A persistent toast that cannot be
+  // resolved by following its own instructions stops being a warning and becomes
+  // furniture -- and furniture is what people stop reading.
+  const BRANCH_TOAST_MS = 9000;
+  function retireBranchToast() {
+    const until = Date.now() + 30000;
+    const tick = setInterval(() => {
+      if (Date.now() > until) { clearInterval(tick); return; }
+      for (const t of document.querySelectorAll('#toast-container .toast.warning')) {
+        if (!/Firmware source is overridden/i.test(t.textContent || '')) continue;
+        if (t.__navilinkTimed) continue;
+        t.__navilinkTimed = true;
+        // Dismiss with the toast's OWN button, so whatever teardown it does --
+        // transition, removal, bookkeeping -- happens exactly as it would if the
+        // user had clicked it.
+        setTimeout(() => {
+          const btn = t.querySelector('.toast-dismiss');
+          if (btn) btn.click(); else t.remove();
+        }, BRANCH_TOAST_MS);
+        clearInterval(tick);
+        return;
+      }
+    }, 200);
+  }
+
   // ── Dismiss the Wizard's "Setup Wizard / Config Tool" splash ──────────────
   // It asks which way you want to start, every single load. Inside NaviLink that
   // question has already been answered by opening the WCB pane at all, and the
@@ -1149,6 +1187,7 @@
     if (IS_WCB) {
       disableWcbPortSharing();   // BEFORE any connect — it wraps the connect path
       dismissWcbSplash();        // backstop; normally already running from DOMContentLoaded
+      retireBranchToast();
       installWcbFlash();
       autoConnectWcb();
     } else {

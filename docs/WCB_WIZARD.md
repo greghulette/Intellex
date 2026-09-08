@@ -26,7 +26,8 @@ the same wire contract as NaviCore's**:
 
 So NaviLink needed **no new transport** for the Wizard. `WebSocketTransport` already carries
 it, and `src/discover.py` already finds a relay at `192.168.4.19` and attaches it with
-`role: "relay"`.
+`role: "relay"`. A WCB hosting its own AP is a doorway too, and takes more than an address to
+recognise — see [Three doorways, one address](#three-doorways-one-address-identify-by-answer-never-by-address).
 
 The Wizard, in turn, needed no new transport either: `BoardConnection.connect()`
 (`Wizard/app.js`) uses `requestPort()` → `open({baudRate})` → `setSignals()` → read loop, and
@@ -148,6 +149,48 @@ Note the remote config encoding: `[MGMT:CONFIG,<n>]` with `^` separators, **not*
 backup with an `End of Backup` marker. The remote pull uses the `[MGMT:CONFIG,` tag as its
 sentinel; only the *direct* pull looks for `End of Backup`.
 
+## Three doorways, one address: identify by answer, never by address
+
+The WCB firmware can now host its own AP, so **three** kinds of box can be the thing you
+attach to — NaviCore, a MgmtRelay, or a WCB — and discovery has to say which.
+
+**The address cannot tell you.** NaviCore never calls `softAPConfig()`, and the WCB firmware
+deliberately does not either: pinning itself to `192.168.4.<board>` was tried and *breaks
+DHCP* — clients associate, no lease ever arrives, they land on `169.254.x` and cannot reach
+the board at all (`WCB_WiFi.cpp:122`, measured on hardware, not a startup race). So every
+AP-hosting box is at `192.168.4.1`. Only MgmtRelay pins itself, to `.19`.
+
+**`?WDP,DUMP` cannot tell you either.** Its `PEER=3` SELF row says where a device sits on the
+mesh, and a WCB and a relay emit it identically — the relay's row was byte-matched to the
+firmware's on purpose (`WCB_WDP.cpp:1127`). Both are doorways; the sweep proves only that.
+
+Two discriminators look right and are not:
+
+| Tried | Why it fails |
+|---|---|
+| The SELF row's `HW` field | MgmtRelay reports `HW=32` to mean *"not a real board"* — but `32` is **also a genuine hardware version, WCB 3.2** (`Wizard/parser.js:217` `HW_VERSION_MAP`). A v3.2 board is exactly the case being identified, so this misreads every one. |
+| `?RELAY,1` in `?backup` | It is a true marker, but `?backup` dumps the whole config **including `?EPASS`, the mesh password in clear**. A discovery probe has no business pulling that on every scan. |
+
+**`?RELAY,WIFI` is the discriminator.** It is a MgmtRelay command with no handler in the WCB
+firmware, so the *presence of a reply* is the whole test, and its report names the mode and
+**deliberately never a password** (`MgmtRelay.ino:1094`).
+
+It is sent **before** `?WDP,DUMP` and read in the **same loop**, so it costs no extra round
+trip and needs no timeout of its own: the far end handles lines in order, the `[relay]` reply
+lands ahead of the dump, and `[WDP:END` still ends the read. A `?` command is handled locally
+and never re-broadcast to the mesh (`WCB_Help.cpp:858`), so this asks nothing of other boards.
+
+`probe()` returns `kind` of `navicore | relay | wcb | unknown`; `scan()` adds `isWcb` and
+`isMesh` (either doorway). The launcher renders one row shape for both doorways — the decision
+is the same, only the noun differs — and the noun has to be right, or a WCB labelled *"Mgmt
+relay"* sends someone hunting for a board they never flashed.
+
+One thing that **does** differ, and matters: the SSID to re-associate after a drop. All three
+firmwares derive `<prefix>-<id>` from a *different* prefix — `NaviCore-<id>`,
+`MgmtRelay-<id>`, `WCB-<alias|number>` (`WCB_WiFi.cpp` `wcbWifiDefaultSsid`) — and the bounce
+matches on that prefix. Pass the wrong one and it hunts for a network that does not exist,
+then reports the adapter as unassociated.
+
 ## NaviCore can be the WCB relay too
 
 **It already is one, for OTA.** `?OTA,*` routes to `processOtaRelayCommand`, and
@@ -254,6 +297,7 @@ WebSocket has no control lines.
 
 | | ESP32 | ESP32-S3 |
 |---|---|---|
+| 2026-09-07 | _(uncommitted)_ | **A WCB hosting its own AP was reported as a MgmtRelay.** Both answer `?WDP,DUMP` with the same `PEER=3` SELF row -- the relay was byte-matched to the firmware on purpose -- and both sit at `192.168.4.1`, since pinning a WCB to `192.168.4.<board>` breaks DHCP (`WCB_WiFi.cpp:122`). `probe()` now sends `?RELAY,WIFI` ahead of the dump and reads both replies in one loop: a relay-only command, no password in its report, no extra round trip. `HW=32` was rejected as a discriminator -- MgmtRelay uses it for "not a real board" but it is also genuine WCB 3.2. New `kind="wcb"`, `isWcb`/`isMesh` on `scan()`, `role="wcb"` through the spec, and the re-associate SSID now uses the `WCB-` prefix rather than `MgmtRelay`. |
 | bootloader | `0x1000` | `0x0` |
 | partition table | `0x8000` | `0x8000` |
 | app | `0x10000` | `0x10000` |

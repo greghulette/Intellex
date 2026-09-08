@@ -304,33 +304,47 @@ async function scanWifi() {
     // WHICH NETWORK ARE WE ON? It decides what to re-associate after a drop, and
     // the address alone cannot tell us: the relay holds 192.168.4.19 whether it is
     // hosting the AP itself or has joined NaviCore's. Seeing a NaviCore at .1 too
-    // means we are on NaviCore's network; seeing only the relay means we are on its
-    // own AP. (Both firmwares derive "<name>-<id>" and the bounce matches that
-    // prefix, so the bare name is the right thing to pass.)
+    // means we are on NaviCore's network; seeing only a doorway means we are on
+    // that box's own AP — and which box it is decides the name, since all three
+    // firmwares derive "<prefix>-<id>" from a DIFFERENT prefix: NaviCore-<id>,
+    // MgmtRelay-<id>, WCB-<alias|number> (WCB_WiFi.cpp wcbWifiDefaultSsid). The
+    // bounce matches on that prefix, so passing the wrong one means it hunts for
+    // a network that does not exist and reports the adapter as unassociated.
     const sawCore = candidates.some(c => c.isNaviCore);
-    const netSsid = sawCore ? 'NaviCore' : 'MgmtRelay';
+    const ssidFor = c => sawCore ? 'NaviCore' : (c.isWcb ? 'WCB' : 'MgmtRelay');
 
     for (const c of candidates) {
       if (c.isNaviCore) {
         el.appendChild(row(true, `NaviCore at ${c.host}`,
           `${c.version} · direct · via ${c.via}`,
           () => connect({kind:'ws', host:c.host, role:'navicore', ssid:'NaviCore'}, c.host)));
-      } else if (c.isRelay) {
-        // A bridge, not a droid. Everything through it rides the mesh, so say so
-        // rather than letting it look like a second, equivalent droid — and name
-        // what is reachable through it. "A bridge" is abstract; "sees NaviCore
+      } else if (c.isMesh) {
+        // A doorway to the mesh — either a MgmtRelay or a WCB hosting its own AP.
+        // Same row either way, because the decision the user is making is the
+        // same one: what can I reach through this. Only the noun differs, and it
+        // has to be RIGHT — a WCB labelled "Mgmt relay" sends someone looking for
+        // a board they did not flash.
+        //
+        // Neither is a second, equivalent droid, so say what is behind it rather
+        // than leaving it looking like one. "A bridge" is abstract; "sees NaviCore
         // v0.2.0_…" is the thing you are actually deciding about.
-        const who = c.alias || 'Mgmt relay';
+        const isWcb  = c.isWcb;
+        const who    = c.alias || (isWcb ? 'WCB' : 'Mgmt relay');
+        const what   = isWcb ? 'a WCB, and the way to the mesh' : 'bridges to the mesh';
+        // Don't render "Vader WCB · WCB #21" — the alias usually says it already.
+        const idTag  = !c.relayId ? ''
+                     : (isWcb && /wcb/i.test(who) ? ` · #${c.relayId}`
+                                                  : ` · WCB #${c.relayId}`);
         const behind = (c.peers || []).filter(p => p.alias)
           .map(p => p.alias + (p.fw ? ' ' + p.fw : '')).join(', ');
         el.appendChild(row(true, `${who} at ${c.host}`,
-          `bridges to the mesh${c.relayId ? ` · WCB #${c.relayId}` : ''}`
-          + (behind ? ` · sees ${behind}` : ' · no boards seen yet'),
-          // relayId rides along: the Wizard files a relay under its DEVICE_ID
+          what + idTag + (behind ? ` · sees ${behind}` : ' · no boards seen yet'),
+          // relayId rides along: the Wizard files a doorway under its DEVICE_ID
           // rather than the slot it lands on, and needs the number to route the
           // mesh boards through it. Discovery already read it from the WDP
           // self-row, so pass it on rather than making the page rediscover it.
-          () => connect({kind:'ws', host:c.host, role:'relay', ssid:netSsid,
+          () => connect({kind:'ws', host:c.host, role: isWcb ? 'wcb' : 'relay',
+                         ssid: ssidFor(c),
                          relayId: c.relayId ? parseInt(c.relayId) : undefined}, c.host)));
       } else if (c.routable) {
         // The adapter is fine and something IS there — very likely a board

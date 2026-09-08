@@ -34,20 +34,32 @@ import sys
 import socket
 from typing import Optional
 
-# WHERE THE TWO BOXES LIVE
+# WHERE THE BOXES LIVE
+#
+# THREE kinds of firmware can host the AP now -- NaviCore, a MgmtRelay, and a WCB
+# -- and two of them are at the same address, so ADDRESS IS NOT IDENTITY here.
+# probe() decides what a thing is from what it answers; this list only decides
+# where to knock.
 #
 # NaviCore never calls softAPConfig(), so its SoftAP is the ESP32 default .1.
 #
+# The WCB firmware deliberately does not call it either: pinning itself to
+# 192.168.4.<board> was tried and BREAKS DHCP (WCB_WiFi.cpp:122) -- clients
+# associate, get no lease, land on 169.254.x and cannot reach the board at all.
+# So a WCB hosting its own AP is also at .1, sharing the address with NaviCore.
+#
 # The MgmtRelay DOES call it: with RELAY_STATIC_IP (on by default) it pins itself
 # to 192.168.4.<DEVICE_ID> -- .19 out of the box -- and holds that address whether
-# it is hosting the AP itself or has joined NaviCore's. So one fixed pair covers
-# both deployments:
+# it is hosting the AP itself or has joined NaviCore's. So one fixed pair still
+# covers every deployment:
 #
-#   relay hosts the AP   -> nothing at .1 (the relay IS the gateway, at .19)
-#   relay joined NaviCore-> NaviCore at .1 AND relay at .19, both reachable
+#   NaviCore hosts the AP -> NaviCore at .1
+#   WCB hosts the AP      -> WCB at .1 (looks identical from the address alone)
+#   relay hosts the AP    -> nothing at .1 (the relay IS the gateway, at .19)
+#   relay joined NaviCore -> NaviCore at .1 AND relay at .19, both reachable
 #
 # Probing both and reporting what answered is what lets the user pick.
-NAVICORE_IP  = "192.168.4.1"
+NAVICORE_IP  = "192.168.4.1"           # ...or a WCB. Only probe() can say which.
 RELAY_IP     = "192.168.4.19"          # 192.168.4.<relay DEVICE_ID>
 DEFAULT_CANDIDATES = [NAVICORE_IP, RELAY_IP]
 
@@ -238,31 +250,38 @@ def _wdp_fields(line: str) -> dict:
 
 
 def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
-    """Ask a host what it is. One socket, two questions.
+    """Ask a host what it is. One socket, three questions.
 
-    WHY TWO
+    WHY MORE THAN ONE
     A NaviCore answers a JSON PING with a PONG carrying its firmware version. A
     MgmtRelay never will -- it is a bridge, not a droid -- so a PONG-only test
     reported it as "answers on port 80 but is neither" and the chooser had nothing
-    to offer.
+    to offer. And a WCB now hosts its own AP too, so "not a NaviCore" is no longer
+    the same statement as "a relay": three kinds answer here, not two.
+
+    IDENTIFIED BY WHAT IT ANSWERS, NEVER BY ITS ADDRESS. Every AP host is at
+    192.168.4.1 -- moving one off .1 breaks DHCP (WCB_WiFi.cpp:122) -- so the
+    address says only "the gateway", never which of the three it is.
 
     WHY ?WDP,DUMP AND NOT ?version OR ?backup
-    ?version returns only "Software Version: 1.2", which identifies nothing. The
-    "?RELAY,1" marker lives in ?backup -- but that dumps the whole config
+    ?version returns only "Software Version: 1.2", which identifies nothing.
+    ?backup does carry the "?RELAY,1" marker, but it dumps the whole config
     INCLUDING ?EPASS, the mesh password in clear, and a discovery probe has no
-    business pulling that across the wire on every scan.
+    business pulling that across the wire on every scan -- ?RELAY,WIFI answers
+    the same question without it. See the comment at the send.
     ?WDP,DUMP carries no secrets and says more: its SELF row (PEER=3) gives the
-    relay's id and alias, and the rows after it are the boards it can actually
+    device's id and alias, and the rows after it are the boards it can actually
     reach. Verified against the hardware:
 
         [WDP:N=19,CLIENT=0,ALIAS=Mgmt Relay,HW=32,...,PEER=3]
         [WDP:N=20,CLIENT=1,ALIAS=NaviCore,HWREV=NaviCore v2,FW=v0.2.0_...]
         [WDP:END,count=1]
 
-    Asking the RELAY what it is, rather than bouncing a ping off a droid behind
+    Asking the DOORWAY what it is, rather than bouncing a ping off a droid behind
     it, also means it is identified when no droid is powered at all.
 
-    Returns {"kind", "version", "relayId", "alias", "peers"}.
+    Returns {"kind", "version", "relayId", "alias", "peers"}, where kind is
+    navicore | relay | wcb | unknown.
     """
     info = {"kind": "unknown", "version": None, "relayId": None,
             "alias": None, "peers": []}
@@ -287,16 +306,48 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
                     info["version"] = str(obj.get("version", "unknown"))
                     return info
 
-            # Q2 - a management relay.
+            # Q2 and Q3, down one socket and one read.
+            #
+            # Q2 "where is it on the mesh?" is ?WDP,DUMP's SELF row. Q3 "what IS
+            # it?" needs its own question, because a WCB HOSTING ITS OWN AP and a
+            # MgmtRelay answer ?WDP,DUMP identically -- the relay's SELF row was
+            # byte-matched to the firmware's on purpose (WCB_WDP.cpp:1127).
+            #
+            # ?RELAY,WIFI is the discriminator. It is a MgmtRelay command and the
+            # WCB firmware has no handler for it at all, so the reply's presence
+            # is the whole test. Its report names the mode and DELIBERATELY never
+            # a password (MgmtRelay.ino:1094) -- which is what makes it usable
+            # here where ?backup, the other place "?RELAY,1" appears, is not:
+            # that dumps ?EPASS, the mesh password, in clear.
+            #
+            # Two things that look like they would work and do not:
+            #   - The SELF row's HW field. MgmtRelay reports HW=32 to mean "not a
+            #     real board", but 32 is ALSO a genuine hardware version, WCB 3.2
+            #     (Wizard/parser.js:217 HW_VERSION_MAP). A v3.2 board is exactly
+            #     the case being identified, so that test misreads every one.
+            #   - The address. Sitting a WCB at 192.168.4.<id> was tried for this
+            #     and breaks DHCP on the SoftAP (WCB_WiFi.cpp:122), so every AP
+            #     host is .1 and the address carries no information at all.
+            #
+            # Sent FIRST and read in the SAME loop, so it costs no extra round
+            # trip and needs no timeout of its own: the far end handles lines in
+            # order, so the reply lands ahead of the dump and [WDP:END still ends
+            # the read. A '?' command is handled locally and never re-broadcast to
+            # the mesh (WCB_Help.cpp:858), so this asks nothing of other boards.
+            ws.send("?RELAY,WIFI\n")
             ws.send("?WDP,DUMP\n")
+            said_relay = False
             for line in _read_lines(ws, timeout * 2):
                 if line.startswith("[WDP:END"):
                     break
+                if line.startswith("[relay]"):
+                    said_relay = True
+                    continue
                 if not line.startswith("[WDP:"):
                     continue
                 f = _wdp_fields(line)
-                if f.get("PEER") == "3":              # SELF - this is the bridge
-                    info["kind"] = "relay"
+                if f.get("PEER") == "3":              # SELF - the device we are on
+                    info["kind"] = "mesh"
                     info["relayId"] = f.get("N")
                     info["alias"] = f.get("ALIAS")
                 else:
@@ -306,6 +357,10 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
                         "fw": f.get("FW"),
                         "hwrev": f.get("HWREV"),
                     })
+            # Settled after the loop rather than inside it, so the answer does not
+            # depend on the two replies arriving in the order they were asked for.
+            if info["kind"] == "mesh":
+                info["kind"] = "relay" if said_relay else "wcb"
     except Exception:
         return info
     return info
@@ -325,9 +380,14 @@ def scan(candidates: Optional[list[str]] = None) -> list[dict]:
             "via": via,                     # our source address = which adapter
             "routable": via is not None,
             "reachable": reachable,         # TCP 80 answered
-            "kind": info["kind"],           # navicore | relay | unknown
+            "kind": info["kind"],           # navicore | relay | wcb | unknown
             "isNaviCore": info["kind"] == "navicore",
             "isRelay": info["kind"] == "relay",
+            "isWcb": info["kind"] == "wcb",
+            # Anything that fronts the mesh, whichever of the two it is. The
+            # launcher cares about "can I manage boards through this" far more
+            # often than about which box is doing it.
+            "isMesh": info["kind"] in ("relay", "wcb"),
             "version": info["version"],
             "relayId": info["relayId"],
             "alias": info["alias"],
@@ -583,17 +643,24 @@ def _hint(via: Optional[str], reachable: bool, info: dict) -> str:
     kind = info.get("kind")
     if kind == "navicore":
         return f"NaviCore {info.get('version')}"
-    if kind == "relay":
-        who = info.get("alias") or "mgmt relay"
+    if kind in ("relay", "wcb"):
+        # Same shape for both, because what the user needs to know is the same:
+        # who it is, and what it can reach. Only the noun differs.
+        noun = "mgmt relay" if kind == "relay" else "WCB"
+        who = info.get("alias") or noun
         rid = info.get("relayId")
         seen = [p for p in info.get("peers", []) if p.get("alias")]
         behind = (" — sees " + ", ".join(
             f"{p['alias']}" + (f" {p['fw']}" if p.get("fw") else "") for p in seen[:3])
         ) if seen else " — no boards seen yet"
-        return f"{who}" + (f" (WCB #{rid})" if rid else "") + behind
+        tag = f" (WCB #{rid})" if rid else ""
+        # Don't print "Vader WCB (WCB #21)" when the alias already says WCB.
+        if kind == "wcb" and "wcb" in who.lower():
+            tag = f" (#{rid})" if rid else ""
+        return f"{who}{tag}{behind}"
     if reachable:
-        return ("something answers on port 80, but it is neither a NaviCore "
-                "nor a management relay")
+        return ("something answers on port 80, but it is not a NaviCore, "
+                "a WCB or a management relay")
     if via:
         # The exact state seen on this machine: a route exists and looks right, but
         # no traffic passes. Disabling and re-enabling the adapter cleared it.
