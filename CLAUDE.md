@@ -15,8 +15,12 @@ Named for the Intellex, the droid brain Industrial Automaton ships in an R2-seri
 astromech. **The old name is still all over the places code cannot reach**, and none of
 these are bugs to go fix:
 
-- The **GitHub remote and the local clone directory** are still `NaviLink`. Renaming the
-  remote is a separate, deliberate act — it breaks every existing clone's origin URL.
+- The **GitHub repo is now `greghulette/Intellex`**, but **the local clone directory is
+  still `NaviLink`** on the Windows box — a directory cannot rename itself out from under
+  a running session. GitHub redirects the old URL, so a clone whose origin still says
+  `NaviLink.git` keeps working; the Mac's clone wants
+  `git remote set-url origin https://github.com/greghulette/Intellex.git` all the same,
+  because a redirect is not a promise.
 - **Git history** is entirely under the old name. So is every commit message before the
   rename commit.
 - **`docs/` revision-log rows were swept along with everything else**, so historical rows
