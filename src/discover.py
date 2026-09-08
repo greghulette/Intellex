@@ -21,9 +21,16 @@ address, and report HOW it was reached".
 
 WHY A PONG AND NOT A PORT CHECK
 Plenty of things answer TCP 80. A home router at 192.168.4.1 would look like a
-droid to a port scan. Only a NaviCore replies to a PING over /ws with a PONG
-carrying a firmware version, so that is the test -- it identifies the device
-rather than merely finding something alive.
+droid to a port scan, so the test is what the thing SAYS, not that it is alive.
+
+But a PONG on its own is not proof either, and assuming it was is what made a
+WCB flap between "WCB" and "NaviCore" on successive scans. Every endpoint here
+is a CONSOLE MIRROR and a WCB mirrors the whole mesh, so a PING sent to the WCB
+reaches the NaviCore behind it and that NaviCore's PONG comes back through the
+mirror looking exactly like a local reply. What distinguishes them is that
+NaviCore answers a DIRECT ping bare ({"type":"PONG","version":...}, no id) and a
+MESH ping with its device id attached, so an id-bearing PONG identifies the host
+only when the id is the host's own WDP SELF row. probe() has the detail.
 """
 
 from __future__ import annotations
@@ -289,65 +296,73 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
         from websockets.sync.client import connect
     except ImportError:
         return info
+
+    # A PONG the HOST sent for itself, versus one that merely CROSSED it.
+    #
+    # NaviCore has two PONG paths and they are not interchangeable. A direct host
+    # PING is answered by NaviCore.ino ~3828 with a bare
+    # {"type":"PONG","version":...} over the console -- no id. A PING that arrives
+    # over the MESH is answered by rc_telemetry.h ~2189 with
+    # {"sys":1,"type":"PONG","id":<deviceId>,...} sent back over ESP-NOW, and a
+    # WCB doorway MIRRORS that onto its own console like all mesh traffic (the
+    # "sys":1 marker is there so the Wizard can mute exactly this).
+    #
+    # So an id-bearing PONG on this socket says a NaviCore answered SOMEWHERE on
+    # the mesh -- not that the thing we are talking to is one.
+    direct_pong = False          # no id -> the host answered for itself
+    mesh_pong_id = None          # has id -> whoever that id is answered
+    version = None
+    self_id = None
+    said_relay = False
+
     try:
         with connect(f"ws://{host}/ws", open_timeout=timeout, close_timeout=0.5) as ws:
-            # Q1 - a NaviCore. TRAILING NEWLINE IS REQUIRED: both firmwares frame on
-            # it, so a bare message is buffered forever waiting for a terminator.
+            # ALL THREE QUESTIONS UP FRONT, then one read.
+            #
+            # They used to be two rounds with an early return on the first PONG,
+            # and that is precisely what made a WCB flap between "WCB" and
+            # "NaviCore" on alternating scans: whether the mesh's PONG landed
+            # inside the first read window was a race, and winning it ended the
+            # probe before the SELF row that would have named the real host was
+            # ever asked for. Both firmwares handle lines in order, so pipelining
+            # costs no extra round trip and removes the ordering dependence.
+            #
+            # TRAILING NEWLINE IS REQUIRED: both firmwares frame on it, so a bare
+            # message is buffered forever waiting for a terminator.
             ws.send(json.dumps({"type": "PING"}) + "\n")
-            for line in _read_lines(ws, timeout):
-                if not line.startswith("{"):
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") == "PONG":
-                    info["kind"] = "navicore"
-                    info["version"] = str(obj.get("version", "unknown"))
-                    return info
-
-            # Q2 and Q3, down one socket and one read.
-            #
-            # Q2 "where is it on the mesh?" is ?WDP,DUMP's SELF row. Q3 "what IS
-            # it?" needs its own question, because a WCB HOSTING ITS OWN AP and a
-            # MgmtRelay answer ?WDP,DUMP identically -- the relay's SELF row was
-            # byte-matched to the firmware's on purpose (WCB_WDP.cpp:1127).
-            #
-            # ?RELAY,WIFI is the discriminator. It is a MgmtRelay command and the
-            # WCB firmware has no handler for it at all, so the reply's presence
-            # is the whole test. Its report names the mode and DELIBERATELY never
-            # a password (MgmtRelay.ino:1094) -- which is what makes it usable
-            # here where ?backup, the other place "?RELAY,1" appears, is not:
-            # that dumps ?EPASS, the mesh password, in clear.
-            #
-            # Two things that look like they would work and do not:
-            #   - The SELF row's HW field. MgmtRelay reports HW=32 to mean "not a
-            #     real board", but 32 is ALSO a genuine hardware version, WCB 3.2
-            #     (Wizard/parser.js:217 HW_VERSION_MAP). A v3.2 board is exactly
-            #     the case being identified, so that test misreads every one.
-            #   - The address. Sitting a WCB at 192.168.4.<id> was tried for this
-            #     and breaks DHCP on the SoftAP (WCB_WiFi.cpp:122), so every AP
-            #     host is .1 and the address carries no information at all.
-            #
-            # Sent FIRST and read in the SAME loop, so it costs no extra round
-            # trip and needs no timeout of its own: the far end handles lines in
-            # order, so the reply lands ahead of the dump and [WDP:END still ends
-            # the read. A '?' command is handled locally and never re-broadcast to
-            # the mesh (WCB_Help.cpp:858), so this asks nothing of other boards.
             ws.send("?RELAY,WIFI\n")
             ws.send("?WDP,DUMP\n")
-            said_relay = False
+
             for line in _read_lines(ws, timeout * 2):
                 if line.startswith("[WDP:END"):
                     break
                 if line.startswith("[relay]"):
                     said_relay = True
                     continue
+                if line.startswith("{"):
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if obj.get("type") == "PONG":
+                        version = str(obj.get("version", "unknown"))
+                        if "id" in obj:
+                            mesh_pong_id = str(obj.get("id"))
+                        else:
+                            # DECISIVE, so stop here: an id-less PONG can only be
+                            # the host answering for itself, and waiting out the
+                            # WDP window would cost every NaviCore-hosted AP the
+                            # full timeout for an answer already known. This is
+                            # the same claim the classification below rests on --
+                            # trusting it there and not here would be incoherent.
+                            direct_pong = True
+                            break
+                    continue
                 if not line.startswith("[WDP:"):
                     continue
                 f = _wdp_fields(line)
                 if f.get("PEER") == "3":              # SELF - the device we are on
-                    info["kind"] = "mesh"
+                    self_id = f.get("N")
                     info["relayId"] = f.get("N")
                     info["alias"] = f.get("ALIAS")
                 else:
@@ -357,12 +372,31 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
                         "fw": f.get("FW"),
                         "hwrev": f.get("HWREV"),
                     })
-            # Settled after the loop rather than inside it, so the answer does not
-            # depend on the two replies arriving in the order they were asked for.
-            if info["kind"] == "mesh":
-                info["kind"] = "relay" if said_relay else "wcb"
     except Exception:
         return info
+
+    # Settled after the read, never inside it, so the answer cannot depend on the
+    # order the replies happened to arrive in.
+    #
+    # A direct PONG is decisive on its own -- only the host itself can produce
+    # one. An id-bearing PONG counts only when the id IS the host's own SELF row,
+    # which is what tells "NaviCore is the AP" apart from "NaviCore is behind the
+    # WCB that is the AP" -- the two cases that previously looked identical.
+    if direct_pong or (mesh_pong_id is not None and mesh_pong_id == self_id):
+        info["kind"] = "navicore"
+        info["version"] = version
+        # Reported as a droid, not as a doorway: scan() keys isMesh off kind, and
+        # the chooser has no mesh card to hang these on.
+        info["relayId"] = None
+        info["alias"] = None
+        info["peers"] = []
+    elif self_id is not None:
+        info["kind"] = "relay" if said_relay else "wcb"
+    elif mesh_pong_id is not None:
+        # Something answered and nothing claimed to be a doorway -- no evidence
+        # this is anything but the droid that PONGed.
+        info["kind"] = "navicore"
+        info["version"] = version
     return info
 
 

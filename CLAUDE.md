@@ -363,6 +363,12 @@ powershell -File scripts\install-windows.ps1 # Start Menu shortcut
 # excuse for skipping it after touching Bridge or /_link.
 python tools/smoke_fanout.py
 
+# Discovery's "what IS this host" logic, replaying REAL recorded console
+# streams from the bench through the real probe(). Guards the trap that a
+# doorway mirrors the mesh, so a PONG on the wire is not proof the thing you
+# are talking to sent it. Run it after touching discover.probe().
+python tools/smoke_probe_identity.py
+
 # The shim's mesh auto-pull, run against fakes. Extracts routeMeshThroughBoard's
 # REAL source text out of intellex_shim.js, so it cannot drift from what ships.
 # Run it after touching the mesh routing or the shim's connect path.
