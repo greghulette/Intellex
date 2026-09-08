@@ -36,6 +36,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import applog                                             # noqa: E402
 import appicon                                            # noqa: E402
 import host as hostmod                                    # noqa: E402
+import winsize                                            # noqa: E402
 from transport import TransportError                      # noqa: E402
 
 
@@ -288,9 +289,15 @@ def main() -> int:
     if _icon_msg:
         print(_icon_msg)
 
+    # SIZED AND PLACED AGAINST THE SCREEN'S WORK AREA, not asked for flat. A bare
+    # 1280x880 is 1100 physical px tall at 125% scaling, against a 1020px work
+    # area, and pywebview's no-position fallback centres on the monitor's FULL
+    # bounds -- so the bottom of the app sat under the taskbar, unreachable. See
+    # src/winsize.py; it hands back the requested size unchanged when it cannot
+    # measure, so the worst case is the old behaviour.
+    geom = winsize.fit(1280, 880, min_size=(900, 640))
     try:
-        webview.create_window("Intellex", url, width=1280, height=880,
-                              min_size=(900, 640), text_select=True)
+        webview.create_window("Intellex", url, text_select=True, **geom)
     except Exception as e:
         print(f"could not create the window ({type(e).__name__}: {e}) "
               "-- falling back to the browser.")
@@ -317,9 +324,13 @@ def main() -> int:
     # Registered only in window mode: under --browser or a bare host there is no
     # backend, and host.py answers 501 so the shell uses window.open() instead.
     def _open_window(title: str, path: str) -> None:
+        # Measured per call rather than reusing `geom`: this one can be opened
+        # long after startup, and the window it lands on may not be the one the
+        # app started on -- a laptop docked to an external monitor mid-session is
+        # the ordinary case, not a corner one.
         webview.create_window(title, f"http://{hostmod.BIND_HOST}:{a.port}{path}",
-                              width=1280, height=880, min_size=(900, 640),
-                              text_select=True)
+                              text_select=True,
+                              **winsize.fit(1280, 880, min_size=(900, 640)))
 
     hostmod.open_window_hook = _open_window
 

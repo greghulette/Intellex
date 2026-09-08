@@ -26,6 +26,9 @@ Scaffold. Nothing runs yet.
 ```
 src/transport.py   the byte-pipe seam; read its docstring first
 src/appicon.py     Dock / taskbar icon — pywebview cannot do this for us
+src/winsize.py     fits the window to the screen's WORK AREA — pywebview's
+                   sizes are logical px and its default centring ignores
+                   the taskbar, so a fixed height fell off the bottom
 src/assets/        the app's own icon and mark, copied from the design set
                    below. Nothing here regenerates them: the .ico holds three
                    DIFFERENT drawings picked by size, which no rasteriser
