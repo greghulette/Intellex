@@ -60,6 +60,7 @@ import paths                                             # noqa: E402
 import proc                                              # noqa: E402
 import applog                                            # noqa: E402
 import version                                           # noqa: E402
+import branchlist
 import settings                                          # noqa: E402
 import flash                                             # noqa: E402
 import fwcache                                           # noqa: E402
@@ -566,6 +567,21 @@ async def api_branches(_req: web.Request) -> web.Response:
     return web.json_response(settings.branches())
 
 
+async def api_branch_list(req: web.Request) -> web.Response:
+    """Which branches exist, for the launcher's dropdown.
+
+    `?refresh=1` forces a fetch; otherwise a cached list inside its TTL is served
+    without touching the network, because this is asked every time the panel is
+    opened and the answer changes rarely.
+    """
+    force = req.query.get("refresh") == "1"
+    try:
+        return web.json_response(branchlist.branches(force=force))
+    except Exception as e:                       # noqa: BLE001 - a dropdown is not worth a 500
+        return web.json_response({"navicore": [], "wcb": [], "cached": True,
+                                  "error": f"{type(e).__name__}: {e}"})
+
+
 async def api_set_branch(req: web.Request) -> web.Response:
     """Point a product at a different branch.
 
@@ -944,16 +960,27 @@ async def api_attach(req: web.Request) -> web.Response:
         #         gets no direct PONG. Recorded so the label and the UI can say
         #         which one you picked; the address cannot say, since all three
         #         sit at 192.168.4.1 when they host the AP.
-        #   ssid  which network to re-associate if the link drops. It is not
-        #         derivable from the address: on the relay's own AP that is
-        #         MgmtRelay-<id>, but with the relay JOINED to NaviCore's AP the
-        #         very same relay address sits on the NaviCore network. The
-        #         chooser knows which case it saw, so it tells us.
+        #   ssid  which network to re-associate if the link drops. ASKED OF THE OS,
+        #         not derived from the address and not predicted from the kind of
+        #         box found. It was predicted once -- a WCB meant "WCB" -- and that
+        #         is simply not what these networks are called: the WCB firmware
+        #         names its AP after the board, so the real ones are WCB1, WCB2.
+        #         wifi_bounce() locates its adapter BY SSID, so the wrong name does
+        #         not degrade the self-heal, it disables it, and the log says
+        #         `re-associating WCB: FAILED (no wireless interface is associated
+        #         with "WCB")` while sitting on a healthy WCB2.
+        #
+        #         Resolved HERE because this is the moment it is knowable: the link
+        #         is being established, so the adapter holding an address on the
+        #         droid's subnet is unambiguous. Later, once the lease has dropped,
+        #         the question has no answer -- which is exactly when the bounce
+        #         needs it.
         spec = {"kind": "ws", "host": body.get("host", "192.168.4.1")}
         role = body.get("role")
         if role in ("navicore", "relay", "wcb"):
             spec["role"] = role
-        ssid = body.get("ssid")
+        real_ssid = await asyncio.to_thread(discover.ssid_for_host, spec["host"])
+        ssid = real_ssid or body.get("ssid")
         if isinstance(ssid, str) and ssid.strip():
             spec["ssid"] = ssid.strip()
         # The relay's WCB id, straight from the WDP self-row discovery already read.
@@ -1355,7 +1382,13 @@ async def reconnect_loop(_app: web.Application) -> None:
                     same_subnet = bool(via) and via.rsplit(".", 1)[0] == host.rsplit(".", 1)[0]
                     if not same_subnet and bounce_fails < BOUNCE_GIVE_UP:
                         last_bounce = now
-                        ssid = spec.get("ssid", "NaviCore")
+                        # RE-ASK FIRST. Moving from one board's AP to another's
+                        # keeps the address (every SoftAP is 192.168.4.1) but
+                        # changes the network, so the name recorded at attach can
+                        # be the previous one. Only fall back to it when the OS
+                        # cannot say -- which is the case the recording exists for.
+                        ssid = (await asyncio.to_thread(discover.ssid_for_host, host)
+                                or spec.get("ssid", "NaviCore"))
                         ok, msg = await asyncio.to_thread(discover.wifi_bounce, ssid)
                         print(f"routed via {via or 'nothing'} instead of {host} — "
                               f"re-associating {ssid}: {'ok' if ok else 'FAILED'} ({msg})")
@@ -1453,6 +1486,7 @@ def build_app() -> web.Application:
         web.get("/_api/webui-version", api_webui_version),
         web.get("/_api/firmware", api_firmware),
         web.get("/_api/branches", api_branches),
+        web.get("/_api/branch-list", api_branch_list),
         web.post("/_api/branch", api_set_branch),
         web.get("/_api/log", api_log),
         web.get("/_api/version", api_version),

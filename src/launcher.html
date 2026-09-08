@@ -52,6 +52,18 @@
   h1 #appver { font-size:11.5px; font-weight:400; color:var(--muted); letter-spacing:0; }
   input { font:inherit; background:#12131a; color:var(--fg); border:1px solid var(--line);
           border-radius:6px; padding:4px 8px; margin-left:4px; }
+  /* Sub-headings inside one card. The first needs no top gap; the rest are
+     separating sections, so they do. */
+  .card h2 + .bar { margin-top:0; }
+  .card h2:not(:first-child) { margin-top:20px; }
+  /* Plain-language explanation under a control. Deliberately NOT a tooltip:
+     "Update firmware" read as "push firmware to my boards" to the person whose
+     app this is, and a title= attribute cannot correct a misreading nobody
+     knows they are having. */
+  .note { color:var(--muted); font-size:12px; line-height:1.5; margin:6px 2px 0; }
+  .note b { color:#c9cede; font-weight:600; }
+  select { font:inherit; background:#12131a; color:var(--fg); border:1px solid var(--line);
+           border-radius:6px; padding:4px 6px; margin-left:4px; max-width:170px; }
   details#maint { margin-top:4px; }
   details#maint > summary {
     cursor:pointer; list-style:none; color:var(--muted); font-size:12.5px;
@@ -117,28 +129,40 @@
 <details id="maint">
   <summary id="maint-sum">Updates, firmware and logs</summary>
   <div class="card" style="margin-top:8px">
+    <h2>The tools you are using</h2>
     <div class="bar">
       <span class="grow" id="uiver">checking…</span>
       <button id="update">Update tools</button>
     </div>
-    <div class="bar" style="margin-top:12px">
+    <div class="note">The config tool and the Wizard — the pages themselves. This
+      fetches the current published version. The copies that shipped inside Intellex
+      are always kept, so a bad update can be undone.</div>
+
+    <h2>Firmware, for flashing later</h2>
+    <div class="bar">
       <span class="grow" id="fwver">checking…</span>
-      <button id="updatefw" title="Download every firmware image now, so flashing works later with no internet">Update firmware</button>
+      <button id="updatefw">Download firmware</button>
     </div>
-    <div class="empty" style="padding-left:0">
-      Firmware is cached locally so you can flash with no internet — get everything
-      current here, then disconnect and join the droid's AP.
-    </div>
-    <div class="bar" style="margin-top:10px">
-      <span style="color:var(--muted);font-size:12.5px">Branch</span>
-      <label style="font-size:12.5px">NaviCore
-        <input id="br-nc" size="12" spellcheck="false"></label>
-      <label style="font-size:12.5px">WCB
-        <input id="br-wcb" size="12" spellcheck="false"></label>
+    <div class="note"><b>This does not touch your boards.</b> It downloads firmware
+      files onto this computer so you can flash with no internet later — on a con
+      floor, or on the droid's own WiFi. Flashing a board is done in the tools, on
+      the board you pick.</div>
+
+    <h2>Which firmware build</h2>
+    <div class="bar">
+      <label style="font-size:12.5px">NaviCore <select id="br-nc"></select></label>
+      <input id="br-nc-txt" size="14" spellcheck="false" placeholder="branch name"
+             style="display:none">
+      <label style="font-size:12.5px">WCB <select id="br-wcb"></select></label>
+      <input id="br-wcb-txt" size="14" spellcheck="false" placeholder="branch name"
+             style="display:none">
       <button id="br-save">Set</button>
-      <span class="grow" id="br-note"></span>
+      <span class="grow"></span>
     </div>
-    <div class="bar" style="margin-top:12px">
+    <div class="note" id="br-note"></div>
+
+    <h2>Log</h2>
+    <div class="bar">
       <span class="grow" id="logpath" style="font-size:12px;color:var(--muted);
             overflow:hidden;text-overflow:ellipsis;white-space:nowrap">…</span>
       <button id="showlog">Show log</button>
@@ -328,23 +352,24 @@ async function scanWifi() {
     const { candidates } = await api('/_api/discover');
     const el = $('wifi'); el.innerHTML = '';
 
-    // WHICH NETWORK ARE WE ON? It decides what to re-associate after a drop, and
-    // the address alone cannot tell us: the relay holds 192.168.4.19 whether it is
-    // hosting the AP itself or has joined NaviCore's. Seeing a NaviCore at .1 too
-    // means we are on NaviCore's network; seeing only a doorway means we are on
-    // that box's own AP — and which box it is decides the name, since all three
-    // firmwares derive "<prefix>-<id>" from a DIFFERENT prefix: NaviCore-<id>,
-    // MgmtRelay-<id>, WCB-<alias|number> (WCB_WiFi.cpp wcbWifiDefaultSsid). The
-    // bounce matches on that prefix, so passing the wrong one means it hunts for
-    // a network that does not exist and reports the adapter as unassociated.
-    const sawCore = candidates.some(c => c.isNaviCore);
-    const ssidFor = c => sawCore ? 'NaviCore' : (c.isWcb ? 'WCB' : 'MgmtRelay');
+    // NO ssid IS SENT. It used to be inferred here from what discovery found — a
+    // WCB meant the network was called "WCB" — and that is not what these networks
+    // are called: all three firmwares build "<prefix>-<id>" from a DIFFERENT prefix
+    // (WCB_WiFi.cpp wcbWifiDefaultSsid), so a real bench shows WCB1 and WCB2. The
+    // bounce finds its adapter BY SSID, so the wrong name did not weaken the
+    // self-heal, it disabled it outright:
+    //   re-associating WCB: FAILED (no wireless interface is associated with "WCB")
+    // logged while sitting on a healthy WCB2.
+    //
+    // The page cannot know the answer and should not guess at it. The HOST asks the
+    // OS which adapter holds an address on the droid's subnet and reads its real
+    // SSID (discover.ssid_for_host), at attach time, while that is still knowable.
 
     for (const c of candidates) {
       if (c.isNaviCore) {
         el.appendChild(row(true, `NaviCore at ${c.host}`,
           `${c.version} · direct · via ${c.via}`,
-          () => connect({kind:'ws', host:c.host, role:'navicore', ssid:'NaviCore'}, c.host)));
+          () => connect({kind:'ws', host:c.host, role:'navicore'}, c.host)));
       } else if (c.isMesh) {
         // A doorway to the mesh — either a MgmtRelay or a WCB hosting its own AP.
         // Same row either way, because the decision the user is making is the
@@ -371,7 +396,6 @@ async function scanWifi() {
           // mesh boards through it. Discovery already read it from the WDP
           // self-row, so pass it on rather than making the page rediscover it.
           () => connect({kind:'ws', host:c.host, role: isWcb ? 'wcb' : 'relay',
-                         ssid: ssidFor(c),
                          relayId: c.relayId ? parseInt(c.relayId) : undefined}, c.host)));
       } else if (c.routable) {
         // The adapter is fine and something IS there — very likely a board
@@ -595,17 +619,29 @@ checkLog();
 // build is a thing you should only ever do on purpose, and a setting that
 // persists silently is exactly how you end up flashing one months later without
 // remembering you set it.
+let _brNote = '';
+// A colon is illegal in a git ref AND rejected by settings.py's whitelist,
+// so this can never collide with a real branch name.
+const OTHER = ':other:';
+
 async function checkBranches() {
   try {
     const b = await api('/_api/branches');
-    $('br-nc').value = b.navicore || 'main';
-    $('br-wcb').value = b.wcb || 'main';
+    await fillBranchOptions(b);
     const off = [];
     if ((b.navicore || 'main') !== 'main') off.push('NaviCore → ' + b.navicore);
     if ((b.wcb || 'main') !== 'main') off.push('WCB → ' + b.wcb);
-    $('br-note').innerHTML = off.length
-      ? '<span class="stale">not on main: ' + off.join(', ') + '</span>'
-      : '';
+    // The warning is the important half; the explanation is for whoever has
+    // never set this and is wondering what it is for.
+    $('br-note').innerHTML =
+      (off.length
+        ? '<span class="stale">Not on main: ' + off.join(', ') +
+          '. Branch builds are for testing — put this back to <b>main</b> for '
+          + 'released firmware.</span><br>'
+        : '') +
+      'Which build the firmware above is downloaded from. It also picks the matching '
+      + 'tool, so a branch that adds a setting has a UI that can show it. '
+      + (_brNote || '');
     _maint.branch = off.length ? off.join(', ') : '';
     paintMaint();
   } catch (e) {
@@ -615,20 +651,65 @@ async function checkBranches() {
 }
 checkBranches();
 
+// Free text became a dropdown because a branch is something you PICK, not
+// something you should have to remember and retype exactly. The text box is still
+// there for a branch too new to be in the list -- reachable through "Other...",
+// which is the only way to reach it and therefore the only thing that has to be
+// typed correctly.
+async function fillBranchOptions(current) {
+  let list = { navicore: [], wcb: [], cached: true, error: '' };
+  try { list = await api('/_api/branch-list'); } catch (e) { /* fall through */ }
+  _brNote = list.error ? '<br><span class="stale">Branch list: ' + list.error + '</span>' : '';
+
+  for (const [product, id] of [['navicore', 'br-nc'], ['wcb', 'br-wcb']]) {
+    const sel = $(id), txt = $(id + '-txt');
+    const want = (current && current[product]) || 'main';
+    const names = list[product] && list[product].length ? list[product] : [want, 'main'];
+    // Deduplicated and with the CURRENT value guaranteed present -- a select that
+    // cannot render its own value silently shows something else and the next Set
+    // would change a setting nobody touched.
+    const seen = new Set();
+    sel.innerHTML = '';
+    for (const n of names) {
+      if (seen.has(n)) continue;
+      seen.add(n);
+      const o = document.createElement('option');
+      o.value = n; o.textContent = n + (n === 'main' ? ' (released)' : '');
+      sel.appendChild(o);
+    }
+    const other = document.createElement('option');
+    other.value = OTHER; other.textContent = 'Other…';
+    sel.appendChild(other);
+    sel.value = seen.has(want) ? want : OTHER;
+    txt.value = want;
+    txt.style.display = sel.value === OTHER ? '' : 'none';
+    sel.onchange = () => {
+      txt.style.display = sel.value === OTHER ? '' : 'none';
+      if (sel.value === OTHER) txt.focus();
+    };
+  }
+}
+
+// What Set should send: the typed value only when "Other…" is actually chosen.
+function branchValue(id) {
+  const sel = $(id);
+  return sel.value === OTHER ? $(id + '-txt').value.trim() : sel.value;
+}
+
 $('br-save').onclick = async () => {
   $('br-save').disabled = true;
   try {
     for (const [product, id] of [['navicore', 'br-nc'], ['wcb', 'br-wcb']]) {
       const r = await api('/_api/branch', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ product, branch: $(id).value.trim() }),
+        body: JSON.stringify({ product, branch: branchValue(id) }),
       });
       if (!r.ok) { setStatus(r.error || 'could not set the branch', true); break; }
     }
     // The cache still holds whatever was fetched before, and its filenames carry
     // the old branch — so say the quiet part out loud rather than letting an
     // offline flash quietly use the previous branch's images.
-    setStatus('branch set — press Update firmware to cache the new branch build');
+    setStatus('branch set — press Download firmware to fetch that build');
   } catch (e) { setStatus('could not set the branch: ' + e.message, true); }
   $('br-save').disabled = false;
   checkBranches();

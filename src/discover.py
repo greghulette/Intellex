@@ -458,6 +458,66 @@ def _ssid_matches(current: str, want: str) -> bool:
     return bool(current) and (current == want or current.startswith(want + "-"))
 
 
+def ssid_for_host(host: str) -> Optional[str]:
+    """The SSID of the wireless adapter that actually carries traffic to `host`.
+
+    WHY THIS EXISTS: the SSID used to be GUESSED from what the device turned out
+    to be -- a WCB meant the network was called "WCB". It is not. The WCB firmware
+    names its AP after the board, so the real networks are "WCB1", "WCB2", and the
+    guess matched nothing. wifi_bounce() finds its adapter BY SSID, so a wrong name
+    means the self-heal can never fire at all: observed as
+    `re-associating WCB: FAILED (no wireless interface is associated with "WCB")`
+    while sitting on a perfectly healthy "WCB2".
+
+    So ask the OS instead of predicting. Called while the link is UP -- that is the
+    one moment the adapter is unambiguous, because it is the one holding an address
+    on the droid's subnet. The answer is then remembered for later, when the lease
+    may be gone and this question would no longer have an answer.
+
+    None means "could not tell", and every caller must treat that as "do not
+    bounce" rather than falling back to a guess. A guess is what this replaces.
+    """
+    if sys.platform != "win32":
+        return None                  # macOS bounce takes a different path entirely
+    import re
+    import subprocess
+    import proc
+
+    want_prefix = host.rsplit(".", 1)[0]
+    try:
+        ifaces = proc.run(["netsh", "wlan", "show", "interfaces"],
+                          capture_output=True, timeout=10, text=True, check=False)
+        addrs = proc.run(["netsh", "interface", "ip", "show", "addresses"],
+                         capture_output=True, timeout=10, text=True, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    # name -> ssid, for wireless adapters only
+    wlan, current = {}, None
+    for line in (ifaces.stdout or "").splitlines():
+        m = re.match(r"\s*Name\s*:\s*(.+?)\s*$", line)
+        if m:
+            current = m.group(1)
+            continue
+        m = re.match(r"\s*SSID\s*:\s*(.+?)\s*$", line)
+        if m and current:
+            wlan[current] = m.group(1)
+            current = None
+
+    # name -> the address it holds, from the separate `ip show addresses` report
+    on_subnet, iface = None, None
+    for line in (addrs.stdout or "").splitlines():
+        m = re.search(r'interface "(.+?)"', line)
+        if m:
+            iface = m.group(1)
+            continue
+        m = re.search(r"IP Address:\s*([0-9.]+)", line)
+        if m and iface and m.group(1).rsplit(".", 1)[0] == want_prefix:
+            on_subnet = iface
+
+    return wlan.get(on_subnet) if on_subnet else None
+
+
 def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
     """Disconnect and reconnect the WLAN profile for `ssid`.
 
