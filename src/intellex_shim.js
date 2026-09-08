@@ -412,6 +412,53 @@
     }
   }
 
+  // ── The tools' GitHub firmware calls, answered locally ────────────────────
+  // Intercepting the flash BUTTONS was not enough. Both tools also fetch firmware
+  // FROM INSIDE THE PAGE, and that is the only path OTA has at all:
+  //
+  //   index.html:17441  Update over USB (OTA)   -> fetchFirmwareImages()
+  //   index.html:17697  Update over WCB (OTA)   -> fetchFirmwareImages()
+  //   Wizard app.js:167 / flasher.js:117        -> the same REST call
+  //
+  // OTA over a relay IS the con-floor case -- on the droid's AP, no route to
+  // GitHub, firmware cached, the relay right there -- and the page could not
+  // reach the one copy of the image already on the machine.
+  //
+  // THE REQUEST IS REWRITTEN, NOT THE FUNCTIONS. Swapping fetchFirmwareImages
+  // would fix one tool and leave the other needing its own swap, against function
+  // names their own repos are free to change. Both tools agree instead on the
+  // GitHub REST shape, which is far more stable, so that is what gets answered.
+  // The host serves it from the cache when offline and from GitHub when not --
+  // storing it on the way past, so merely opening the Firmware tab fills the
+  // cache. See src/ghproxy.py.
+  //
+  // The reply's download_url values already point back at the host, so the page's
+  // own follow-up fetch for the bytes needs no rewriting here.
+  const GH_CONTENTS =
+    /^https:\/\/api\.github\.com\/repos\/([^/]+)\/([^/]+)\/contents\/([^?]+)(?:\?(.*))?$/;
+
+  (function proxyGithubFirmware() {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      try {
+        const url = typeof input === 'string' ? input
+                  : (input && input.url) ? input.url : '';
+        const m = GH_CONTENTS.exec(url);
+        if (m) {
+          const owner = m[1], repo = m[2], path = m[3];
+          const ref = new URLSearchParams(m[4] || '').get('ref') || 'main';
+          const q = new URLSearchParams({ owner: owner, repo: repo,
+                                          path: decodeURIComponent(path), ref: ref });
+          // Only the URL is swapped; the caller's init (headers, signal) rides
+          // along untouched, so an abort or a timeout still behaves.
+          return nativeFetch('/_api/gh/contents?' + q.toString(), init);
+        }
+      } catch (_) { /* fall through to the real fetch */ }
+      return nativeFetch(input, init);
+    };
+    console.info('[Intellex] firmware listings now come from the host');
+  })();
+
   // ── Flashing: hand it to the host ─────────────────────────────────────────
   // esptool-js genuinely CANNOT work through this shim. It drives a real port:
   // toggling DTR/RTS in a timing-sensitive reset dance to enter the bootloader,

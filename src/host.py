@@ -9,6 +9,8 @@
                     ├─ GET /_shell       → the window that holds one or both
                     ├─ GET /_assets/*    → the app's own icon and mark
                     ├─ GET /wiki/*       → the downloaded wikis, rendered
+                    ├─ GET /_api/gh/*    → the tools' GitHub firmware calls,
+                    │                      answered from the local cache
   browser/webview ──┼─ GET /_api/*       → control (list ports, attach, detach)
                     └─ WS  /_link        → the byte pipe (one per open page)
                                               │
@@ -63,6 +65,7 @@ import proc                                              # noqa: E402
 import applog                                            # noqa: E402
 import version                                           # noqa: E402
 import branchlist
+import ghproxy
 import wikidocs
 import settings                                          # noqa: E402
 import flash                                             # noqa: E402
@@ -730,6 +733,39 @@ async def wiki_page(req: web.Request) -> web.StreamResponse:
             "new, or a link to a page that was never written.</p>")
     title, body = rendered
     return _wiki_shell(product, title, wikidocs.render_sidebar(product), body)
+
+
+async def api_gh_contents(req: web.Request) -> web.Response:
+    """The tools' GitHub firmware listing, answered locally. See src/ghproxy.py.
+
+    Served with the Content-Type GitHub uses, because the page calls .json() on it.
+    """
+    q = req.query
+    try:
+        body, cached = await asyncio.to_thread(
+            ghproxy.contents, q.get("owner", ""), q.get("repo", ""),
+            q.get("path", ""), q.get("ref", "main"))
+    except ghproxy.ProxyError as e:
+        # 502, not 500: the page's own error path prints the status, and this is
+        # a failure to reach an upstream rather than a bug in the host.
+        return web.json_response({"message": str(e)}, status=502)
+    return web.Response(body=body, content_type="application/json",
+                        headers={"Cache-Control": "no-store",
+                                 "X-Intellex-Source": "cache" if cached else "github"})
+
+
+async def api_gh_raw(req: web.Request) -> web.Response:
+    """One firmware file, from GitHub or the cache."""
+    q = req.query
+    try:
+        data, cached = await asyncio.to_thread(
+            ghproxy.raw, q.get("owner", ""), q.get("repo", ""),
+            q.get("ref", "main"), q.get("name", ""))
+    except ghproxy.ProxyError as e:
+        return web.json_response({"message": str(e)}, status=502)
+    return web.Response(body=data, content_type="application/octet-stream",
+                        headers={"Cache-Control": "no-store",
+                                 "X-Intellex-Source": "cache" if cached else "github"})
 
 
 async def api_wiki(_req: web.Request) -> web.Response:
@@ -1610,6 +1646,8 @@ def build_app() -> web.Application:
         web.post("/_api/flash", api_flash),
         web.post("/_api/flash-wcb", api_flash_wcb),
         web.get("/_api/flash-status", api_flash_status),
+        web.get("/_api/gh/contents", api_gh_contents),
+        web.get("/_api/gh/raw", api_gh_raw),
         web.get("/_api/wiki", api_wiki),
         web.post("/_api/update-wiki", api_update_wiki),
         web.get("/wiki/", wiki_index),

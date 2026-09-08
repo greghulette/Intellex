@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#12131a; --panel:#161822; --sunk:#171924; --line:#23252f; --line-2:#2c2f3d;
+    --fg:#e8e8ea; --muted:#8b8fa3; --dim:#7b8091; --strong:#c3c7d4;
+    --accent:#4aa6ef; --on-accent:#0d1117; --sel-bg:#182437; --sel-line:#35618f;
+    --btn:#1e2130; --chip:#2b3346; --wifi-bg:#1d3a5c; --wifi-fg:#8fc4f5;
+    --usb-bg:#25303f; --usb-fg:#9fb0c4; --dash:#131521;
+    --ok:#4ec9a0; --warn:#e0a458; --idle:#8b8fa3;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg:#f2f4f8; --panel:#ffffff; --sunk:#ffffff; --line:#e2e6ee; --line-2:#d3d9e4;
+    --fg:#161a22; --muted:#5c6572; --dim:#69707e; --strong:#2b313c;
+    --accent:#1a6fbd; --on-accent:#ffffff; --sel-bg:#e8f1fb; --sel-line:#8dbde8;
+    --btn:#f4f6fa; --chip:#dde4ef; --wifi-bg:#dbe9f8; --wifi-fg:#1a5b96;
+    --usb-bg:#e6e9ef; --usb-fg:#4c5563; --dash:#f7f9fc;
+    --ok:#1c8f68; --warn:#a9700f; --idle:#8d95a2;
+  }
+  body { margin:0; background:var(--bg); }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { opacity:.8; }
+  button { font:inherit; cursor:pointer; }
+</style>
+</helmet>
+
+<div style="min-height:100vh; display:flex; flex-direction:column; background:var(--bg); color:var(--fg); font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:14px;">
+
+  <div style="display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap;">
+    <img src="{{ markSrc }}" alt="" style="width:34px; height:34px; object-fit:contain; flex:none;">
+    <div style="display:flex; flex-direction:column; gap:3px;">
+      <div style="font-size:18px; font-weight:600; letter-spacing:.1em; line-height:1;">INTEL<span style="color:var(--accent);">LEX</span></div>
+      <div style="font-family:'IBM Plex Mono',monospace; font-size:9.5px; letter-spacing:.2em; color:var(--muted);">NAVICORE / WCB CONFIGURATION TOOL</div>
+    </div>
+    <div style="margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:7px; padding:5px 11px; border:1px solid var(--line-2); border-radius:999px; background:var(--bg);">
+        <span style="width:7px; height:7px; border-radius:50%; background:var(--warn);"></span>
+        <span style="font-size:12px; color:var(--strong);">2 things need attention</span>
+      </div>
+      <button style="font-size:12.5px; background:var(--btn); color:var(--strong); border:1px solid var(--line-2); border-radius:7px; padding:6px 12px;">Docs</button>
+      <button style="font-size:12.5px; background:var(--btn); color:var(--strong); border:1px solid var(--line-2); border-radius:7px; padding:6px 12px;">Log</button>
+      <button onClick="{{ toggleTheme }}" title="{{ themeTitle }}" style="font-size:12.5px; background:var(--btn); color:var(--strong); border:1px solid var(--line-2); border-radius:7px; padding:6px 12px; min-width:78px;">{{ themeLabel }}</button>
+      <span style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--muted); margin-left:2px;">v0.4.2</span>
+    </div>
+  </div>
+
+  <div style="flex:1; display:grid; grid-template-columns:minmax(0,1fr) 340px; min-height:0;">
+
+    <div style="display:flex; flex-direction:column; min-width:0; border-right:1px solid var(--line);">
+      <div style="display:flex; align-items:center; gap:12px; padding:16px 22px 12px; flex-wrap:wrap;">
+        <div style="font-size:15px; font-weight:600;">Connect to</div>
+        <div style="display:flex; gap:2px; padding:2px; background:var(--sunk); border:1px solid var(--line-2); border-radius:8px;">
+          <button onClick="{{ showAll }}" style="font-size:12.5px; padding:4px 12px; border:none; border-radius:6px; background:{{ tabAllBg }}; color:{{ tabAllFg }};">All {{ countAll }}</button>
+          <button onClick="{{ showWifi }}" style="font-size:12.5px; padding:4px 12px; border:none; border-radius:6px; background:{{ tabWifiBg }}; color:{{ tabWifiFg }};">WiFi {{ countWifi }}</button>
+          <button onClick="{{ showUsb }}" style="font-size:12.5px; padding:4px 12px; border:none; border-radius:6px; background:{{ tabUsbBg }}; color:{{ tabUsbFg }};">USB {{ countUsb }}</button>
+        </div>
+        <div style="margin-left:auto; display:flex; align-items:center; gap:10px;">
+          <span style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--muted);">{{ scanState }}</span>
+          <button onClick="{{ rescan }}" style="font-size:12.5px; background:var(--btn); color:var(--strong); border:1px solid var(--line-2); border-radius:7px; padding:6px 12px;">Rescan</button>
+        </div>
+      </div>
+
+      <div style="flex:1; overflow:auto; padding:0 16px 16px; display:flex; flex-direction:column; gap:8px;">
+        <sc-for list="{{ devices }}" as="d" hint-placeholder-count="4">
+          <div onClick="{{ d.select }}" style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-radius:9px; border:1px solid {{ d.line }}; background:{{ d.bg }};">
+            <span style="width:9px; height:9px; border-radius:50%; background:{{ d.dot }}; flex:none;"></span>
+            <div style="flex:1; min-width:0;">
+              <div style="font-size:14.5px; font-weight:600;">{{ d.title }}</div>
+              <div style="font-size:12.5px; color:var(--muted);">{{ d.sub }}</div>
+            </div>
+            <span style="font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.12em; padding:3px 8px; border-radius:4px; background:{{ d.tagBg }}; color:{{ d.tagFg }};">{{ d.tag }}</span>
+            <sc-if value="{{ d.isSelected }}" hint-placeholder-val="{{ true }}">
+              <span style="font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.12em; color:var(--accent);">SELECTED</span>
+            </sc-if>
+          </div>
+        </sc-for>
+
+        <div style="margin-top:auto; display:flex; align-items:center; gap:10px; padding:12px 16px; border-radius:9px; border:1px dashed var(--line-2); background:var(--dash);">
+          <span style="font-size:12.5px; color:var(--muted); line-height:1.5;">No board handy? The tool opens on its own — panels, saved configs and editing all work without one.</span>
+          <button style="font-size:12.5px; margin-left:auto; white-space:nowrap; background:var(--btn); color:var(--strong); border:1px solid var(--line-2); border-radius:7px; padding:6px 12px;">Open the tool anyway</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex; flex-direction:column; min-width:0; background:var(--panel);">
+      <div style="padding:16px 20px 14px; border-bottom:1px solid var(--line);">
+        <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.16em; color:var(--dim); margin-bottom:8px;">SELECTED</div>
+        <div style="font-size:15px; font-weight:600;">{{ selTitle }}</div>
+        <div style="font-size:12.5px; color:var(--muted); margin-top:3px;">{{ selSub }}</div>
+      </div>
+
+      <div style="padding:16px 20px; display:flex; flex-direction:column; gap:8px; border-bottom:1px solid var(--line);">
+        <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.16em; color:var(--dim);">OPEN WITH</div>
+        <sc-for list="{{ views }}" as="v" hint-placeholder-count="4">
+          <div onClick="{{ v.pick }}" style="display:flex; align-items:flex-start; gap:10px; padding:9px 11px; border-radius:8px; border:1px solid {{ v.line }}; background:{{ v.bg }};">
+            <span style="width:14px; height:14px; border-radius:50%; border:{{ v.ring }}; background:var(--bg); flex:none; margin-top:2px;"></span>
+            <span style="display:flex; flex-direction:column; gap:2px;">
+              <span style="font-size:13.5px; font-weight:600;">{{ v.label }}</span>
+              <span style="font-size:12px; color:var(--muted); line-height:1.45;">{{ v.note }}</span>
+            </span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="padding:16px 20px; display:flex; flex-direction:column; gap:10px;">
+        <button style="font-size:14.5px; font-weight:600; background:var(--accent); color:var(--on-accent); border:1px solid var(--accent); border-radius:8px; padding:12px 16px;">Connect and open</button>
+        <div style="font-size:12px; color:var(--muted); line-height:1.5;">{{ actionNote }}</div>
+      </div>
+
+      <div style="margin-top:auto; border-top:1px solid var(--line); padding:14px 20px 16px; display:flex; flex-direction:column; gap:9px;">
+        <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.16em; color:var(--dim);">MAINTENANCE</div>
+        <div style="display:flex; align-items:center; gap:9px;">
+          <span style="width:6px; height:6px; border-radius:50%; background:var(--warn); flex:none;"></span>
+          <span style="font-size:12.5px; color:var(--strong); flex:1;">Config tool update available</span>
+          <a href="#" style="font-size:12.5px;">Update</a>
+        </div>
+        <div style="display:flex; align-items:center; gap:9px;">
+          <span style="width:6px; height:6px; border-radius:50%; background:var(--warn); flex:none;"></span>
+          <span style="font-size:12.5px; color:var(--strong); flex:1;">WCB firmware not cached</span>
+          <a href="#" style="font-size:12.5px;">Download</a>
+        </div>
+        <div style="display:flex; align-items:center; gap:9px;">
+          <span style="width:6px; height:6px; border-radius:50%; background:var(--ok); flex:none;"></span>
+          <span style="font-size:12.5px; color:var(--muted); flex:1;">Branches on main · docs stored</span>
+          <a href="#" style="font-size:12.5px;">More…</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{}">
+const DEVICES = [
+  { id:'nc',   kind:'wifi', up:true,  title:'NaviCore at 192.168.4.1', sub:'v0.2.0_20250614 · direct · via wlan0',
+    selTitle:'NaviCore at 192.168.4.1', selSub:'WiFi · direct · v0.2.0_20250614', note:'Opens the NaviCore tool on 192.168.4.1.' },
+  { id:'wcb',  kind:'wifi', up:true,  title:'Vader WCB at 192.168.4.7', sub:'a WCB, and the way to the mesh · #21 · sees Dome WCB v2.3, Body WCB v2.3',
+    selTitle:'Vader WCB at 192.168.4.7', selSub:'WiFi · mesh doorway · WCB #21', note:'Opens on 192.168.4.7, routing the mesh boards through it.' },
+  { id:'com5', kind:'usb',  up:true,  title:'COM5', sub:'NaviCore v0.2.0_20250614',
+    selTitle:'COM5', selSub:'USB · Espressif native USB · NaviCore v0.2.0_20250614', note:'Opens the NaviCore tool on COM5.' },
+  { id:'com7', kind:'usb',  up:false, title:'COM7', sub:'CP210x bridge — did not answer as a NaviCore',
+    selTitle:'COM7', selSub:'USB · CP210x bridge · did not answer as a NaviCore', note:'Opens on COM7. It did not answer as a NaviCore, so it may not connect.' },
+];
+
+const VIEWS = [
+  { id:'nc',    label:'NaviCore tool',    note:'The droid config tool, full window.' },
+  { id:'wcb',   label:'WCB',              note:'The WCB config tool, full window.' },
+  { id:'split', label:'Side by side',     note:'Both tools in one window, with a draggable divider.' },
+  { id:'sep',   label:'Separate windows', note:'The config tool here, the Wizard in its own window.' },
+];
+
+class Component extends DCLogic {
+  state = { theme:'dark', filter:'all', sel:'nc', view:'nc', scanning:true };
+
+  componentDidMount() {
+    let t = null;
+    try { t = localStorage.getItem('intellex_theme'); } catch (e) {}
+    if (!t && window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches) t = 'light';
+    this.applyTheme(t === 'light' ? 'light' : 'dark');
+  }
+
+  applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    try { localStorage.setItem('intellex_theme', theme); } catch (e) {}
+    this.setState({ theme });
+  }
+
+  renderVals() {
+    const { theme, filter, sel, view, scanning } = this.state;
+    const light = theme === 'light';
+    const list = DEVICES.filter(d => filter === 'all' || d.kind === filter);
+    const selected = DEVICES.find(d => d.id === sel) || DEVICES[0];
+    const tab = on => ({ bg: on ? 'var(--chip)' : 'transparent', fg: on ? 'var(--fg)' : 'var(--muted)' });
+    const t = { all: tab(filter === 'all'), wifi: tab(filter === 'wifi'), usb: tab(filter === 'usb') };
+
+    return {
+      markSrc: light ? 'assets/intellex/icon-128-light.png' : 'assets/intellex/icon-48.png',
+      themeLabel: light ? 'Dark mode' : 'Light mode',
+      themeTitle: light ? 'Switch to the dark theme' : 'Switch to the light theme',
+      toggleTheme: () => this.applyTheme(light ? 'dark' : 'light'),
+
+      countAll: DEVICES.length,
+      countWifi: DEVICES.filter(d => d.kind === 'wifi').length,
+      countUsb: DEVICES.filter(d => d.kind === 'usb').length,
+      tabAllBg: t.all.bg, tabAllFg: t.all.fg,
+      tabWifiBg: t.wifi.bg, tabWifiFg: t.wifi.fg,
+      tabUsbBg: t.usb.bg, tabUsbFg: t.usb.fg,
+      showAll: () => this.setState({ filter:'all' }),
+      showWifi: () => this.setState({ filter:'wifi' }),
+      showUsb: () => this.setState({ filter:'usb' }),
+
+      scanState: scanning ? 'watching…' : 'scan complete',
+      rescan: () => {
+        this.setState({ scanning:true });
+        setTimeout(() => this.setState({ scanning:false }), 1600);
+      },
+
+      devices: list.map(d => ({
+        ...d,
+        isSelected: d.id === sel,
+        dot: d.up ? 'var(--ok)' : 'var(--idle)',
+        line: d.id === sel ? 'var(--sel-line)' : 'var(--line-2)',
+        bg: d.id === sel ? 'var(--sel-bg)' : 'var(--sunk)',
+        tag: d.kind === 'wifi' ? 'WIFI' : 'USB',
+        tagBg: d.kind === 'wifi' ? 'var(--wifi-bg)' : 'var(--usb-bg)',
+        tagFg: d.kind === 'wifi' ? 'var(--wifi-fg)' : 'var(--usb-fg)',
+        select: () => this.setState({ sel: d.id }),
+      })),
+
+      selTitle: selected.selTitle,
+      selSub: selected.selSub,
+      actionNote: selected.note,
+
+      views: VIEWS.map(v => ({
+        ...v,
+        line: v.id === view ? 'var(--sel-line)' : 'transparent',
+        bg: v.id === view ? 'var(--sel-bg)' : 'transparent',
+        ring: v.id === view ? '4px solid var(--accent)' : '1.5px solid var(--line-2)',
+        pick: () => this.setState({ view: v.id }),
+      })),
+    };
+  }
+}
+
+</script>
+</body>
+</html>

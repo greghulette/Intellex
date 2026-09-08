@@ -224,6 +224,16 @@ of use is broken by design.
   1 MB**: fetched whole the WCB wiki alone is 123 MB of assembly photographs,
   against 10.4 MB for all three wikis with the cap, and a skipped image renders
   as a link to the online copy rather than a broken picture.
+- **THE PAGE'S OWN GitHub CALLS ARE ANSWERED LOCALLY TOO** (`src/ghproxy.py`,
+  `/_api/gh/*`, redirected by the shim's `fetch` patch). Intercepting the flash
+  buttons was not enough: **both OTA paths fetch the image inside the page**
+  (`index.html` ~17441 and ~17697 → `fetchFirmwareImages()` → `api.github.com`),
+  and OTA over a relay is the whole point of a con floor -- no cable, board in
+  the droid. The request is rewritten rather than the functions, because both
+  tools agree on the GitHub REST shape and neither agrees on a function name.
+  `download_url` comes back pointing at the host, so the follow-up byte fetch
+  lands here too. Only the two firmware repos are served: this process can reach
+  the internet and the page cannot.
 - **The GitHub file listing is cached too.** Caching only the images is not enough: both
   flashers call the Contents API *first* to discover what exists, and that call fails
   before any download is attempted — so the cache could never be reached.
@@ -388,6 +398,12 @@ python tools/smoke_probe_identity.py
 # REAL source text out of intellex_shim.js, so it cannot drift from what ships.
 # Run it after touching the mesh routing or the shim's connect path.
 node tools/smoke_mesh_route.js
+
+# Can the PAGE get firmware with no internet? OTA depends on it -- both OTA
+# buttons fetch the image inside the page, and OTA over a relay is the only
+# way to reprogram a board on a con floor. Forces GitHub unreachable and
+# checks the cache answers. Run after touching ghproxy.py or the shim's fetch.
+python tools/smoke_ghproxy.py
 
 # The docs viewer, end to end: fetch nothing, render everything already on
 # disk, and prove no page is left pointing at a relative image or an
