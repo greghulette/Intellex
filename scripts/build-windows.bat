@@ -19,6 +19,13 @@ if not exist ".venv\Scripts\python.exe" (
     .venv\Scripts\python.exe -m pip install -q -r requirements.txt || goto :fail
 )
 
+REM ALWAYS, not only when the venv is created. requirements.txt gains entries --
+REM markdown-it-py arrived with the offline docs -- and a venv made before that
+REM would otherwise build an app that dies the first time someone opens the docs.
+REM pip is a no-op when everything is already satisfied.
+.venv\Scripts\python.exe -m pip install -q -r requirements.txt
+if errorlevel 1 echo   (dependency install failed - continuing with what is installed)
+
 echo.
 echo === Fetching the bundled tools ===
 REM Not fatal: offline you can still build with whatever is already bundled.
@@ -32,6 +39,12 @@ if not exist "src\webui\index.html" (
     echo          connection to bundle it.
     echo.
 )
+
+echo.
+echo === Downloading the wikis (so the docs work offline) ===
+REM Not fatal: the app still runs, it just opens the docs viewer with nothing in it.
+.venv\Scripts\python.exe tools\fetch_wiki.py --wiki all
+if errorlevel 1 echo   (docs fetch incomplete - see above)
 
 echo.
 echo === Caching firmware (so a fresh install can flash offline) ===

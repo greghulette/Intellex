@@ -20,6 +20,14 @@ if [ ! -x ".venv/bin/python" ]; then
     .venv/bin/python -m pip install -q -r requirements.txt
 fi
 
+# ALWAYS, not only when the venv is created. requirements.txt gains entries --
+# markdown-it-py arrived with the offline docs -- and a venv made before that
+# would otherwise build an app that dies the first time someone opens the docs.
+# pip is a no-op when everything is already satisfied.
+.venv/bin/python -m pip install -q -r requirements.txt || \
+    echo "  (dependency install failed - continuing with what is installed)"
+
+
 echo
 echo "=== Fetching the bundled tools ==="
 # Not fatal: offline, build with whatever is already bundled.
@@ -32,6 +40,11 @@ if [ ! -f "src/webui/index.html" ]; then
     echo "         until its Update button is used."
     echo
 fi
+
+echo
+echo "=== Downloading the wikis (so the docs work offline) ==="
+# Not fatal: the app still runs, it just opens the docs viewer with nothing in it.
+.venv/bin/python tools/fetch_wiki.py --wiki all || echo "  (docs fetch incomplete - see above)"
 
 echo
 echo "=== Caching firmware (so a fresh install can flash offline) ==="
