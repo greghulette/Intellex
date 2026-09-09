@@ -39,9 +39,26 @@ import settings
 
 # Cache the answer for a short while. A single firmware set is ~4 files plus a
 # listing, and re-probing before each one turns one 3 s check into five.
-_reach_at = 0.0
-_reach_ok = False
+#
+# KEYED BY HOST. It used to be two module globals with no key at all, while the
+# callers probe THREE different hosts -- api.github.com (flashing, the proxy, the
+# branch list), greghulette.github.io (the tool update) and github.com (the docs).
+# So one failing probe answered for all of them for the next 20 s, and during a
+# build the fetchers run back to back: one early failure cascaded into "no tools,
+# no docs, no firmware" with three different messages and one real cause.
+_reach: "dict[str, tuple[float, bool, str]]" = {}
 REACH_TTL_S = 20.0
+
+
+def unreachable_reason(host: str = "api.github.com") -> str:
+    """Why the last probe of `host` said no, for a message that can be acted on.
+
+    "GitHub is not reachable" is true and useless: it cannot tell a laptop with no
+    DNS from a droid's AP from a firewall. Empty string means the last probe
+    succeeded, or none has run.
+    """
+    rec = _reach.get(host)
+    return "" if not rec or rec[1] else rec[2]
 
 
 def reachable(host: str = "api.github.com", timeout: float = 3.0,
@@ -74,10 +91,10 @@ def reachable(host: str = "api.github.com", timeout: float = 3.0,
     IPv4 -- so one dead address consumed the entire budget. macOS prefers IPv6
     more eagerly than Windows, which is why this showed up there first.
     """
-    global _reach_at, _reach_ok
     now = time.monotonic()
-    if now - _reach_at < REACH_TTL_S:
-        return _reach_ok
+    rec = _reach.get(host)
+    if rec and now - rec[0] < REACH_TTL_S:
+        return rec[1]
 
     import socket
     import threading
@@ -86,14 +103,21 @@ def reachable(host: str = "api.github.com", timeout: float = 3.0,
     # it finishes late nobody is listening; the process can still exit, and the
     # next call re-probes.
     done: "list[bool]" = []
+    why: "list[str]" = []
 
     def probe() -> None:
         try:
             infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-        except OSError:
+        except OSError as e:
             # A DNS error is an answer, and a fast one: no resolver, no network.
+            why.append(f"DNS lookup failed: {e}")
             done.append(False)
             return
+        if not infos:
+            why.append("DNS returned no addresses")
+            done.append(False)
+            return
+        errs = []
         for family, socktype, proto, _canon, addr in infos:
             try:
                 with socket.socket(family, socktype, proto) as sk:
@@ -101,16 +125,26 @@ def reachable(host: str = "api.github.com", timeout: float = 3.0,
                     sk.connect(addr)
                     done.append(True)
                     return
-            except OSError:
+            except OSError as e:
+                errs.append(f"{addr[0]}: {e}")
                 continue        # dead address family, or refused -- try the next
+        why.append("no address accepted a connection (" + "; ".join(errs[:3]) + ")")
         done.append(False)
 
     t = threading.Thread(target=probe, daemon=True)
     t.start()
     t.join(budget)
-    _reach_ok = bool(done and done[0])
-    _reach_at = now
-    return _reach_ok
+    ok = bool(done and done[0])
+    if ok:
+        reason = ""
+    elif why:
+        reason = why[0]
+    else:
+        # The thread is still running: DNS or connect outlasted the budget. That
+        # is what a droid's AP looks like -- a default route that goes nowhere.
+        reason = f"no answer within {budget:.0f}s (DNS or connect is hanging)"
+    _reach[host] = (now, ok, reason)
+    return ok
 
 
 def no_network(e: BaseException) -> bool:
@@ -231,7 +265,7 @@ def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dic
     # minutes before reaching a cache that was ready all along.
     try:
         if not reachable():
-            raise FlashError("GitHub is not reachable")
+            raise FlashError("GitHub is not reachable — " + (unreachable_reason() or "no reason recorded"))
         raw = _get(url, log)
         fwcache.store_listing(fwcache.NAVICORE, branch, raw)
     except FlashError:
@@ -288,7 +322,7 @@ def fetch_images(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dict
         log(f"Found: {name}")
         try:
             if not reachable():
-                raise FlashError("GitHub is not reachable")
+                raise FlashError("GitHub is not reachable — " + (unreachable_reason() or "no reason recorded"))
             data = _get(entry["download_url"], log)
         except FlashError:
             cached = fwcache.load(fwcache.NAVICORE, branch, name)

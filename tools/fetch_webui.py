@@ -51,7 +51,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import certs                                                        # noqa: E402
 import paths                                                        # noqa: E402
 import settings                                                     # noqa: E402
-from flash import no_network, reachable                             # noqa: E402
+from flash import no_network, reachable, unreachable_reason        # noqa: E402
 
 # ── Per-branch tool previews ────────────────────────────────────────────────
 # CI publishes the tools per branch to gh-pages under /dev/<branch>/, so a branch
@@ -450,6 +450,7 @@ def main() -> int:
     # tool is already on disk and simply stays as it is.
     if not reachable("greghulette.github.io"):
         print("github.io is not reachable - the bundled tools are unchanged.")
+        print("  reason:", unreachable_reason("greghulette.github.io") or "unknown")
         print("  (on a droid's AP there is no route out; reconnect to update)")
         return 1
 

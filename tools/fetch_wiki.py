@@ -51,7 +51,7 @@ import urllib.request
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import paths                                                        # noqa: E402
-from flash import no_network, reachable                             # noqa: E402
+from flash import no_network, reachable, unreachable_reason        # noqa: E402
 
 # owner/repo per product. The wiki lives at <repo>.wiki, but every URL below
 # spells that out itself, because the three forms differ in an unobvious way.
@@ -256,6 +256,7 @@ def main() -> int:
     # minutes of certain waiting before anything says why.
     if not reachable("github.com"):
         print("github.com is not reachable — the bundled docs are unchanged.")
+        print("  reason:", unreachable_reason("github.com") or "unknown")
         return 1
 
     rc = 0

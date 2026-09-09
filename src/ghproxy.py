@@ -82,7 +82,8 @@ def contents(owner: str, repo: str, path: str, ref: str) -> tuple[bytes, bool]:
         # AP a request does not fail, it times out at ~40 s, and the page would
         # sit on a spinner for the whole of it before anything said why.
         if not flash.reachable():
-            raise flash.FlashError("GitHub is not reachable")
+            raise flash.FlashError("GitHub is not reachable — "
+                                   + (flash.unreachable_reason() or "unknown"))
         raw = flash._get(url, lambda _m: None)
         fwcache.store_listing(product, ref, raw)
     except Exception:                                # noqa: BLE001
@@ -122,7 +123,8 @@ def raw(owner: str, repo: str, ref: str, name: str) -> tuple[bytes, bool]:
            f"{urllib.parse.quote(ref)}/{_bin_path(product)}/{urllib.parse.quote(name)}")
     try:
         if not flash.reachable():
-            raise flash.FlashError("GitHub is not reachable")
+            raise flash.FlashError("GitHub is not reachable — "
+                                   + (flash.unreachable_reason() or "unknown"))
         data = flash._get(url, lambda _m: None)
         fwcache.store(product, ref, name, data)
         return data, False

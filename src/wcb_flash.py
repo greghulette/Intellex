@@ -35,7 +35,8 @@ import certs
 import proc
 import fwcache
 import settings
-from flash import FlashError, reachable, _esptool_argv, _get, _PCT_RE
+from flash import (FlashError, reachable, unreachable_reason,
+                   _esptool_argv, _get, _PCT_RE)
 
 # ── Firmware source ─────────────────────────────────────────────────────────
 # Mirrors flasher.js. If GITHUB_* there changes, these must too -- the whole point
@@ -91,7 +92,7 @@ def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dic
     # minutes before reaching a cache that was ready all along.
     try:
         if not reachable():
-            raise FlashError("GitHub is not reachable")
+            raise FlashError("GitHub is not reachable — " + (unreachable_reason() or "no reason recorded"))
         raw = _get(url, log)
         fwcache.store_listing(fwcache.WCB, branch, raw)
     except FlashError:
@@ -166,7 +167,7 @@ def fetch_images(binary_type: str, flash_mb: Optional[int],
         log(f"Found: {name}")
         try:
             if not reachable():
-                raise FlashError("GitHub is not reachable")
+                raise FlashError("GitHub is not reachable — " + (unreachable_reason() or "no reason recorded"))
             data = _get(entry["download_url"], log)
         except FlashError:
             cached = fwcache.load(fwcache.WCB, branch, name)

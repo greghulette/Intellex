@@ -128,7 +128,8 @@ def branches(force: bool = False) -> dict:
             _fetched_this_run = True
             error = "; ".join(failed)
         else:
-            error = "offline — showing the last list fetched"
+            error = ("offline (" + (flash.unreachable_reason() or "unknown")
+                     + ") — showing the last list fetched")
 
     current = settings.branches()
     # A branch that is SET but no longer listed is worth saying out loud: the
