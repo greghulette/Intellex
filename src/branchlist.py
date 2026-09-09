@@ -43,6 +43,16 @@ _PER_PAGE = 100
 # time the panel is opened, on a tool whose whole premise is working offline.
 _TTL_S = 6 * 3600
 
+# REFETCHED ONCE PER RUN, whatever the TTL says. The TTL alone made the list
+# unrefreshable by any means the user has: it lives in a file, so restarting the
+# app re-reads the same stale copy, and deleted branches went on being offered for
+# six hours with nothing anywhere to clear them. "Close it and open it again" is
+# what anyone would try first, so that is what has to work.
+#
+# Within a run the TTL still applies -- the panel can be opened repeatedly without
+# a round trip each time.
+_fetched_this_run = False
+
 REPOS = {
     settings.NAVICORE: (flash.GITHUB_OWNER, flash.GITHUB_REPO),
     settings.WCB: (wcb_flash.GITHUB_OWNER, wcb_flash.GITHUB_REPO),
@@ -86,8 +96,9 @@ def branches(force: bool = False) -> dict:
     was still good or the network was not there. The launcher says so rather than
     presenting a stale list as current.
     """
+    global _fetched_this_run
     cache = _read_cache()
-    fresh = (time.time() - cache.get("at", 0)) < _TTL_S
+    fresh = (time.time() - cache.get("at", 0)) < _TTL_S and _fetched_this_run
     out = {p: list(cache.get(p) or []) for p in REPOS}
     error = ""
     cached = True
@@ -112,11 +123,21 @@ def branches(force: bool = False) -> dict:
                 out.update(got)
                 _write_cache({**{p: out[p] for p in REPOS}, "at": time.time()})
                 cached = False
+            # Set even on a partial failure: one product answering is enough to
+            # stop this run asking again on every panel open.
+            _fetched_this_run = True
             error = "; ".join(failed)
         else:
             error = "offline — showing the last list fetched"
 
     current = settings.branches()
+    # A branch that is SET but no longer listed is worth saying out loud: the
+    # firmware fetch will fail at flash time, long after the branch was deleted,
+    # and nothing on screen would otherwise connect the two. Computed BEFORE the
+    # insertion below, which puts it back so the dropdown can render its own value.
+    missing = [p for p in REPOS
+               if (out.get(p) or []) and current.get(p) not in (out.get(p) or [])]
+
     for product in REPOS:
         names = out.get(product) or []
         # settings.DEFAULT_BRANCH and whatever is set right now are always
@@ -129,4 +150,5 @@ def branches(force: bool = False) -> dict:
 
     out["cached"] = cached
     out["error"] = error
+    out["missing"] = missing
     return out

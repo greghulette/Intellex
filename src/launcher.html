@@ -303,6 +303,7 @@
         <label style="font-size:12.5px">WCB <select id="br-wcb"></select></label>
         <input id="br-wcb-txt" size="12" spellcheck="false" placeholder="branch name" style="display:none">
         <button class="btn" id="br-save">Set</button>
+        <button class="btn" id="br-refresh" title="Re-read the branch lists from GitHub">Refresh</button>
       </div>
       <div class="note" id="br-note"></div>
     </div>
@@ -988,10 +989,20 @@ checkBranches();
 // there for a branch too new to be in the list -- reachable through "Other...",
 // which is the only way to reach it and therefore the only thing that has to be
 // typed correctly.
-async function fillBranchOptions(current) {
-  let list = { navicore: [], wcb: [], cached: true, error: '' };
-  try { list = await api('/_api/branch-list'); } catch (e) { /* fall through */ }
-  _brNote = list.error ? '<br><span class="stale">Branch list: ' + list.error + '</span>' : '';
+async function fillBranchOptions(current, force) {
+  let list = { navicore: [], wcb: [], cached: true, error: '', missing: [] };
+  try {
+    list = await api('/_api/branch-list' + (force ? '?refresh=1' : ''));
+  } catch (e) { /* fall through */ }
+
+  const notes = [];
+  if (list.error) notes.push('Branch list: ' + list.error);
+  // A branch that is set but no longer on the remote fails at FLASH time, which
+  // is far enough from deleting it that nobody would connect the two.
+  for (const p of (list.missing || []))
+    notes.push((p === 'wcb' ? 'WCB' : 'NaviCore') + ' is set to a branch that is no '
+             + 'longer in the list — flashing it will fail. Pick another.');
+  _brNote = notes.length ? '<br><span class="stale">' + notes.join(' ') + '</span>' : '';
 
   for (const [product, id] of [['navicore', 'br-nc'], ['wcb', 'br-wcb']]) {
     const sel = $(id), txt = $(id + '-txt');
@@ -1027,6 +1038,18 @@ function branchValue(id) {
   const sel = $(id);
   return sel.value === OTHER ? $(id + '-txt').value.trim() : sel.value;
 }
+
+$('br-refresh').onclick = async () => {
+  $('br-refresh').disabled = true;
+  setStatus('re-reading the branch lists…');
+  try {
+    const b = await api('/_api/branches');
+    await fillBranchOptions(b, true);
+    setStatus('branch lists updated');
+  } catch (e) { setStatus('could not read the branch lists: ' + e.message, true); }
+  $('br-refresh').disabled = false;
+  checkBranches();
+};
 
 $('br-save').onclick = async () => {
   $('br-save').disabled = true;
