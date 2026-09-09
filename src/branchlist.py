@@ -28,6 +28,7 @@ import json
 import time
 import urllib.request
 
+import certs
 import flash
 import paths
 import settings
@@ -85,7 +86,9 @@ def _fetch(owner: str, repo: str, timeout: float = 8.0) -> list[str]:
         "Accept": "application/vnd.github+json",
         "User-Agent": "Intellex",
     })
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    # Same empty-CA-store trap as every other HTTPS caller here; see src/certs.py.
+    with urllib.request.urlopen(req, timeout=timeout,
+                                context=certs.context()) as r:
         return [b["name"] for b in json.loads(r.read().decode("utf-8"))]
 
 

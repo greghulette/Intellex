@@ -50,6 +50,7 @@ import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
+import certs                                                        # noqa: E402
 import paths                                                        # noqa: E402
 from flash import no_network, reachable, unreachable_reason        # noqa: E402
 
@@ -89,9 +90,17 @@ _UA = {"User-Agent": "Intellex"}
 MAX_ASSET_BYTES = 1 << 20
 
 
+# EVERY REQUEST BELOW GOES THROUGH certs.context(). The stock python.org macOS
+# build ships an EMPTY CA store, so the default context cannot verify anything and
+# every fetch here dies with CERTIFICATE_VERIFY_FAILED on a machine whose network
+# is fine -- which is precisely how this fetcher failed: a TCP reachability probe
+# that passed, then "page index unreadable" and "nothing downloaded" for all three
+# wikis. flash.py, host.py and fetch_webui.py already did this; this file was
+# written later and did not. See src/certs.py.
 def _get(url: str, timeout: float = 20.0) -> bytes:
     req = urllib.request.Request(url, headers=_UA)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout,
+                                context=certs.context()) as r:
         return r.read()
 
 
@@ -99,8 +108,25 @@ def _size_of(url: str, timeout: float = 15.0) -> int:
     """Content-Length via HEAD. 0 when the server will not say, which lets the
     download proceed -- an unknown size is not a reason to skip a small file."""
     req = urllib.request.Request(url, headers=_UA, method="HEAD")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout,
+                                context=certs.context()) as r:
         return int(r.headers.get("Content-Length") or 0)
+
+
+# Set by any fetch that died of certificate verification, so main() can print the
+# fix ONCE at the end. Without this the only symptoms are "page index unreadable"
+# and "nothing downloaded", which both point at GitHub and at the wiki's markup --
+# everywhere except the interpreter, which is where the fault actually is.
+_cert_error = False
+
+
+def _note_cert_error(exc: BaseException) -> bool:
+    """Record a verification failure for main()'s advice; answer about THIS one."""
+    global _cert_error
+    if not certs.is_cert_error(exc):
+        return False
+    _cert_error = True
+    return True
 
 
 def page_index(owner: str, repo: str) -> list[str]:
@@ -108,7 +134,8 @@ def page_index(owner: str, repo: str) -> list[str]:
     try:
         body = _get(f"https://github.com/{owner}/{repo}/wiki/_pages").decode(
             "utf-8", "replace")
-    except Exception:                                    # noqa: BLE001
+    except Exception as e:                               # noqa: BLE001
+        _note_cert_error(e)
         return []
     # Anchor hrefs into the wiki, minus the action pages GitHub puts there too.
     names = set(re.findall(rf'/{re.escape(owner)}/{re.escape(repo)}/wiki/'
@@ -181,6 +208,11 @@ def fetch_one(product: str, staged: pathlib.Path) -> tuple[int, int, list[str]]:
             problems.append(f"{name}: HTTP {e.code}")
             continue
         except Exception as e:                           # noqa: BLE001
+            if _note_cert_error(e):
+                # Every remaining page would fail identically. Stop rather than
+                # spend a queue of several hundred names proving it.
+                problems.append(f"{name}: certificate verification failed")
+                break
             problems.append(f"{name}: {type(e).__name__}")
             continue
 
@@ -289,6 +321,8 @@ def main() -> int:
             if len(problems) > 5:
                 print(f"[{product}]   … and {len(problems) - 5} more")
 
+    if _cert_error:
+        print(certs.ADVICE)
     print(f"docs in {DEST}")
     return rc
 
