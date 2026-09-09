@@ -464,6 +464,12 @@ python tools/smoke_ghproxy.py
 # un-rewritten link. Run after touching fetch_wiki.py or wikidocs.py.
 python tools/smoke_wiki.py
 
+# Why does this machine think GitHub is unreachable? Prints proxy settings,
+# DNS, and a connect to every address DNS returned, then what reachable()
+# concludes -- so the layer that disagrees is the answer. Everything offline
+# hangs off that one probe, so when it is wrong five things fail at once.
+python tools/netcheck.py
+
 # Both browser tools have no build step, so a syntax slip silently breaks all
 # event wiring. Run after editing shell.html, launcher.html or the shim.
 node C:\Users\ghulette\tools\jscheck.js src/shell.html      # inline <script> blocks
