@@ -548,7 +548,7 @@ applyTheme(currentTheme());
 // having to re-pick it on every launch would be the annoying half of offering it.
 const VIEW_KEY = 'intellex_view';
 const VIEWS = {
-  nc:    { label: 'NaviCore tool',    note: 'The droid config tool, full window.' },
+  nc:    { label: 'NaviCore',         note: 'The droid config tool, full window.' },
   wcb:   { label: 'WCB',              note: 'The WCB config tool, full window. Reaches WCBs over USB, '
                                           + 'or through a management relay over WiFi.' },
   split: { label: 'Side by side',     note: 'Both tools in one window, with a draggable divider. '
@@ -561,7 +561,11 @@ function currentView() {
     const v = localStorage.getItem(VIEW_KEY);
     if (v && VIEWS[v]) return v;
   } catch (_) {}
-  return 'nc';
+  // WCB is the default on a first run. Most sessions start at a board -- a WCB or
+  // a relay is what the WiFi list usually turns up, and it is the doorway to
+  // everything behind it -- so opening the Wizard is the less surprising landing.
+  // Only ever a DEFAULT: the moment anything is picked it is remembered instead.
+  return 'wcb';
 }
 
 // BUILT FROM VIEWS, not written out in the markup. The two lists were free to

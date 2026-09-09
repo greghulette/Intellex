@@ -44,8 +44,9 @@ _reach_ok = False
 REACH_TTL_S = 20.0
 
 
-def reachable(host: str = "api.github.com", timeout: float = 3.0) -> bool:
-    """Is GitHub actually reachable? One TCP connect, answered in ~3 s.
+def reachable(host: str = "api.github.com", timeout: float = 3.0,
+              budget: float = 9.0) -> bool:
+    """Is GitHub actually reachable? Answered inside `budget` seconds.
 
     WHY A PROBE AND NOT AN EXCEPTION CHECK. On a droid's SoftAP there IS a default
     route -- it just goes nowhere -- so a connection does not fail, it TIMES OUT.
@@ -57,6 +58,21 @@ def reachable(host: str = "api.github.com", timeout: float = 3.0) -> bool:
     does not), because a real network does time out transiently. But asking ONCE
     whether the host is reachable at all separates the two cleanly: unreachable
     means go to cache now, reachable means a later timeout is worth retrying.
+
+    TWO SEPARATE BUDGETS, AND THEY ARE NOT THE SAME NUMBER. `timeout` bounds ONE
+    connect attempt; `budget` bounds the whole answer including the name lookup.
+    They used to be the same 3 s, which made this report a healthy network as
+    offline: getaddrinfo takes no timeout argument at all, so on a cold resolver
+    the lookup alone outlasts the join and the probe is abandoned with no answer.
+    Seen on a Mac whose git had just cloned from the very host being probed -- the
+    build fetched no tools, no docs and no firmware, and the app then said
+    "GitHub is not reachable" while sitting on a working connection.
+
+    EACH ADDRESS GETS ITS OWN ATTEMPT, which is the other half. A network that
+    advertises IPv6 and cannot route it answers AAAA first, and
+    socket.create_connection gives THAT address the full timeout before trying
+    IPv4 -- so one dead address consumed the entire budget. macOS prefers IPv6
+    more eagerly than Windows, which is why this showed up there first.
     """
     global _reach_at, _reach_ok
     now = time.monotonic()
@@ -66,11 +82,6 @@ def reachable(host: str = "api.github.com", timeout: float = 3.0) -> bool:
     import socket
     import threading
 
-    # RUN IT IN A THREAD WITH A HARD DEADLINE. create_connection's timeout bounds
-    # the CONNECT, not the name lookup -- getaddrinfo takes no timeout at all and
-    # on a network whose resolver is unreachable it blocks for ~10 s regardless.
-    # Measured: a 3 s probe took 13.6 s, nearly all of it DNS.
-    #
     # A daemon thread we stop waiting on is the way to bound wall-clock here. If
     # it finishes late nobody is listening; the process can still exit, and the
     # next call re-probes.
@@ -78,14 +89,25 @@ def reachable(host: str = "api.github.com", timeout: float = 3.0) -> bool:
 
     def probe() -> None:
         try:
-            with socket.create_connection((host, 443), timeout=timeout):
-                done.append(True)
+            infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
         except OSError:
+            # A DNS error is an answer, and a fast one: no resolver, no network.
             done.append(False)
+            return
+        for family, socktype, proto, _canon, addr in infos:
+            try:
+                with socket.socket(family, socktype, proto) as sk:
+                    sk.settimeout(timeout)
+                    sk.connect(addr)
+                    done.append(True)
+                    return
+            except OSError:
+                continue        # dead address family, or refused -- try the next
+        done.append(False)
 
     t = threading.Thread(target=probe, daemon=True)
     t.start()
-    t.join(timeout)
+    t.join(budget)
     _reach_ok = bool(done and done[0])
     _reach_at = now
     return _reach_ok
