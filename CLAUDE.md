@@ -33,6 +33,21 @@ these are bugs to go fix:
 
 ---
 
+## The exec bit is NOT automatic on the Windows box
+
+`core.fileMode` is **false** here, so Git ignores permissions in the working tree
+and a new `.command` or `.sh` gets committed **100644**. It looks fine on Windows
+and fails on the Mac with *"cannot be executed because you do not have the
+appropriate access privileges"* -- which reads like a Gatekeeper or ownership
+problem and is neither. It happened to `scripts/build-macos.command`.
+
+Chmod locally does nothing here. Set it in the index instead, and check:
+
+```bash
+git update-index --chmod=+x scripts/whatever.command
+git ls-files -s -- '*.command' '*.sh'      # every one of these must read 100755
+```
+
 ## This repo is worked on from more than one machine
 
 **`git fetch` and check ALL BRANCHES before making any change.** The same repo is worked on
