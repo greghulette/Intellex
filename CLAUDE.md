@@ -366,6 +366,21 @@ panel. Fonts are **bundled** (`src/assets/fonts/`, 60 KB) — IBM Plex Sans is a
 variable font, so one file covers 400–700, and fetching it from Google would mean
 one typeface at the bench and another on a con floor.
 
+## pywebview throws away localStorage unless told not to
+
+`webview.start()` defaults to **`private_mode=True`**, whose documented effect is
+that *"cookies and local storage are not preserved"*. So everything the pages
+remember was silently wiped on every launch — the light/dark choice, the layout
+(`intellex_view`), the divider (`intellex_split`), **and the two tools' own
+preferences**, including the `wcb_fw_branch` / `rc_fw_branch` keys their repos
+document as the branch escape hatch.
+
+It reads as "the app does not save my settings" and looks like a bug in whichever
+setting you noticed first. `app.py` now passes `private_mode=False` and an explicit
+`storage_path` under `paths.user_data_dir()`, so that state lands with everything
+else the user has accumulated and deleting that one directory is still a clean
+reset.
+
 ## Never spawn a bare subprocess
 
 The app is windowed — `pythonw`, and the frozen build is `console=False`. A GUI

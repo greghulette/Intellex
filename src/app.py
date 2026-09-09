@@ -34,6 +34,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import applog                                             # noqa: E402
+import paths                                              # noqa: E402
 import appicon                                            # noqa: E402
 import host as hostmod                                    # noqa: E402
 import winsize                                            # noqa: E402
@@ -346,8 +347,31 @@ def main() -> int:
         if msg:
             print(msg)
 
+    # PERSIST WHAT THE PAGES REMEMBER. pywebview defaults to private_mode=True,
+    # whose documented effect is that "cookies and local storage are not
+    # preserved" -- so every launch started with localStorage wiped. That was not
+    # a theme bug, it was everything the pages remember: the chosen layout
+    # (intellex_view), the side-by-side divider (intellex_split), the light/dark
+    # choice, and the two TOOLS' own preferences, including the firmware-branch
+    # keys they document as their escape hatch. All of it silently reset, every
+    # time, on both platforms.
+    #
+    # The path is given explicitly rather than left to pywebview's default so this
+    # state lands with the rest of the app's, under paths.user_data_dir(). That
+    # keeps the property the whole layout is built on: everything the user has
+    # accumulated is in one directory, and deleting it is a clean reset.
+    store = paths.user_data_dir() / "webview"
     try:
-        webview.start(_window_up, debug=a.dev)
+        store.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        store = None                    # unwritable: fall back to private mode
+
+    try:
+        if store is not None:
+            webview.start(_window_up, debug=a.dev,
+                          private_mode=False, storage_path=str(store))
+        else:
+            webview.start(_window_up, debug=a.dev)
     except Exception as e:
         print(f"the window backend failed ({type(e).__name__}: {e}) "
               "-- falling back to the browser.")
