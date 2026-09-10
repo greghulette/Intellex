@@ -73,8 +73,17 @@ def contents(owner: str, repo: str, path: str, ref: str) -> tuple[bytes, bool]:
     except that every `download_url` points back at this host -- see the header.
     """
     product = product_for(owner, repo)
+    # THE FIRMWARE DIRECTORY AND NOTHING ELSE. What comes back is stored as THE
+    # listing for (product, ref) -- the same file both native flashers fall back to
+    # offline -- and every download_url below is pointed at _bin_path(product). Any
+    # other path of the same repo would overwrite that cache with the wrong
+    # directory, and the next offline flash would find no app image in it. This is
+    # a GET, so no page of ours has to be the one asking.
+    bin_path = _bin_path(product)
+    if path.strip("/") != bin_path:
+        raise ProxyError(f"not a firmware directory: {owner}/{repo}/{path}")
     url = (f"https://api.github.com/repos/{owner}/{repo}"
-           f"/contents/{path}?ref={urllib.parse.quote(ref)}")
+           f"/contents/{bin_path}?ref={urllib.parse.quote(ref)}")
 
     cached = False
     try:
@@ -85,7 +94,6 @@ def contents(owner: str, repo: str, path: str, ref: str) -> tuple[bytes, bool]:
             raise flash.FlashError("GitHub is not reachable — "
                                    + (flash.unreachable_reason() or "unknown"))
         raw = flash._get(url, lambda _m: None)
-        fwcache.store_listing(product, ref, raw)
     except Exception:                                # noqa: BLE001
         raw = fwcache.load_listing(product, ref)
         if raw is None:
@@ -101,6 +109,11 @@ def contents(owner: str, repo: str, path: str, ref: str) -> tuple[bytes, bool]:
         raise ProxyError(f"unreadable firmware listing: {e}") from e
     if not isinstance(files, list):
         raise ProxyError("unexpected GitHub response (not a listing)")
+    if not cached:
+        # Stored only once it has parsed AS a listing. Stored before the check, a
+        # reply that was not one replaced a good cached listing with something
+        # neither flasher can read.
+        fwcache.store_listing(product, ref, raw)
 
     for f in files:
         if isinstance(f, dict) and f.get("name"):

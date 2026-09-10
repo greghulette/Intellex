@@ -53,6 +53,8 @@ import contextlib
 import json
 import html
 import pathlib
+import re
+import secrets
 import sys
 import threading
 from typing import Optional
@@ -582,7 +584,12 @@ async def api_branch_list(req: web.Request) -> web.Response:
     """
     force = req.query.get("refresh") == "1"
     try:
-        return web.json_response(branchlist.branches(force=force))
+        # IN A THREAD. branches() waits on flash.reachable() -- up to its 9 s budget,
+        # which on a droid's AP it always spends -- and then on GitHub. Inline, that
+        # froze this event loop and /_link with it: every launcher open, including
+        # the change-connection overlay over a live session, stalled both tools'
+        # droid link for the length of the probe.
+        return web.json_response(await asyncio.to_thread(branchlist.branches, force))
     except Exception as e:                       # noqa: BLE001 - a dropdown is not worth a 500
         return web.json_response({"navicore": [], "wcb": [], "cached": True,
                                   "error": f"{type(e).__name__}: {e}"})
@@ -658,21 +665,51 @@ ASSETS_DIR = paths.BUNDLE_DIR / "assets"
 WIKI_TEMPLATE = paths.BUNDLE_DIR / "wiki.html"
 
 
+# THE DOCS SHARE THE CONTROL API'S ORIGIN. A script running on one of these pages
+# can POST /_api/attach, /_api/flash or /_api/wifi-bounce and pass _guard_origin,
+# because its Origin IS ours. And the markdown is rendered with raw HTML on -- the
+# wikis write 37 of their images as <img> tags -- so a wiki page is markup this app
+# does not control. This policy is what keeps it inert: the viewer's own filter
+# script carries a per-response nonce, and nothing else may run -- no injected
+# <script>, no on*= handler, no javascript: URL.
+_WIKI_CSP = ("default-src 'self'; script-src 'nonce-{nonce}'; "
+             "style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; "
+             "object-src 'none'; base-uri 'none'; form-action 'none'")
+# For a file served straight out of a wiki's tree. `sandbox` gives it an opaque
+# origin, so an .svg or .html carrying script cannot reach the API either; an <img>
+# embedding the same file is unaffected.
+_WIKI_ASSET_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
+_WIKI_MARKER = re.compile(r"__(TITLE|TABS|SIDEBAR|BODY|NONCE)__")
+
+
 def _wiki_shell(product: str, title: str, sidebar: str, body: str) -> web.Response:
     """Fill wiki.html. Substitution, not a template engine, because the whole
-    variable set is four strings and a dependency would outweigh the feature."""
+    variable set is four strings and a dependency would outweigh the feature.
+
+    THE TITLE IS ESCAPED because it is often the URL itself: a page that is not on
+    disk is titled with the name it was asked for, and that name arrives
+    percent-decoded from the path. Unescaped, /wiki/wcb/</title><script>... ran
+    the script on this origin -- a link any website could send the browser to.
+
+    ONE PASS over the template, not a replace() per marker. Sequential replaces
+    re-scan what the previous one inserted, so a value containing a marker's text
+    had the next value spliced into it.
+    """
     tabs = []
     for w in wikidocs.available():
         if not w["have"]:
             continue
         cur = ' aria-current="page"' if w["product"] == product else ""
-        tabs.append(f'<a class="tab" href="/wiki/{w["product"]}/"{cur}>{w["title"]}</a>')
-    page = WIKI_TEMPLATE.read_text(encoding="utf-8")
-    for marker, value in (("__TITLE__", title), ("__TABS__", "".join(tabs)),
-                          ("__SIDEBAR__", sidebar), ("__BODY__", body)):
-        page = page.replace(marker, value)
+        tabs.append(f'<a class="tab" href="/wiki/{w["product"]}/"{cur}>'
+                    f'{html.escape(w["title"])}</a>')
+    nonce = secrets.token_urlsafe(16)
+    values = {"TITLE": html.escape(title), "TABS": "".join(tabs),
+              "SIDEBAR": sidebar, "BODY": body, "NONCE": nonce}
+    page = _WIKI_MARKER.sub(lambda m: values[m.group(1)],
+                            WIKI_TEMPLATE.read_text(encoding="utf-8"))
     return web.Response(text=page, content_type="text/html",
-                        headers={"Cache-Control": "no-store"})
+                        headers={"Cache-Control": "no-store",
+                                 "Content-Security-Policy": _WIKI_CSP.format(nonce=nonce)})
 
 
 def _wiki_missing(product: str = "") -> web.Response:
@@ -722,7 +759,7 @@ async def wiki_page(req: web.Request) -> web.StreamResponse:
         except (OSError, ValueError):
             ok = False                       # resolves outside, or is not a path
         if ok:
-            return web.FileResponse(f)
+            return web.FileResponse(f, headers={"Content-Security-Policy": _WIKI_ASSET_CSP})
     if rendered is None:
         if not wikidocs.root(product).is_dir():
             return _wiki_missing(product)

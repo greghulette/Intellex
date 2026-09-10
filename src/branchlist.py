@@ -126,9 +126,11 @@ def branches(force: bool = False) -> dict:
                 out.update(got)
                 _write_cache({**{p: out[p] for p in REPOS}, "at": time.time()})
                 cached = False
-            # Set even on a partial failure: one product answering is enough to
-            # stop this run asking again on every panel open.
-            _fetched_this_run = True
+                # Set on a PARTIAL failure: one product answering is enough to stop
+                # this run asking again on every panel open. NOT on a total one --
+                # that pinned a stale-but-in-TTL list for the rest of the run, and
+                # the error explaining it was only ever returned once.
+                _fetched_this_run = True
             error = "; ".join(failed)
         else:
             error = ("offline (" + (flash.unreachable_reason() or "unknown")

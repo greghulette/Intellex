@@ -403,7 +403,11 @@ function afterListChanged() {
   paintFilter();
   if (!_sel || !_sel.isConnected) reselect(keep);
   else paintSelection();
-  offerOfflineIfEmpty();
+  // NOT offerOfflineIfEmpty() -- see the end of scan(). This runs after the serial
+  // half, while the WiFi list still says "scanning…", and on every rescan of a
+  // droid that is coming up: it announced "No droid found" before WiFi had been
+  // looked at, and rewrote the status line every few seconds over whatever else
+  // it was saying.
 }
 
 // Deliberately NOT part of afterListChanged. Serial renders first because
@@ -856,6 +860,9 @@ async function scan() {
   watchUntil = Date.now() + WATCH_FOR_MS;
   if (await scanWifi()) watchForDroid();
   autoSelectIfNone();
+  // Once, after BOTH lists have answered. watchForDroid() makes the same call
+  // itself when its watching ends.
+  offerOfflineIfEmpty();
 }
 
 // One line per bundled tool. Both age independently — they come from different
@@ -957,14 +964,16 @@ checkLog();
 // persists silently is exactly how you end up flashing one months later without
 // remembering you set it.
 let _brNote = '';
+// The last branch-list failure, so Refresh can say what actually happened.
+let _brListError = '';
 // A colon is illegal in a git ref AND rejected by settings.py's whitelist,
 // so this can never collide with a real branch name.
 const OTHER = ':other:';
 
-async function checkBranches() {
+async function checkBranches(force) {
   try {
     const b = await api('/_api/branches');
-    await fillBranchOptions(b);
+    await fillBranchOptions(b, force);
     const off = [];
     if ((b.navicore || 'main') !== 'main') off.push('NaviCore → ' + b.navicore);
     if ((b.wcb || 'main') !== 'main') off.push('WCB → ' + b.wcb);
@@ -981,9 +990,11 @@ async function checkBranches() {
       + (_brNote || '');
     _maint.branch = off.length ? off.join(', ') : '';
     paintMaint();
+    return true;
   } catch (e) {
     $('br-note').textContent = 'could not read the branch setting';
     _maint.branch = ''; paintMaint();
+    return false;
   }
 }
 checkBranches();
@@ -997,7 +1008,8 @@ async function fillBranchOptions(current, force) {
   let list = { navicore: [], wcb: [], cached: true, error: '', missing: [] };
   try {
     list = await api('/_api/branch-list' + (force ? '?refresh=1' : ''));
-  } catch (e) { /* fall through */ }
+  } catch (e) { list.error = 'could not ask the host (' + e.message + ')'; }
+  _brListError = list.error || '';
 
   const notes = [];
   if (list.error) notes.push('Branch list: ' + list.error);
@@ -1046,13 +1058,15 @@ function branchValue(id) {
 $('br-refresh').onclick = async () => {
   $('br-refresh').disabled = true;
   setStatus('re-reading the branch lists…');
-  try {
-    const b = await api('/_api/branches');
-    await fillBranchOptions(b, true);
-    setStatus('branch lists updated');
-  } catch (e) { setStatus('could not read the branch lists: ' + e.message, true); }
+  // ONE list request, and it is the forced one. This used to force a fill and then
+  // call checkBranches(), whose own unforced request was answered from the cache
+  // the forced one had just written -- with no error -- so a half-failed refresh
+  // wiped the note saying so, under a status line that read "updated" regardless.
+  const ok = await checkBranches(true);
+  if (!ok) setStatus('could not read the branch setting', true);
+  else if (_brListError) setStatus('branch list: ' + _brListError, true);
+  else setStatus('branch lists updated');
   $('br-refresh').disabled = false;
-  checkBranches();
 };
 
 $('br-save').onclick = async () => {
@@ -1142,11 +1156,17 @@ $('updatewiki').onclick = async () => {
 $('showlog').onclick = async () => {
   $('maint').open = true;
   const pre = $('logtail');
-  if (pre.style.display !== 'none') { pre.style.display = 'none'; $('showlog').textContent = 'Show log'; return; }
+  // COMPUTED STYLE, not pre.style: the hidden state lives in the stylesheet
+  // (#logtail { display:none }), so the inline style starts out empty. Tested
+  // against that, a hidden log read as shown -- the first click "hid" it, renamed
+  // the button, and showed nothing.
+  if (getComputedStyle(pre).display !== 'none') { pre.style.display = 'none'; $('showlog').textContent = 'Log'; return; }
   try {
     const l = await api('/_api/log');
     pre.textContent = l.tail || '(empty)';
-    pre.style.display = '';
+    // 'block', not '': clearing the inline style hands it straight back to the
+    // stylesheet's display:none.
+    pre.style.display = 'block';
     pre.scrollTop = pre.scrollHeight;
     $('showlog').textContent = 'Hide log';
   } catch (e) { setStatus('could not read the log: ' + e.message, true); }

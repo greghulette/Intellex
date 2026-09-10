@@ -85,19 +85,50 @@ def fit(want_w: int, want_h: int, min_size: tuple[int, int]) -> dict:
 
 
 def _win_work_area() -> tuple[int, int, int, int] | None:
-    """The primary monitor's work area (taskbar excluded), in logical pixels."""
-    import ctypes
+    """The work area (taskbar excluded) of the monitor under the cursor, in
+    logical pixels.
 
-    user32 = ctypes.windll.user32
+    THE MONITOR UNDER THE CURSOR, not the primary one. fit() always hands back an
+    explicit position, which overrides pywebview's own centring -- and that
+    centring (WinForms CenterScreen) used the display the mouse was on.
+    SPI_GETWORKAREA only ever describes the PRIMARY monitor, so measuring it put
+    every window there: a laptop docked with the app on the external screen had
+    each later window (the docs, the Wizard on its own) open on the laptop's.
+    Falls back to the primary work area if the lookup fails.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    # A private handle, so the argtypes set below cannot change how any other
+    # module calls these functions through the shared ctypes.windll.user32.
+    user32 = ctypes.WinDLL("user32")
 
     class RECT(ctypes.Structure):
         _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
                     ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
 
-    r = RECT()
-    SPI_GETWORKAREA = 0x0030
-    if not user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(r), 0):
-        return None
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT),
+                    ("rcWork", RECT), ("dwFlags", wintypes.DWORD)]
+
+    MONITOR_DEFAULTTONEAREST = 2
+    user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+    user32.MonitorFromPoint.restype = wintypes.HMONITOR
+    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
+
+    r = None
+    pt = wintypes.POINT()
+    if user32.GetCursorPos(ctypes.byref(pt)):
+        mon = user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        if mon and user32.GetMonitorInfoW(mon, ctypes.byref(mi)):
+            r = mi.rcWork
+    if r is None:
+        r = RECT()
+        SPI_GETWORKAREA = 0x0030
+        if not user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(r), 0):
+            return None
 
     # 96 on an unaware process, the real DPI on an aware one -- see the header.
     # Missing before Windows 10 1607, where 96 is the only answer anyway.
@@ -125,5 +156,11 @@ def _mac_visible_frame() -> tuple[int, int, int, int] | None:
     if screen is None:
         return None
     vis, full = screen.visibleFrame(), screen.frame()
-    top = full.size.height - (vis.origin.y + vis.size.height)
-    return (int(vis.origin.x), int(top), int(vis.size.width), int(vis.size.height))
+    # RELATIVE TO THIS SCREEN, not global. pywebview's cocoa move() adds the
+    # screen's own origin back on (setFrameTopLeftPoint_(screen.origin.x + x, ...)),
+    # so global numbers counted it twice -- invisible on the primary display, whose
+    # origin is 0,0, and off-screen for a window opened while the app sits on
+    # another one.
+    left = vis.origin.x - full.origin.x
+    top = (full.origin.y + full.size.height) - (vis.origin.y + vis.size.height)
+    return (int(left), int(top), int(vis.size.width), int(vis.size.height))

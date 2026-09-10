@@ -12,6 +12,11 @@
 
   So the only script below is the page filter. Everything else is plain links,
   which also means Back and Forward behave, and a page can be printed.
+
+  That script carries a nonce because the page is served with a
+  Content-Security-Policy (host.py _WIKI_CSP): it shares the control API's
+  origin, so nothing else may run here. An inline script added without the
+  nonce attribute is silently blocked.
 -->
 <style>
   :root { color-scheme: dark; --bg:#12131a; --panel:#1b1d27; --line:#2c2f3d;
@@ -95,7 +100,7 @@
   <main id="doc">__BODY__</main>
 </div>
 
-<script>
+<script nonce="__NONCE__">
 // Filter the sidebar, not the page text. The sidebar IS the table of contents for
 // every one of these wikis, so narrowing it is the fast way to "where is the page
 // about X" — and it needs no index, no fetch and works with the network gone.
@@ -109,7 +114,12 @@ find.addEventListener('input', () => {
   }
   // Headings and rules are noise once the list under them is empty.
   for (const h of side.querySelectorAll('h1,h2,h3,hr,p')) {
-    let n = h.nextElementSibling, any = !q;
+    // A <p> can hold links of its own rather than only label a list: the WCB
+    // sidebar opens with **[Home](Home)** as a bare paragraph. Judged only by the
+    // lists after it, that paragraph hid itself even when its own link matched.
+    let n = h.nextElementSibling;
+    let any = !q || (h.tagName === 'P' &&
+      [...h.querySelectorAll('a')].some(a => a.textContent.toLowerCase().includes(q)));
     while (n && !/^(H1|H2|H3|HR)$/.test(n.tagName)) {
       if (n.tagName === 'UL' && [...n.querySelectorAll('li')].some(li => !li.classList.contains('hidden'))) any = true;
       n = n.nextElementSibling;

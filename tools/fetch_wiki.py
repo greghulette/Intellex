@@ -145,6 +145,22 @@ def page_index(owner: str, repo: str) -> list[str]:
                   if n not in skip)
 
 
+# What makes a link a FILE rather than a page. NOT "it has a suffix": wiki page
+# names carry dots, and the WCB wiki's version3.2_build has an apparent suffix of
+# ".2_build". Filed as an asset, a page like that was fetched without its .md,
+# 404'd silently, and its own links were never followed -- the crawl fallback lost
+# it outright. host.py's wiki_page hit the same trap and decides by what is on
+# disk; nothing is on disk yet here, so this asks for a real extension instead: a
+# short run of letters and digits with at least one letter, which ".png" and
+# ".mp4" are and ".2_build" and ".2" are not.
+_EXT = re.compile(r"\.(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{1,5}")
+
+
+def _is_asset(link: str) -> bool:
+    suffix = pathlib.PurePosixPath(link).suffix
+    return bool(_EXT.fullmatch(suffix)) and suffix.lower() != ".md"
+
+
 def _targets(text: str) -> tuple[set[str], set[str]]:
     """(page names, asset paths) referenced by one page's markdown."""
     pages, assets = set(), set()
@@ -153,11 +169,12 @@ def _targets(text: str) -> tuple[set[str], set[str]]:
         raw = raw.strip()
         if not raw or raw.startswith(("http://", "https://", "mailto:", "#")):
             return
-        # An extension means a file to copy; anything else is a page to visit.
-        if pathlib.PurePosixPath(raw).suffix:
+        # A real extension means a file to copy; anything else is a page to visit.
+        if _is_asset(raw):
             assets.add(raw.lstrip("./"))
         else:
-            pages.add(raw.strip("/").replace(" ", "-"))
+            page = raw.strip("/").replace(" ", "-")
+            pages.add(page[:-3] if page.lower().endswith(".md") else page)
 
     for m in RE_WIKILINK.findall(text):
         # [[Display|Target]] -- the target is the half after the pipe.
@@ -229,7 +246,9 @@ def fetch_one(product: str, staged: pathlib.Path) -> tuple[int, int, list[str]]:
     for rel in sorted(assets):
         # Never let a link walk out of the staging directory.
         dest = (staged / rel).resolve()
-        if not str(dest).startswith(str(staged.resolve())):
+        # is_relative_to, not a string prefix: a prefix test also accepted a
+        # sibling whose name merely starts the same ("wcb" -> "wcb-x").
+        if not dest.is_relative_to(staged.resolve()):
             problems.append(f"{rel}: refused (path escapes the wiki directory)")
             continue
         url = f"{raw}/{urllib.parse.quote(rel)}"
@@ -251,15 +270,41 @@ def fetch_one(product: str, staged: pathlib.Path) -> tuple[int, int, list[str]]:
 
 
 def _swap_in(staged: pathlib.Path, dest: pathlib.Path) -> None:
-    """Same rule as the tool bundles: swap only once everything has arrived."""
+    """Same rule as the tool bundles: swap only once everything has arrived.
+
+    THE NEW COPY GOES BESIDE `dest` FIRST, and the old one is removed LAST.
+    `staged` is in the system temp directory, which is routinely another volume,
+    so moving it is a file-by-file copy that can fail half way. This used to
+    delete the old copy before that copy began, so a failure left no docs at all
+    -- and run from source there is no bundled copy behind it to fall back to.
+    Once the old copy is out of the way only renames happen, and a failed one
+    puts it back.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        backup = dest.with_name(dest.name + ".prev")
-        if backup.exists():
+    incoming = dest.with_name(dest.name + ".new")
+    backup = dest.with_name(dest.name + ".prev")
+    if backup.exists():
+        if dest.exists():
             shutil.rmtree(backup, ignore_errors=True)
-        dest.rename(backup)
-        shutil.rmtree(backup, ignore_errors=True)
-    shutil.move(str(staged), str(dest))
+        else:
+            backup.rename(dest)     # a previous run died mid-swap: this is the good copy
+    if incoming.exists():
+        shutil.rmtree(incoming, ignore_errors=True)
+    try:
+        shutil.move(str(staged), str(incoming))
+        had_old = dest.exists()
+        if had_old:
+            dest.rename(backup)
+    except OSError:
+        shutil.rmtree(incoming, ignore_errors=True)
+        raise
+    try:
+        incoming.rename(dest)
+    except OSError:
+        if had_old and not dest.exists():
+            backup.rename(dest)
+        raise
+    shutil.rmtree(backup, ignore_errors=True)
 
 
 def summary() -> dict:
@@ -313,7 +358,16 @@ def main() -> int:
                 rc = 1
                 continue
 
-            _swap_in(staged, DEST / product)
+            try:
+                _swap_in(staged, DEST / product)
+            except OSError as e:
+                # PER WIKI, like the fetch above. One directory that cannot be
+                # replaced -- a file held open, antivirus -- must not stop the other
+                # wikis updating, and must not end the run in a traceback.
+                print(f"[{product}] could not swap in the new copy "
+                      f"({type(e).__name__}: {e}) — keeping what is on disk")
+                rc = 1
+                continue
             note = f", {len(problems)} problem(s)" if problems else ""
             print(f"[{product}] {pages} page(s), {assets} asset(s){note}")
             for p in problems[:5]:
