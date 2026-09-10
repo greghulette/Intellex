@@ -407,6 +407,41 @@
       }
       console.info('[Intellex] auto-connecting to', st.target);
       await window.connectDirect();
+
+      // A DOORWAY IS NEVER A DIRECT LINK, WHATEVER THE HANDSHAKE CONCLUDED.
+      //
+      // connectDirect() decides direct-versus-bridged from whether a PING draws a
+      // PONG, and it accepts ANY PONG (index.html ~9515: `msg.type === 'PONG'`, no
+      // id or sys check). Through a WCB or a relay the PING is forwarded over the
+      // mesh and the NaviCore's reply is mirrored straight back, so the tool
+      // decides it is wired to the droid and never falls back to Via WCB. That
+      // leaves "Update over USB (OTA)" enabled -- and it sends ?OTALOCAL,BEGIN, a
+      // '?' command the doorway runs ITSELF, retargeting the OTA at the WCB.
+      //
+      // Seen on hardware as [OTA:BEGIN,ERR,0] from WCB "Body": HW 1.0, a classic
+      // ESP32, whose chip-family brick guard refused the NaviCore image. That
+      // guard is all that stood in the way. An ESP32-S3 WCB (HW 3.1/3.2) shares
+      // the image's family, and WCB_OTA.cpp checks nothing else about what it is
+      // handed -- only family, slot and size.
+      //
+      // There is no longer a way to fix it by hand: the Via-WCB checkbox was
+      // removed from the tool (NaviCore 99536e2). So the host, which knows exactly
+      // what it attached to, says so. onViaWcbToggle(true) is the tool's own
+      // handler -- the one openPortAndStart calls when the "caller KNOWS it's a
+      // WCB" -- so nothing is forked.
+      //
+      // AFTER the handshake, because connectDirect() cannot be asked for it up
+      // front. That is safe: the handshake sends only JSON (GET_CONFIG,
+      // START_MONITOR, SET_DEBUG_FLAGS), which a doorway forwards, so nothing lands
+      // on the WCB before this takes effect. disconnect() resets the flag, and
+      // every reconnect -- including after an OTA reboot -- comes back through here.
+      //
+      // NOT for role 'navicore': the droid's own access point is a direct link.
+      const doorway = st.role === 'wcb' || st.role === 'relay';
+      if (doorway && typeof window.onViaWcbToggle === 'function') {
+        window.onViaWcbToggle(true);
+        console.info('[Intellex] attached to a ' + st.role + ' doorway - tool set to Via WCB');
+      }
     } catch (e) {
       console.warn('[Intellex] auto-connect skipped:', e && e.message);
     }

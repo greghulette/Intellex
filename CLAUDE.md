@@ -212,6 +212,19 @@ one failing offline must not roll back the other.
    into that one call, and the replacement **must throw on failure** — `boardGo()` uses the
    exception as its only failure signal, so returning quietly makes it report success and then
    push config at a board that never got new firmware.
+10. **Through a WCB or relay the NaviCore tool must be in Via WCB, and the shim forces it.**
+    The tool picks direct-versus-bridged from whether a PING draws a PONG and accepts *any*
+    PONG, and a doorway mirrors the NaviCore's straight back, so over a doorway it believes it
+    is wired to the droid. A `?` command is run by the doorway ITSELF, so "Update over USB
+    (OTA)" sent `?OTALOCAL,BEGIN` to the WCB, refused only by its chip-family brick guard
+    (`[OTA:BEGIN,ERR,0]` from a classic-ESP32 WCB). **An ESP32-S3 WCB shares the image's family
+    and `WCB_OTA.cpp` checks nothing else**, so it would take NaviCore firmware. The tool's
+    Via-WCB checkbox is gone (NaviCore `99536e2`), so `autoConnect()` calls the tool's own
+    `onViaWcbToggle(true)` for role `wcb` or `relay` -- **after** `connectDirect()`, because
+    `openPortAndStart()` resets the flag at its start. `tools/smoke_doorway_via_wcb.js` guards
+    both the switch and its order. Via WCB also strips the `wcbNetwork` transport fields from a
+    Save and warns -- the tool's designed behaviour for a bridge, not a regression. Do not undo
+    the switch to get doorway Saves of those fields back.
 
 ## Offline is the normal case, not the edge case
 
@@ -464,6 +477,13 @@ node tools/smoke_mesh_route.js
 # way to reprogram a board on a con floor. Forces GitHub unreachable and
 # checks the cache answers. Run after touching ghproxy.py or the shim's fetch.
 python tools/smoke_ghproxy.py
+
+# Does the shim switch the NaviCore tool to Via WCB when attached to a WCB or
+# relay doorway -- and only then? Extracts autoConnect()'s real source, and fails
+# both against a shim without the switch and against one that switches before
+# the handshake, which the handshake would silently undo. Run after touching the
+# shim's connect path.
+node tools/smoke_doorway_via_wcb.js
 
 # The docs viewer, end to end: fetch nothing, render everything already on
 # disk, and prove no page is left pointing at a relative image or an
