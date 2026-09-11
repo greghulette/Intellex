@@ -225,6 +225,14 @@ one failing offline must not roll back the other.
     both the switch and its order. Via WCB also strips the `wcbNetwork` transport fields from a
     Save and warns -- the tool's designed behaviour for a bridge, not a regression. Do not undo
     the switch to get doorway Saves of those fields back.
+    **The role it trusts is re-checked when the laptop changes network.** Every AP here is
+    `192.168.4.1`, so a reattach by address lands on whatever the laptop has joined since.
+    `reconnect_loop` compares the SSID now carrying the host with the one recorded at attach
+    and, on a change, re-probes and updates role, SSID and relayId **before** reattaching --
+    the page re-reads the role the moment the host reports attached, so after is a race. A
+    host that does not identify itself is held, never attached with a guessed role. Without
+    this, a hop from a WCB's AP to NaviCore's forced a direct link into Via WCB. Windows only
+    (`ssid_for_host` cannot answer on macOS). `tools/smoke_reconnect_identity.py`.
 
 ## Offline is the normal case, not the edge case
 
@@ -414,14 +422,18 @@ indefinitely. It looks exactly like malware and names no culprit.
 
 ## An adapter bounce that fails is not a transient
 
-`wifi_bounce` failing with *"no wireless interface is associated with X"* means the
-profile is absent or the user is deliberately on another network. The thousandth
-attempt fails exactly like the first. Unbounded it ran **4288 times in one
-session** — flapping the adapter every 10 s and burying every other log line.
+`wifi_bounce` failing with *"no wireless interface is associated with X"* means no
+adapter is on X right now, and the message goes on to name the network each one *is*
+on — usually the user moved, or Windows moved them when X dropped. Rarely a missing
+profile. The thousandth attempt fails exactly like the first. Unbounded it ran **4288
+times in one session** — flapping the adapter every 10 s and burying every other log
+line.
 
 `BOUNCE_GIVE_UP` caps consecutive failures, then leaves the adapter alone and says
 so; the link itself keeps retrying passively. The counter resets on success, so a
-droid that genuinely comes and goes still gets the retries this exists for.
+droid that genuinely comes and goes still gets the retries this exists for. It also
+resets when the reconnect loop sees the laptop join a different board's network (rule
+10): the give-up was reached against the old network's name.
 
 ## Never bounce the user's WiFi from a test host
 
@@ -484,6 +496,13 @@ python tools/smoke_ghproxy.py
 # the handshake, which the handshake would silently undo. Run after touching the
 # shim's connect path.
 node tools/smoke_doorway_via_wcb.js
+
+# Moved to another board's access point while attached: does the host
+# re-identify BEFORE reattaching, and hold rather than guess when nothing
+# answers? Runs the REAL reconnect_loop against a fake Bridge and a faked
+# route/SSID/probe, and asserts the order. Also checks the bounce's failure
+# message. Run after touching reconnect_loop, ssid_for_host or wifi_bounce.
+python tools/smoke_reconnect_identity.py
 
 # The docs viewer, end to end: fetch nothing, render everything already on
 # disk, and prove no page is left pointing at a relative image or an

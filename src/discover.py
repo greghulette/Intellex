@@ -556,6 +556,7 @@ def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
 
     iface = None
     current = None
+    elsewhere = []                  # "<adapter> is on <network>", for the failure
     for line in (show.stdout or "").splitlines():
         m = re.match(r"\s*Name\s*:\s*(.+?)\s*$", line)
         if m:
@@ -565,10 +566,17 @@ def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
         if m and _ssid_matches(m.group(1), ssid):
             iface = current
             break
+        if m and current:
+            elsewhere.append(f'{current} is on "{m.group(1)}"')
 
     if not iface:
-        return False, (f'no wireless interface is associated with "{ssid}" — '
-                       "join it once by hand so Windows saves the profile")
+        # SAY WHERE THE ADAPTERS ARE. This used to advise "join it once by hand so
+        # Windows saves the profile", which fits only a network never joined -- and
+        # it was logged three times against a WCB1 profile that was saved and fine,
+        # while the adapter had moved to WCB2. Where it went is the fact that
+        # explains the failure; a missing profile rarely is.
+        where = "; ".join(elsewhere) or "no Wi-Fi adapter is connected to anything"
+        return False, f'no wireless interface is associated with "{ssid}" — {where}'
 
     try:
         proc.run(["netsh", "wlan", "disconnect", f"interface={iface}"],

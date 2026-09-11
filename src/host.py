@@ -1444,6 +1444,77 @@ BOUNCE_COOLDOWN_S  = 10.0    # short: a bounce is now conditional on being misro
 auto_bounce = True           # --no-auto-bounce turns it off
 
 
+def _reidentify_if_moved(spec: Optional[dict]) -> Optional[dict]:
+    """Has the laptop joined a DIFFERENT board's access point since the attach?
+
+    Returns None when there is nothing to do, {"hold": why} when it has moved but
+    what is there now has not said what it is, or {"spec": new, "note": what}
+    when it has moved and the new host is identified.
+
+    EVERY ACCESS POINT HERE IS 192.168.4.1, NaviCore's and each WCB's alike, so a
+    reattach by address lands on whatever the laptop has joined since -- and it
+    used to carry the ROLE from the original attach along with it. Seen in the
+    log 2026-09-10: attached to WCB1, the adapter moved to WCB2 and the status
+    still described the first connection, then moved on to NaviCore's own AP.
+    Following the user to the new network is right. Keeping the old role is not:
+    the shim trusts it to put the NaviCore tool in Via WCB (CLAUDE.md rule 10),
+    so a hop from a WCB to NaviCore forces a direct link into bridge mode -- the
+    mirror image of the OTA misroute that switch exists to stop.
+
+    MUST RUN BEFORE THE ATTACH. The page re-reads the role the moment the host
+    reports attached, so a correction made afterwards races it.
+
+    HELD, NOT GUESSED, when the new host does not identify itself. Attaching with
+    no role would leave a WCB doorway looking like a direct link, which is the
+    OTA hazard again; the loop simply asks again on the next pass.
+
+    Cheap in the common case. No recorded SSID (serial, macOS -- where
+    ssid_for_host cannot answer -- or an attach the OS could not name) or no
+    address on the host's subnet costs no netsh at all, and a reboot on the SAME
+    network, which is every OTA, costs one SSID lookup and no probe.
+
+    FAILS OPEN. This runs in the loop that makes OTA recover; an unexpected error
+    here must cost the check, never the reconnect.
+    """
+    try:
+        if not spec or spec.get("kind") != "ws" or not spec.get("ssid"):
+            return None
+        host = spec.get("host", "192.168.4.1")
+        via = discover.local_ip_for(host)
+        if not via or via.rsplit(".", 1)[0] != host.rsplit(".", 1)[0]:
+            return None                    # no lease there; the attach fails regardless
+        was, now = spec["ssid"], discover.ssid_for_host(host)
+        # Matched the bounce's way, not with ==: a droid left on its default name
+        # is "NaviCore-20" while a --ssid target records the bare "NaviCore", and
+        # that is the same network, not a move.
+        if not now or discover._ssid_matches(now, was):
+            return None
+
+        # ASCII in both messages on purpose: they print BEFORE the attach, and a
+        # console that cannot encode an arrow raises into the loop's catch-all,
+        # which would skip the attach being reported on.
+        info = discover.probe(host)
+        kind = info.get("kind")
+        if kind not in ("navicore", "relay", "wcb"):
+            return {"hold": f'now on "{now}", not "{was}", and nothing at {host} has '
+                            "identified itself yet - not reattaching blind"}
+
+        new = {k: v for k, v in spec.items() if k != "relayId"}
+        new["ssid"], new["role"] = now, kind
+        try:
+            rid = int(info.get("relayId") or 0)
+        except (TypeError, ValueError):
+            rid = 0
+        if kind != "navicore" and 1 <= rid <= 20:
+            new["relayId"] = rid           # the Wizard routes the mesh by it
+        what = {"navicore": "a NaviCore", "relay": "a relay", "wcb": "a WCB"}[kind]
+        who = f'{info["alias"]}, {what}' if info.get("alias") else what
+        return {"spec": new,
+                "note": f'network changed "{was}" -> "{now}": {host} is now {who}'}
+    except Exception:
+        return None
+
+
 async def reconnect_loop(_app: web.Application) -> None:
     """Rebuild the link whenever it is down but still wanted.
 
@@ -1464,6 +1535,7 @@ async def reconnect_loop(_app: web.Application) -> None:
     last_bounce = -1e9
     probe_fails = 0
     bounce_fails = 0
+    held = None                  # the last "not reattaching" note, so it logs once
     while True:
         try:
             await asyncio.sleep(1.0)
@@ -1531,10 +1603,33 @@ async def reconnect_loop(_app: web.Application) -> None:
                 # /_api/status timed out, and the page went dead exactly when the
                 # user most needs it to explain itself.
                 spec = bridge._spec
+
+                # SAME ADDRESS, DIFFERENT BOARD? Settled before the attach, never
+                # after -- _reidentify_if_moved says why the order matters.
+                move = await asyncio.to_thread(_reidentify_if_moved, spec)
+                if move and bridge._spec is not spec:
+                    continue    # re-targeted or detached while it probed: theirs wins
+                if move and "hold" in move:
+                    bridge.last_error = move["hold"]
+                    if move["hold"] != held:
+                        held = move["hold"]
+                        print(held)
+                    continue
+                if move:
+                    spec = move["spec"]
+                    bridge.set_target(spec)
+                    held = None
+                    # A new network is a fresh start for the self-heal. The give-up
+                    # below was reached against the OLD network's name, and left set
+                    # it would deny the new one any bounce at all.
+                    bounce_fails = 0
+                    print(move["note"])
+
                 await asyncio.to_thread(lambda: bridge.attach(bridge.rebuild(),
                                                               _label_for(spec), spec))
                 print(f"reconnected  {bridge.target_label}")
                 fails = 0
+                held = None
             except TransportError:
                 fails += 1
                 # ── Self-heal the routing problem ─────────────────────────────
