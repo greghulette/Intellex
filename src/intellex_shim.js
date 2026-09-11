@@ -574,6 +574,7 @@
   async function wireNativeFlash() {
     const ok = await hostSupportsFlash();
     await refreshLinkKind();
+    relabelOtaButton(linkKind);        // the OTA button's wording -- see below
     // Only "serial" can flash. An empty kind means nothing is attached yet, and
     // disabling then would be wrong the other way -- the tool has its own
     // not-connected handling and this must not fight it.
@@ -603,6 +604,65 @@
       // bookkeeping would re-enable a button the flash is deliberately holding.
       if (!flashBusy) { b.disabled = false; b.title = title; }
     }
+  }
+
+  // ── "Update over USB (OTA)" says WiFi when the link is WiFi ───────────────
+  // The tool's direct OTA sends ?OTALOCAL down whatever link the page holds. In a
+  // browser that can only be Web Serial, so index.html names the button "Update
+  // over USB (OTA)" -- true there, and false here whenever the host is attached
+  // over WiFi, where the same button streams the image across the droid's access
+  // point. That path works: on hardware 2026-09-10, straight to a NaviCore on its
+  // own AP. Only the name was wrong.
+  //
+  // Changed HERE, not in index.html. The word is right in NaviCore's tool and
+  // wrong only inside Intellex, and a string that makes sense only in here does
+  // not belong in NaviCore's file (CLAUDE.md, "It is public now").
+  //
+  // ONLY THE TOOL'S OWN TWO WORDINGS are swapped: the idle label, and the
+  // "Updating over USB..." that otaUpdateOverUsb() shows while a run is going.
+  // Anything else on the button is the tool's business. The tool also writes the
+  // USB label back when a run ends, so a one-shot swap would be undone by the
+  // first OTA -- a MutationObserver re-applies it the moment the tool touches the
+  // button. It cannot feed itself: once swapped, the text no longer matches.
+  //
+  // tools/smoke_ota_label.js extracts this section, from OTA_WORDS to
+  // FLASH_POLL_MS.
+  const OTA_WORDS = [['Update over USB (OTA)', 'Update over WiFi (OTA)'],
+                     ['Updating over USB\u2026', 'Updating over WiFi\u2026']];
+  const OTA_WIFI_TITLE = 'OTA update over this WiFi connection (no bootloader mode). '
+                       + 'Streams the new firmware to the inactive OTA slot, verifies '
+                       + 'it (SHA), then reboots. Brick-safe; keeps your config.';
+
+  // What the button should say for this link, or null to leave it alone. A prefix
+  // of up to three characters is the tool's emoji; anything longer is not its text.
+  function otaLabel(text, wifi) {
+    const t = (text || '').trim();
+    for (const [usb, overWifi] of OTA_WORDS) {
+      const from = wifi ? usb : overWifi;
+      if (t.endsWith(from) && t.length - from.length <= 3) {
+        return t.slice(0, t.length - from.length) + (wifi ? overWifi : usb);
+      }
+    }
+    return null;
+  }
+
+  let otaOverWifi = false;
+  function relabelOtaButton(kind) {
+    const b = document.getElementById('btn-fw-ota');
+    if (!b) return;                        // the Wizard, or a tool without the button
+    otaOverWifi = kind === 'ws';
+    const apply = () => {
+      const next = otaLabel(b.textContent, otaOverWifi);
+      if (next !== null) b.textContent = next;
+      if (b.__intellexUsbTitle === undefined) b.__intellexUsbTitle = b.title;
+      const title = otaOverWifi ? OTA_WIFI_TITLE : b.__intellexUsbTitle;
+      if (b.title !== title) b.title = title;
+    };
+    if (!b.__intellexOtaObserved && typeof MutationObserver === 'function') {
+      b.__intellexOtaObserved = true;
+      new MutationObserver(apply).observe(b, { childList: true, characterData: true, subtree: true });
+    }
+    apply();
   }
 
   const FLASH_POLL_MS = 700;

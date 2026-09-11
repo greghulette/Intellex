@@ -354,6 +354,12 @@ AP up and a laptop associated — direct USB, then bridged through a mgmt relay:
 The shared-radio coexistence path works under real load. This was the assumption the whole
 WiFi transport rested on.
 
+**Verified on hardware 2026-09-10: OTA straight to NaviCore over its own access point.** The
+tool's direct OTA (`?OTALOCAL`) ran over Intellex's WebSocket link to NaviCore's SoftAP, with no
+relay in the path. The tool calls that button *Update over USB (OTA)*, which is true in a
+browser and not here, so the shim relabels it *Update over WiFi (OTA)* on a `ws` link rather
+than anything changing in `index.html` (`tools/smoke_ota_label.js`).
+
 ## It is public now
 
 Public since 2026-09-08, opened deliberately once the app worked end to end. The whole
@@ -503,6 +509,11 @@ node tools/smoke_doorway_via_wcb.js
 # route/SSID/probe, and asserts the order. Also checks the bounce's failure
 # message. Run after touching reconnect_loop, ssid_for_host or wifi_bounce.
 python tools/smoke_reconnect_identity.py
+
+# Does the NaviCore tool's direct-OTA button say WiFi when the link is WiFi,
+# stay that way through a run (the tool writes USB back as it ends), and leave
+# any other text on it alone? Extracts the shim's real relabel section.
+node tools/smoke_ota_label.js
 
 # The docs viewer, end to end: fetch nothing, render everything already on
 # disk, and prove no page is left pointing at a relative image or an
