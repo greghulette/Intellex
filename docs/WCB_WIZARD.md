@@ -273,13 +273,20 @@ then reports the adapter as unassociated.
 `navicore_ota.h` states the ESP-NOW wire format is identical to the WCB's *"so a WCB relay can
 update a NaviCore and vice-versa"*. Relaying to WCBs is not a new role for that firmware.
 
+**Over WiFi the relayed ACK has to be printed from `loop()`.** `rcSerial` mirrors only the
+loop core to the WebSocket, so an `[OTA:ACK,…]` printed from the ESP-NOW callback reaches
+USB alone, and the Wizard fails with *"no response from WCB<n> via relay — is it online &
+on this firmware?"* while the target is answering. NaviCore queues it and prints it from
+`drainOtaPackets()` (`navicore_ota.h` `handleOtaAckRelay`, NaviCore `079d195`); firmware older
+than that cannot relay OTA to a WCB over WiFi.
+
 What it already has, checked in the source rather than assumed:
 
 | Needed | NaviCore today |
 |---|---|
 | `WCB_Client` mesh send/receive | linked; `sendRawPacket`, `getNeighbor`, `isLearnedPeer`, `send`, `broadcast` |
 | One `?`-dispatcher for USB **and** WebSocket | `processInputLine()` (`NaviCore.ino:3752`), fed by the ws server as "the SAME dispatcher the USB path uses" |
-| `?`-commands already parsed | `?OTALOCAL,` / `?OTA,` (`NaviCore.ino:3350-3351`) |
+| `?`-commands already parsed | `?OTALOCAL,` / `?OTA,` (`NaviCore.ino:3353-3354`) |
 | A raw-packet hook | registered for OTA, and it **demuxes by length and ignores unknown sizes** (`navicore_ota.h:548`) — an extension point, not a conflict |
 
 Missing is only the Wizard's *config* surface — `?backup`, `?version`, `?WDP,DUMP`, `?MGMT,*`
@@ -489,9 +496,10 @@ Intellex's own window, wearing its title.
 
 | Date | Commit | Change |
 |---|---|---|
-| 2026-09-08 | _(uncommitted)_ | Renamed NaviLink -> Intellex. Affects this page in two places worth knowing before grepping for either: the shim is `src/intellex_shim.js` and it is served at `/_intellex.js`. Behaviour is unchanged — the `` / `
+| 2026-09-10 | _(uncommitted)_ | **Wireless OTA to a WCB through NaviCore failed over WiFi, and the cause was in NaviCore.** *"Wireless OTA failed: no response from WCB2 via relay"*, attached to NaviCore's own AP. The Wizard's `?OTA,BEGIN`, NaviCore's relay parser and WCB2's target handlers all agreed on the wire, and WCB2 registers device 20 as a peer before it ACKs. NaviCore printed each relayed `[OTA:ACK]` from the ESP-NOW callback, which `rcSerial` mirrors to USB only, so the Wizard never saw one. Fixed in NaviCore `079d195`; the section above says why the print must come from `loop()`. Nothing in Intellex changed. The `NaviCore.ino` line numbers in its table were refreshed, and the 2026-09-08 rename row below is repaired: it held real CR and LF characters where the text `` / `
 ` / `
-` line splitting and the `flashFirmware()` interception are untouched. Rows above this one were swept too and name the app Intellex for work done while it was still NaviLink. |
+` was meant, which split the table. |
+| 2026-09-08 | _(uncommitted)_ | Renamed NaviLink -> Intellex. Affects this page in two places worth knowing before grepping for either: the shim is `src/intellex_shim.js` and it is served at `/_intellex.js`. Behaviour is unchanged — the `\r` / `\n` / `\r\n` line splitting and the `flashFirmware()` interception are untouched. Rows above this one were swept too and name the app Intellex for work done while it was still NaviLink. |
 | 2026-09-02 | _(uncommitted)_ | **Reversed the earlier "NaviCore cannot be the WCB relay" call — it already is one, for OTA.** `?OTA,*` relays to WCBs today, NaviCore already dispatches `?`-commands through one handler shared by USB and its WebSocket, and its `onRawPacket` hook already demuxes by length and ignores unknown sizes (so it extends cleanly rather than conflicting — the blocker first flagged here was wrong). The Wizard surface is therefore extracted to `WCB_Client/src/WCB_Mgmt.h` rather than copied: it is a wire protocol byte-matched to `WCB.ino` and to the Wizard's parser, so two copies would drift silently. The module registers nothing with `WCB_Client` — the host feeds it from its own dispatcher and hook, because `onRawPacket` takes one callback and NaviCore already owns it for OTA. Compiles standalone against a NaviCore-shaped host (ESP32-S3, 67% flash). |
 | 2026-09-02 | _(uncommitted)_ | **The Wizard's commands were never being transmitted.** The shim frames outgoing bytes one line per WebSocket message and split on `
 ` alone — correct while the NaviCore tool was its only caller, but the Wizard ends every command with `
