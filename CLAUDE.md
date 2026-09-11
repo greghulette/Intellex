@@ -515,6 +515,12 @@ python tools/smoke_reconnect_identity.py
 # any other text on it alone? Extracts the shim's real relabel section.
 node tools/smoke_ota_label.js
 
+# When the droid behind the Wizard reboots, does the shim reconnect the Wizard's
+# link at the slot it really lives in -- not slot 1, a mesh board by then -- give
+# the Wizard's own reconnect first go, and hold relay routing until the relay is
+# back? Extracts autoConnectWcb/routeMeshThroughRelay. Run after touching either.
+node tools/smoke_wizard_reconnect.js
+
 # The docs viewer, end to end: fetch nothing, render everything already on
 # disk, and prove no page is left pointing at a relative image or an
 # un-rewritten link. Run after touching fetch_wiki.py or wikidocs.py.

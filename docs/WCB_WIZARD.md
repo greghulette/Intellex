@@ -475,6 +475,51 @@ answers 501 when there is none; the caller then falls back to `window.open()`. T
 accepts **local paths only** — an absolute URL would let a page render an arbitrary site inside
 Intellex's own window, wearing its title.
 
+## When the doorway reboots
+
+Every reboot of the device the Wizard is attached through — an OTA, a config save that
+restarts, a power cycle — drops the link, and **two** recoveries run: the Wizard's own, for the
+connection it holds, and the shim's `watchLink()`, for the page. They have to agree on which
+connection that is, and **it is not slot 1**.
+
+The Wizard files a device under its own number as soon as its config says what that is: a relay
+moves to its `DEVICE_ID` (`app.js`, the `config.isRelay` branch — NaviCore to 20, a MgmtRelay to
+19), an ordinary board to its WCB number. From then on slot 1 belongs to whichever mesh board is
+WCB 1. So `autoConnectWcb()` finds the Wizard's link by **port** — `wcbLinkConn()`, the
+connection whose `port` is the shim's one port — and never by slot:
+
+| The Wizard's connection on our port | The shim does |
+|---|---|
+| up | nothing |
+| down, for under 30 s (`WCB_OWN_RECONNECT_MS`) | nothing: `_startReading()` is reconnecting it, and re-arms the boards it managed when that works — only it knows which they were |
+| down for longer | `_modalDoConnect(<that slot>)` |
+| gone — a relay whose own reconnect gave up is deleted | `_modalDoConnect(<the slot it was last seen up at>)`, which `watchLink()` records every 2 s |
+| never existed | `_modalDoConnect(1)` — a first connect |
+
+Reconnecting slot 1 after the first pull lands on a **managed mesh board**. `_modalDoConnect(1)`
+deletes `remoteRelayForBoard[1]`, and the pull that follows re-files the doorway and deletes slot
+1's section, config and baseline on the way. The shim's port also shares one socket between every
+connection that opens it, so that second connection fights the Wizard's own reconnect for the
+stream.
+
+**Read the Wizard's state by bare name.** `boardConnections` is a top-level `let` in `app.js` and
+never becomes `window.boardConnections`; reading it off `window` always sees `{}`.
+
+**Relay routing waits for the relay.** A relay that drops keeps its card while the Wizard
+un-manages every board behind it, so the card lists them all as unmanaged for exactly as long as
+the relay is away. `routeMeshThroughRelay()` skips a relay whose connection is down — routing
+then can only fail, once per board, with *"Relay board not connected"* — and there is **one**
+watcher: a reconnect extends it rather than starting another beside it.
+
+**Two *"WCB <n> reconnected"* toasts per reboot are expected.** `/_link` accepts a page while
+nothing is attached, and the Wizard counts a reconnect as done once the port opens, so its first
+reconnect lands on a host with no droid behind it. When the host re-attaches it closes every page
+socket again (`Bridge.attach` → `_drop()`), which is the second. A pull that runs in between
+reports *"config pull incomplete — nothing was changed"*, and changes nothing.
+
+`tools/smoke_wizard_reconnect.js` runs the real `autoConnectWcb()` and `routeMeshThroughRelay()`
+text against fakes.
+
 ## Things that would break it
 
 - **Serving the Wizard anywhere but `/wcb/Wizard/`.** `../Images/` stops resolving and the
@@ -489,6 +534,8 @@ Intellex's own window, wearing its title.
   **403 Forbidden** (`show_index=False`) — measured — so it is redirected to the slashed form
   rather than left as a dead end.
 - **Reverting the bridge to one page socket.** Silent, and it looks like a tool bug.
+- **Reconnecting the Wizard by slot number.** After its first pull the link is filed under the
+  device's own number and slot 1 is a mesh board; see *When the doorway reboots*.
 
 ---
 
@@ -496,6 +543,7 @@ Intellex's own window, wearing its title.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-09-10 | _(uncommitted)_ | **After NaviCore rebooted, the WCBs behind it stayed unmanaged until F5.** Seen after an OTA over NaviCore's AP: *"Relay board not connected"* repeatedly, *"Manage all: 0/1 config(s) pulled via WCB20"*, then *"WCB 20 reconnected"* twice and no mesh board back. `watchLink()` → `autoConnectWcb()` reconnected **slot 1** — mesh board WCB1 by then, the relay having been re-filed to 20 — so it un-managed WCB1, wiped that slot, and put a second connection on the port the Wizard was already reconnecting. Its *already connected* guard read `window.boardConnections`, which does not exist, and every reconnect started another relay-routing loop that ran Manage all while the relay was still down. Now the link is found by port and its slot remembered, the Wizard's own reconnect gets 30 s first, routing waits for the relay, and one watcher runs. New section *When the doorway reboots*. `tools/smoke_wizard_reconnect.js` 10/10, 6 of them failing against the previous shim. Not yet verified on hardware. The relayed-OTA fix just before it (NaviCore `079d195`) is reported working on hardware. |
 | 2026-09-10 | _(uncommitted)_ | **Wireless OTA to a WCB through NaviCore failed over WiFi, and the cause was in NaviCore.** *"Wireless OTA failed: no response from WCB2 via relay"*, attached to NaviCore's own AP. The Wizard's `?OTA,BEGIN`, NaviCore's relay parser and WCB2's target handlers all agreed on the wire, and WCB2 registers device 20 as a peer before it ACKs. NaviCore printed each relayed `[OTA:ACK]` from the ESP-NOW callback, which `rcSerial` mirrors to USB only, so the Wizard never saw one. Fixed in NaviCore `079d195`; the section above says why the print must come from `loop()`. Nothing in Intellex changed. The `NaviCore.ino` line numbers in its table were refreshed, and the 2026-09-08 rename row below is repaired: it held real CR and LF characters where the text `\r` / `\n` / `\r\n` was meant, which split the table. |
 | 2026-09-08 | _(uncommitted)_ | Renamed NaviLink -> Intellex. Affects this page in two places worth knowing before grepping for either: the shim is `src/intellex_shim.js` and it is served at `/_intellex.js`. Behaviour is unchanged — the `\r` / `\n` / `\r\n` line splitting and the `flashFirmware()` interception are untouched. Rows above this one were swept too and name the app Intellex for work done while it was still NaviLink. |
 | 2026-09-02 | _(uncommitted)_ | **Reversed the earlier "NaviCore cannot be the WCB relay" call — it already is one, for OTA.** `?OTA,*` relays to WCBs today, NaviCore already dispatches `?`-commands through one handler shared by USB and its WebSocket, and its `onRawPacket` hook already demuxes by length and ignores unknown sizes (so it extends cleanly rather than conflicting — the blocker first flagged here was wrong). The Wizard surface is therefore extracted to `WCB_Client/src/WCB_Mgmt.h` rather than copied: it is a wire protocol byte-matched to `WCB.ino` and to the Wizard's parser, so two copies would drift silently. The module registers nothing with `WCB_Client` — the host feeds it from its own dispatcher and hook, because `onRawPacket` takes one callback and NaviCore already owns it for OTA. Compiles standalone against a NaviCore-shaped host (ESP32-S3, 67% flash). |

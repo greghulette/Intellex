@@ -879,6 +879,52 @@
   // What the far end is decides how the Wizard must be set up, so remember it.
   let wcbRole = '', wcbRelayId = null;
 
+  // ── Which Wizard connection is OUR link ───────────────────────────────────
+  // NOT SLOT 1, except until the first pull. The Wizard files a device under its
+  // own number once its config says what that is: a relay moves to its DEVICE_ID
+  // (app.js, the config.isRelay branch -- NaviCore to 20, a MgmtRelay to 19), an
+  // ordinary board to its WCB number. From then on slot 1 belongs to whichever
+  // mesh board is WCB 1.
+  //
+  // Reconnecting "slot 1" through a NaviCore doorway was therefore a connect on
+  // top of a MANAGED MESH BOARD. _modalDoConnect(1) deletes
+  // remoteRelayForBoard[1]; the pull that follows re-files the doorway to 20 and
+  // deletes slot 1's section, config and baseline on the way -- WCB1's. And the
+  // shim's port shares one socket between every connection that opens it, so the
+  // new slot-1 connection and the Wizard's own reconnect of slot 20 fought over
+  // the same stream. Seen on hardware 2026-09-10, after an OTA rebooted NaviCore:
+  // "Relay board not connected" over and over, "Manage all: 0/1 config(s) pulled
+  // via WCB20", and nothing came back until F5.
+  //
+  // So find the connection by what it is connected TO -- the shim's one port --
+  // and remember its slot while it is up: when the Wizard's own reconnect of a
+  // relay gives up it deletes the connection, and the number is all that is left.
+  //
+  // READ BY BARE NAME. boardConnections is a top-level `let` in app.js, which
+  // never becomes window.boardConnections. This once read it off window, always
+  // saw {}, and so its "already connected" guard could never fire.
+  let wcbLinkSlot = null;
+  function wcbLinkConn(port) {
+    let conns;
+    try { conns = boardConnections; } catch (_) { return null; }   // app.js not loaded yet
+    for (const [k, c] of Object.entries(conns || {})) {
+      if (!c || c.port !== port) continue;
+      const slot = parseInt(k, 10);
+      if (c.isConnected && c.isConnected()) wcbLinkSlot = slot;
+      return { slot, conn: c };
+    }
+    return null;
+  }
+
+  // How long the Wizard's OWN reconnect gets before this steps in. When a
+  // connection drops, app.js _startReading() un-manages the boards behind it,
+  // reconnects the same port, and re-arms those boards if that works -- it is the
+  // only code that knows which boards they were. Its loop is up to 4 closes 300 ms
+  // apart, then 10 opens 1.5 s apart: ~16 s. Stepping in sooner puts a second
+  // connection on the port while the first is still opening it.
+  const WCB_OWN_RECONNECT_MS = 30000;
+  let wcbDownSince = 0;
+
   async function autoConnectWcb() {
     try {
       const r = await fetch('/_api/status');
@@ -893,12 +939,30 @@
         console.warn('[Intellex] _modalDoConnect() not found; connect board 1 manually');
         return;
       }
-      // Already connected (a reload that raced us, or the user was quicker)? Leave it.
-      const conns = window.boardConnections || {};
-      if (conns[1] && conns[1].isConnected && conns[1].isConnected()) return;
-      console.info('[Intellex] auto-connecting WCB slot 1 to', st.target,
+      const port = await navigator.serial.requestPort();
+      const link = wcbLinkConn(port);
+      // Already up -- a reload that raced us, or the Wizard's own reconnect won.
+      if (link && link.conn.isConnected && link.conn.isConnected()) {
+        wcbDownSince = 0;
+        return;
+      }
+      if (link) {
+        // The Wizard still holds a connection on our port and is reconnecting it
+        // itself. Leave that to it for as long as its own loop can take.
+        if (!wcbDownSince) wcbDownSince = Date.now();
+        if (Date.now() - wcbDownSince < WCB_OWN_RECONNECT_MS) return;
+        console.info(`[Intellex] the Wizard's own reconnect of slot ${link.slot} did not `
+          + 'recover it -- reconnecting that slot');
+      }
+      wcbDownSince = 0;
+      // ITS slot, never a guess. A relay whose reconnect gave up has had its
+      // connection deleted, so the remembered number is the only record left -- and
+      // it is the right one, because the pull files the relay there regardless.
+      // Slot 1 only when the link has never been filed anywhere: a first connect.
+      const slot = link ? link.slot : (wcbLinkSlot || 1);
+      console.info('[Intellex] auto-connecting WCB slot', slot, 'to', st.target,
                    wcbRole ? `(role: ${wcbRole})` : '');
-      await window._modalDoConnect(1, await navigator.serial.requestPort());
+      await window._modalDoConnect(slot, port);
       // _modalDoConnect schedules its own pull 3 s out. That pull is what reveals
       // ?RELAY,1 and turns slot 1 into a relay card, so wait for the outcome
       // rather than assuming it.
@@ -984,36 +1048,60 @@
   // against overlapping runs, and skips boards that already have a baseline.
   const RELAY_POLL_MS  = 2000;
   const RELAY_WATCH_MS = 300000;   // 5 min of attention, then stop nagging
+
+  // ONE watcher, however many times the link comes back. autoConnectWcb() runs on
+  // every reconnect, and each run used to start another five-minute loop beside
+  // the ones still going -- so every relayRouteAll, and every toast it raises,
+  // came in multiples. A later call extends the running watch instead.
+  let relayWatchUntil = 0, relayWatching = false;
+
   async function routeMeshThroughRelay() {
     if (typeof window.relayRouteAll !== 'function') {
       console.warn('[Intellex] relayRouteAll() not found — click "Manage all" on the relay card');
       return;
     }
-    const deadline = Date.now() + RELAY_WATCH_MS;
-    let sawCard = false, bound = 0;
-    while (Date.now() < deadline) {
-      await new Promise(res => setTimeout(res, RELAY_POLL_MS));
-      const slot = relayCardSlot();
-      if (slot == null) continue;
+    relayWatchUntil = Date.now() + RELAY_WATCH_MS;
+    if (relayWatching) return;          // the loop already running now watches for longer
+    relayWatching = true;
+    try {
+      let sawCard = false, bound = 0;
+      while (Date.now() < relayWatchUntil) {
+        await new Promise(res => setTimeout(res, RELAY_POLL_MS));
+        const slot = relayCardSlot();
+        if (slot == null) continue;
+        if (!sawCard) {
+          sawCard = true;
+          console.info('[Intellex] relay card is up at slot', slot);
+        }
+        // NOT WHILE THE RELAY ITSELF IS DOWN. A relay that drops keeps its card, and
+        // the Wizard un-manages every board behind it (clearRemoteBoardsForRelay),
+        // so for exactly as long as the relay is away the card lists them all as
+        // unmanaged. Routing then can only fail: remoteBoardPull bails on a
+        // disconnected relay with "Relay board not connected" per board, and the run
+        // ends "Manage all: 0/N". The Wizard re-arms those boards itself once its
+        // reconnect succeeds, so wait for the relay rather than race it.
+        let conns = null;
+        try { conns = boardConnections; } catch (_) { /* app.js not loaded */ }
+        const relay = conns && conns[slot];
+        if (conns && !(relay && relay.isConnected && relay.isConnected())) continue;
+        const n = unmanagedOnCard(slot);
+        if (!n) continue;
+        bound += n;
+        console.info(`[Intellex] ${n} mesh board(s) unmanaged — routing them through relay ${slot}`);
+        try { window.relayRouteAll(slot); } catch (e) {
+          console.warn('[Intellex] relayRouteAll failed:', e && e.message);
+        }
+      }
+      // Say WHICH half fell short — they need different things looked at.
       if (!sawCard) {
-        sawCard = true;
-        console.info('[Intellex] relay card is up at slot', slot);
+        console.warn('[Intellex] no relay card appeared — the config pull never returned '
+          + 'a backup. Check the terminal pane for what came back.');
+      } else if (!bound) {
+        console.warn('[Intellex] the relay card is up but no mesh boards were ever heard. '
+          + 'Are the WCBs powered and on the same mesh channel?');
       }
-      const n = unmanagedOnCard(slot);
-      if (!n) continue;
-      bound += n;
-      console.info(`[Intellex] ${n} mesh board(s) unmanaged — routing them through relay ${slot}`);
-      try { window.relayRouteAll(slot); } catch (e) {
-        console.warn('[Intellex] relayRouteAll failed:', e && e.message);
-      }
-    }
-    // Say WHICH half fell short — they need different things looked at.
-    if (!sawCard) {
-      console.warn('[Intellex] no relay card appeared — the config pull never returned '
-        + 'a backup. Check the terminal pane for what came back.');
-    } else if (!bound) {
-      console.warn('[Intellex] the relay card is up but no mesh boards were ever heard. '
-        + 'Are the WCBs powered and on the same mesh channel?');
+    } finally {
+      relayWatching = false;
     }
   }
 
@@ -1468,6 +1556,9 @@
   }
 
   async function watchLink() {
+    // Keep the Wizard link's slot current while it is up (see wcbLinkConn): the
+    // number has to survive the Wizard deleting a relay's connection.
+    if (IS_WCB) wcbLinkConn(thePort);
     let st;
     try { st = await (await fetch('/_api/status')).json(); } catch (_) { return; }
 
