@@ -11,7 +11,7 @@ from typing import Optional
 
 import serial  # pyserial
 
-from transport import Transport, TransportError, DataCallback, LostCallback
+from transport import Transport, TransportError, DataCallback, LostCallback, serial_allowed
 
 # The board's USB-CDC ignores this (native USB, not a UART), but a bridge WCB is a
 # real UART0 behind a CP210x/CH9102 and 115200 is genuinely its line rate. One
@@ -39,6 +39,10 @@ class SerialTransport(Transport):
     def open(self) -> None:
         if self._ser is not None:
             return
+        # Before anything touches the port: this one guard covers /_api/attach, --serial, the reconnect loop and
+        # the reattach after a flash (H2).
+        if not serial_allowed(self._path):
+            raise TransportError(f"{self._path} is not in INTELLEX_SERIAL_ALLOW")
 
         # THE WHOLE REASON THIS PROJECT IS NATIVE.
         #

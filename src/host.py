@@ -90,7 +90,7 @@ except ImportError:                                      # pragma: no cover
         "  .venv\\Scripts\\python.exe src\\host.py --serial COM5\n\n"
     )
     raise SystemExit(1)
-from transport import Transport, TransportError, list_serial_ports   # noqa: E402
+from transport import Transport, TransportError, list_serial_ports, serial_allowed   # noqa: E402
 from serial_transport import SerialTransport             # noqa: E402
 from ws_transport import WebSocketTransport              # noqa: E402
 import discover                                          # noqa: E402
@@ -1007,6 +1007,11 @@ def _claim_port_for_flash() -> tuple[dict, str, Optional[web.Response]]:
                 "Flashing needs a direct USB serial connection. This session is "
                 + (_label_for(spec) if spec else "not attached")
                 + " — attach the board over USB and try again.")}, status=409)
+
+        # esptool opens the port itself, past SerialTransport's guard, so the claim checks it too (H2).
+        if not serial_allowed(spec["port"]):
+            return {}, "", web.json_response({"ok": False, "error": (
+                f"{spec['port']} is not in INTELLEX_SERIAL_ALLOW")}, status=409)
 
         _flash_state.update(running=True, ok=None, error="", version="",
                             percent=0, log=[])

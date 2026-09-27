@@ -464,6 +464,25 @@ and prefer not to attach a `ws` target at all unless the test needs one. It boun
 *laptop's* adapter, not the droid — the droid is fine, which makes it worse to diagnose,
 because the board looks healthy and the link is simply gone.
 
+## A test host needs a leash
+
+A host started by a test bench shares the PC with boards other tests are using. Left
+alone it reaches for all of them: the launcher PINGs **every** Espressif serial port it can
+see (an SBUS controller resets when its port opens; a NaviCore may be mid-run), discovery
+probes `192.168.4.1` over whatever adapter routes there, and every network feature waits on
+a GitHub probe. Three environment variables hold it to what the test wants. Unset, each
+changes nothing, so the app as users run it is untouched:
+
+| Variable | Effect | Where |
+|---|---|---|
+| `INTELLEX_OFFLINE=1` | GitHub is unreachable, deterministically. Every network consumer asks one probe, so this reaches all of them, fetch subprocesses included. | `flash.reachable()` |
+| `INTELLEX_SERIAL_ALLOW=COM5,COM6` | Only these ports are listed, identified, opened or handed to esptool (case-insensitive; set-but-empty means none). | `transport.serial_allowed()`, used by `list_serial_ports`, `SerialTransport.open`, `discover.identify_serial`, `_claim_port_for_flash` |
+| `INTELLEX_DISCOVER_HOSTS=192.168.4.1` | The hosts discovery probes (set-but-empty means none); an explicit `?hosts=` still wins. | `discover.scan()` |
+
+Isolation needs no hook on Windows: point `LOCALAPPDATA` at a scratch directory and the
+settings, logs, bundles and firmware cache go there (`paths.user_data_dir()`). The WCB repo's
+HIL harness runs every Intellex test this way, against a staged copy of `src/`.
+
 ## Verifying
 
 ```bash
@@ -520,6 +539,11 @@ node tools/smoke_ota_label.js
 # the Wizard's own reconnect first go, and hold relay routing until the relay is
 # back? Extracts autoConnectWcb/routeMeshThroughRelay. Run after touching either.
 node tools/smoke_wizard_reconnect.js
+
+# The test-host hooks (INTELLEX_OFFLINE, INTELLEX_SERIAL_ALLOW,
+# INTELLEX_DISCOVER_HOSTS), each against the real module, opening no port and
+# touching no network. Run after touching reachable(), the serial paths or scan().
+python tools/smoke_test_hooks.py
 
 # The docs viewer, end to end: fetch nothing, render everything already on
 # disk, and prove no page is left pointing at a relative image or an

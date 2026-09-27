@@ -30,6 +30,7 @@ THREE CONTRACTS. Breaking any of them reintroduces a specific, documented bug:
 from __future__ import annotations
 
 import abc
+import os
 from typing import Callable, Iterable, Optional
 
 # Raw bytes from the far end. Called from a reader thread/task, not the UI thread.
@@ -80,6 +81,22 @@ class Transport(abc.ABC):
 # Discovery
 # --------------------------------------------------------------------------------------
 
+def serial_allowed(path: str) -> bool:
+    """May this process touch serial port `path`? (H2, CLAUDE.md "A test host needs a leash".)
+
+    INTELLEX_SERIAL_ALLOW is a comma list of port names, compared case-insensitively. Unset means no restriction
+    -- the app as users run it. Set means only those ports, and set-but-empty means none. A test bench needs it
+    because the launcher PINGs every Espressif port it can see, and a port opened by the wrong program is a board
+    another test was using: an SBUS controller that resets on open, a NaviCore in the middle of a run. Checked
+    before a port is opened, listed, identified or handed to esptool.
+    """
+    raw = os.environ.get("INTELLEX_SERIAL_ALLOW")
+    if raw is None:
+        return True
+    allowed = {p.strip().upper() for p in raw.split(",") if p.strip()}
+    return str(path).strip().upper() in allowed
+
+
 def list_serial_ports() -> list[dict]:
     """Enumerate serial ports.
 
@@ -91,6 +108,8 @@ def list_serial_ports() -> list[dict]:
 
     out = []
     for p in list_ports.comports():
+        if not serial_allowed(p.device):
+            continue
         out.append({
             "path": p.device,
             "description": p.description or "",

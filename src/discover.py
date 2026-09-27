@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import sys
 import socket
 from typing import Optional
@@ -162,6 +163,9 @@ def identify_serial(port: str, timeout: float = 2.5) -> dict:
     reply" sent people to check the board when the real problem was on this side.
     """
     import time
+    from transport import serial_allowed
+    if not serial_allowed(port):           # H2: never open a port this process was not given
+        return {"version": None, "busy": False}
     try:
         import serial
     except ImportError:
@@ -409,10 +413,20 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
     return info
 
 
+def _default_candidates() -> list[str]:
+    """DEFAULT_CANDIDATES, unless INTELLEX_DISCOVER_HOSTS names the hosts instead (H3, CLAUDE.md "A test host needs
+    a leash"): a comma list, and set-but-empty means probe nothing. The probes send PING, ?RELAY,WIFI and ?WDP,DUMP
+    over the WiFi adapter that routes to each host, so a test host must reach a droid only when a test wants it."""
+    raw = os.environ.get("INTELLEX_DISCOVER_HOSTS")
+    if raw is None:
+        return DEFAULT_CANDIDATES
+    return [h.strip() for h in raw.split(",") if h.strip()]
+
+
 def scan(candidates: Optional[list[str]] = None) -> list[dict]:
-    """Probe each candidate and report what was found, and via which adapter."""
+    """Probe each candidate and report what was found, and via which adapter. An explicit list wins."""
     out = []
-    for host in (candidates or DEFAULT_CANDIDATES):
+    for host in (candidates or _default_candidates()):
         via = local_ip_for(host)
         reachable = tcp_open(host) if via else False
         info = probe(host) if reachable else {"kind": "unknown", "version": None,

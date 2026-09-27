@@ -22,6 +22,7 @@ module just needs the port to be free when it is called.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -92,6 +93,14 @@ def reachable(host: str = "api.github.com", timeout: float = 3.0,
     more eagerly than Windows, which is why this showed up there first.
     """
     now = time.monotonic()
+    # A TEST HOST'S LEASH (H1, CLAUDE.md "A test host needs a leash"). Every network consumer -- the version
+    # check, the branch list, the proxy, both flashers, the fetch_* tools (subprocesses, so they inherit it) --
+    # asks this one probe, so one variable makes the whole app deterministically offline: the con-floor path
+    # becomes testable, startup takes 2 s instead of a 9 s probe, and a bench never spends GitHub's 60-an-hour
+    # rate limit. An env var, not a monkeypatch: wcb_flash binds `from flash import reachable` at import.
+    if os.environ.get("INTELLEX_OFFLINE", "") not in ("", "0"):
+        _reach[host] = (now, False, "INTELLEX_OFFLINE is set")
+        return False
     rec = _reach.get(host)
     if rec and now - rec[0] < REACH_TTL_S:
         return rec[1]
