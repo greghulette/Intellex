@@ -36,7 +36,7 @@ import proc
 import fwcache
 import settings
 from flash import (FlashError, reachable, unreachable_reason,
-                   _esptool_argv, _get, _PCT_RE)
+                   _esptool_argv, _get, write_progress)
 
 # ── Firmware source ─────────────────────────────────────────────────────────
 # Mirrors flasher.js. If GITHUB_* there changes, these must too -- the whole point
@@ -378,6 +378,7 @@ def run_esptool(port: str, chip: str, entries: list[dict], log, progress=None,
             raise FlashError(f"could not start esptool: {e}") from e
 
         tail = []
+        on_line = write_progress(entries, progress)
         assert p.stdout is not None
         for line in p.stdout:
             line = line.rstrip()
@@ -386,10 +387,7 @@ def run_esptool(port: str, chip: str, entries: list[dict], log, progress=None,
             tail.append(line)
             del tail[:-40]
             log(line)
-            if progress:
-                m = _PCT_RE.search(line)
-                if m:
-                    progress(int(m.group(1)))
+            on_line(line)
         rc = p.wait()
         if rc != 0:
             raise FlashError("esptool failed (exit {}):\n{}".format(rc, "\n".join(tail[-12:])))

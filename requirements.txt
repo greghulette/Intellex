@@ -13,8 +13,10 @@ aiohttp>=3.9
 markdown-it-py>=3.0
 
 # Flashing. Same package ESP-Flasher-Companion uses; do NOT shell out to a separate
-# esptool binary — see the --run-esptool note in CLAUDE.md.
-esptool>=4.7
+# esptool binary — see the --run-esptool note in CLAUDE.md. Version 5 at least:
+# both flashers use its hyphenated spellings ("write-flash", "--flash-mode"), which
+# esptool 4 does not know, and parse its progress lines.
+esptool>=5.0
 
 # CA certificates. Not optional on macOS: the python.org framework build ships an
 # EMPTY trust store and expects you to run "Install Certificates.command" by hand,

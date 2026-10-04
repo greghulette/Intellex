@@ -411,7 +411,52 @@ def _esptool_argv() -> list[str]:
     return [sys.executable, "-m", "esptool"]
 
 
-_PCT_RE = re.compile(r"\((\d+)\s*%\)")
+# esptool's progress line, in both majors' shapes. esptool 4 printed
+# "Writing at 0x00010000... (25 %)"; esptool 5 -- what requirements.txt installs --
+# prints "Writing at 0x00010000 [=====>     ]  25.0% 1234/5678 bytes..." (logger.py
+# progress_bar, one whole line per update under a pipe). Matching only 4's shape
+# left /_api/flash-status at 0 % for the whole write, then 100.
+_PCT_RE = re.compile(r"\((\d+)\s*%\)|\]\s*(\d+(?:\.\d+)?)\s*%")
+_AT_RE = re.compile(r"Writing at (0x[0-9A-Fa-f]+)")
+
+
+def write_progress(entries: list[dict], progress):
+    """A handler for esptool's output lines that reports ONE percentage for the
+    whole write to progress(pct), or ignores them when progress is None.
+
+    esptool starts again at 0 % for every region, and the host keeps the bar
+    monotonic, so passing its figure through put the bar at 99 % once the first
+    small region was done -- the bootloader, or otadata on an update -- and held
+    it there through the app, which is nearly all of the time. So each region is
+    weighted by its size, and found by the address the line names. esptool writes
+    in address order (it sorts; so do both write_list()s). Two regions can touch --
+    WCB otadata ends at 0x10000, where the app starts -- and a region's last line
+    names its END, so an address at a boundary stays with the current region.
+    """
+    spans, before = [], 0
+    for e in sorted(entries, key=lambda e: e["address"]):
+        n = max(1, len(e["data"]))
+        spans.append((e["address"], e["address"] + n, before, n))
+        before += n
+    total = before or 1
+    cur = [0]
+
+    def on_line(line: str) -> None:
+        m = _PCT_RE.search(line)
+        if progress is None or not m:
+            return
+        pct = float(m.group(1) or m.group(2))
+        at = _AT_RE.search(line)
+        if at and spans:
+            a = int(at.group(1), 16)
+            lo, hi, _, _ = spans[cur[0]]
+            if not lo <= a <= hi + 3:          # +3: esptool pads an image to 4 bytes
+                cur[0] = next((i for i, (s, e, _, _) in enumerate(spans)
+                               if s <= a <= e + 3), cur[0])
+            _, _, done, n = spans[cur[0]]
+            pct = (done + n * pct / 100.0) * 100.0 / total
+        progress(int(pct))
+    return on_line
 
 
 def run_esptool(port: str, entries: list[dict], log, progress=None,
@@ -421,6 +466,11 @@ def run_esptool(port: str, entries: list[dict], log, progress=None,
     Subprocess rather than esptool.main() in-process: esptool calls sys.exit on
     failure and writes to stdout, neither of which an aiohttp worker should inherit,
     and a crash in a flasher must not take the app down with it.
+
+    esptool 5's spellings ("write-flash", "--flash-mode", "default-reset"), as in
+    wcb_flash.py. It still takes esptool 4's underscore forms, but answers each one
+    with a "Deprecated:" warning, and those land in the user's flash log looking
+    like problems -- six of them on every NaviCore flash.
     """
     with tempfile.TemporaryDirectory(prefix="intellex-flash-") as td:
         args = []
@@ -431,15 +481,15 @@ def run_esptool(port: str, entries: list[dict], log, progress=None,
 
         cmd = _esptool_argv() + [
             "--chip", CHIP, "--port", port, "--baud", str(baud),
-            "--before", "default_reset", "--after", "hard_reset",
-            "write_flash",
+            "--before", "default-reset", "--after", "hard-reset",
+            "write-flash",
             # keep/keep/keep: the header already carries what the board needs, and
             # overriding it is how you brick a variant you did not know about.
-            "--flash_mode", "keep", "--flash_freq", "keep", "--flash_size", "keep",
+            "--flash-mode", "keep", "--flash-freq", "keep", "--flash-size", "keep",
             "--compress",
         ] + args
 
-        log(f"$ esptool --chip {CHIP} --port {port} --baud {baud} write_flash ...")
+        log(f"$ esptool --chip {CHIP} --port {port} --baud {baud} write-flash ...")
         try:
             p = proc.popen(cmd, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -447,6 +497,7 @@ def run_esptool(port: str, entries: list[dict], log, progress=None,
             raise FlashError(f"could not start esptool: {e}") from e
 
         tail = []
+        on_line = write_progress(entries, progress)
         assert p.stdout is not None
         for line in p.stdout:
             line = line.rstrip()
@@ -455,10 +506,7 @@ def run_esptool(port: str, entries: list[dict], log, progress=None,
             tail.append(line)
             del tail[:-40]
             log(line)
-            if progress:
-                m = _PCT_RE.search(line)
-                if m:
-                    progress(int(m.group(1)))
+            on_line(line)
         rc = p.wait()
         if rc != 0:
             raise FlashError("esptool failed (exit {}):\n{}".format(rc, "\n".join(tail[-12:])))
