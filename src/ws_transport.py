@@ -26,6 +26,15 @@ DEFAULT_PORT = 80
 # The board answers from loop() on Core 1, a beat after the frame lands, so a recv
 # timeout is normal idling rather than a fault.
 _RECV_TIMEOUT_S = 0.25
+# How long close() waits for the far end's half of the closing handshake.
+# websockets' default is 10 s, and a link is closed when it is being dropped --
+# usually because the access point vanished, which never answers. close() then sat
+# out the full 10 s (on the event loop, at first: the whole host stopped answering),
+# and websockets' own keepalive failure waits the same timeout before it reports
+# the link lost, so the "~15 s worst case" below was ~25. A healthy droid answers a
+# close in milliseconds; one that does not within a second gets the socket closed
+# without the courtesy, which costs it nothing.
+_CLOSE_TIMEOUT_S = 1.0
 
 
 class WebSocketTransport(Transport):
@@ -77,7 +86,8 @@ class WebSocketTransport(Transport):
             self._ws = connect(self._url,
                                open_timeout=self._connect_timeout,
                                ping_interval=5,    # ask...
-                               ping_timeout=10)    # ...but allow for a real stall
+                               ping_timeout=10,    # ...but allow for a real stall
+                               close_timeout=_CLOSE_TIMEOUT_S)
         except Exception as e:
             raise TransportError(f"cannot connect {self._url}: {type(e).__name__}: {e}") from e
 

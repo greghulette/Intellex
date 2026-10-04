@@ -1232,7 +1232,9 @@ async def api_identify(req: web.Request) -> web.Response:
 
 
 async def api_detach(_req: web.Request) -> web.Response:
-    bridge.detach()
+    # In a thread: detach() closes the transport, and a WebSocket whose far end has
+    # gone waits out its close timeout first (reconnect_loop's drop says more).
+    await asyncio.to_thread(bridge.detach)
     return web.json_response({"ok": True})
 
 
@@ -1541,6 +1543,7 @@ async def reconnect_loop(_app: web.Application) -> None:
     probe_fails = 0
     bounce_fails = 0
     held = None                  # the last "not reattaching" note, so it logs once
+    failed_why = None            # the last reason a reattach failed, likewise
     while True:
         try:
             await asyncio.sleep(1.0)
@@ -1593,7 +1596,15 @@ async def reconnect_loop(_app: web.Application) -> None:
                             print(f"{host_now} unreachable after {idle:.0f}s idle — link is dead")
                             bridge.last_error = "probe failed (droid AP down?)"
                             probe_fails = 0
-                            bridge._drop()   # keep the target; the loop rebuilds it
+                            # Keep the target; the loop rebuilds it. IN A THREAD, like
+                            # every other blocking call here: closing a WebSocket whose
+                            # far end vanished waits out its close timeout and joins the
+                            # reader, and run on the event loop that froze the host --
+                            # /_api/status, every page's /_link, the flash status -- for
+                            # websockets' 10 s, measured on the bench. _drop() takes the
+                            # transport out under its lock first, so the link reads as
+                            # lost at once.
+                            await asyncio.to_thread(bridge._drop)
                 else:
                     probe_fails = 0          # traffic is flowing; nothing to prove
 
@@ -1635,8 +1646,19 @@ async def reconnect_loop(_app: web.Application) -> None:
                 print(f"reconnected  {bridge.target_label}")
                 fails = 0
                 held = None
-            except TransportError:
+                failed_why = None
+            except TransportError as e:
                 fails += 1
+                # SAY WHY. A failed reattach used to be counted and nothing else, so
+                # /_api/status kept whatever the drop had said ("probe failed") for
+                # as long as the reattach kept failing, and the log could not say
+                # what was wrong. Kept in last_error, printed once per new reason --
+                # the loop retries every second.
+                why = str(e) or type(e).__name__
+                bridge.last_error = f"reconnect failed: {why}"
+                if why != failed_why:
+                    failed_why = why
+                    print(f"reconnect failed: {why}")
                 # ── Self-heal the routing problem ─────────────────────────────
                 # A NaviCore reboot takes its SoftAP down. Windows drops the DHCP
                 # lease on the adapter joined to it, which removes the on-link
