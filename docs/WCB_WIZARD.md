@@ -399,6 +399,16 @@ corrupts NVS. `wcb_flash.detect()` asks esptool for the chip family and flash si
 anything is downloaded*, and if no matching bootloader exists the module **refuses a full
 flash** rather than writing a partial set.
 
+**Update FW reads the partition table first**, as `flasher.js` does (`comparePartitionTable`,
+its appOnly path). A board that only ever takes Update FW never gets a new table, so once the
+app outgrows the old scheme's slot — the default table's `ota_0` is 1.25 MB, a min_spiffs app
+~1.4 MB — an app-only write runs into the partition after it. `update_needs_full()` reads
+`0x200` bytes at `0x8000` (its own `esptool read-flash`) and, when they differ from the
+build's table, the update escalates **once** to bootloader + table + app; NVS is not in that
+set, so the config survives. A table that cannot be read keeps the update app-only, unless the
+app no longer fits the old slot, which is refused. An escalation that has no size-matched S3
+bootloader to write is refused too, with its own message.
+
 Two places `wcb_flash.py` is deliberately **stricter than `flasher.js`**:
 
 1. **Anchored filename matching**, not `endsWith()`. More than one matching app image is an
@@ -543,6 +553,7 @@ text against fakes.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-10-04 | _(this commit)_ | **Update FW skipped the partition-table check the Wizard's own flasher makes.** `wcb_flash.write_list(app_only=True)` wrote the app alone and never read the board's table, while `flasher.js` compares the table at `0x8000` and escalates once to a full, NVS-preserving flash when it differs — the module header claimed parity. A board still on the default table would have taken a min_spiffs-sized app (1.38 MB) into a 1.25 MB slot. `flash()` now runs `update_needs_full()` (an `esptool read-flash` of `0x200` bytes) before choosing the write list, with `flasher.js`'s rules for an unreadable table. An Update therefore runs esptool three times (flash-id, read-flash, write-flash). The bench boards are min_spiffs already, so only the unit shows it: WCB HIL `intellex.flash_update_partition_escalates` (INTELLEX.md finding 5). `intellex.flash_pipeline_fake` pins the old two-run sequence, and its fake esptool reads a blank table unless `FAKE_ESPTOOL_TABLE` is set, so that case needs the build's table seeded and `read-flash` in its expected runs. |
 | 2026-09-10 | _(uncommitted)_ | **After NaviCore rebooted, the WCBs behind it stayed unmanaged until F5.** Seen after an OTA over NaviCore's AP: *"Relay board not connected"* repeatedly, *"Manage all: 0/1 config(s) pulled via WCB20"*, then *"WCB 20 reconnected"* twice and no mesh board back. `watchLink()` → `autoConnectWcb()` reconnected **slot 1** — mesh board WCB1 by then, the relay having been re-filed to 20 — so it un-managed WCB1, wiped that slot, and put a second connection on the port the Wizard was already reconnecting. Its *already connected* guard read `window.boardConnections`, which does not exist, and every reconnect started another relay-routing loop that ran Manage all while the relay was still down. Now the link is found by port and its slot remembered, the Wizard's own reconnect gets 30 s first, routing waits for the relay, and one watcher runs. New section *When the doorway reboots*. `tools/smoke_wizard_reconnect.js` 10/10, 6 of them failing against the previous shim. Not yet verified on hardware. The relayed-OTA fix just before it (NaviCore `079d195`) is reported working on hardware. |
 | 2026-09-10 | _(uncommitted)_ | **Wireless OTA to a WCB through NaviCore failed over WiFi, and the cause was in NaviCore.** *"Wireless OTA failed: no response from WCB2 via relay"*, attached to NaviCore's own AP. The Wizard's `?OTA,BEGIN`, NaviCore's relay parser and WCB2's target handlers all agreed on the wire, and WCB2 registers device 20 as a peer before it ACKs. NaviCore printed each relayed `[OTA:ACK]` from the ESP-NOW callback, which `rcSerial` mirrors to USB only, so the Wizard never saw one. Fixed in NaviCore `079d195`; the section above says why the print must come from `loop()`. Nothing in Intellex changed. The `NaviCore.ino` line numbers in its table were refreshed, and the 2026-09-08 rename row below is repaired: it held real CR and LF characters where the text `\r` / `\n` / `\r\n` was meant, which split the table. |
 | 2026-09-08 | _(uncommitted)_ | Renamed NaviLink -> Intellex. Affects this page in two places worth knowing before grepping for either: the shim is `src/intellex_shim.js` and it is served at `/_intellex.js`. Behaviour is unchanged — the `\r` / `\n` / `\r\n` line splitting and the `flashFirmware()` interception are untouched. Rows above this one were swept too and name the app Intellex for work done while it was still NaviLink. |

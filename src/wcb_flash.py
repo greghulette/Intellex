@@ -9,9 +9,10 @@ lines at all. So the host does it instead, with esptool as a Python package and 
 real device in hand.
 
 THIS IS A PORT OF Wizard/flasher.js, NOT A SECOND DESIGN. Same addresses, same
-bootloader-selection rule, same NVS and otadata rules. Where the two must stay in
-step the comments say so. Two places where this is deliberately STRICTER than
-flasher.js are marked -- both concern pairing images from one build.
+bootloader-selection rule, same NVS and otadata rules, and the same partition-table
+check before an Update. Where the two must stay in step the comments say so. Two
+places where this is deliberately STRICTER than flasher.js are marked -- both
+concern pairing images from one build.
 
 WHAT THE HOST DOES BETTER. flasher.js has to ask the chip for its family and flash
 size over its own bootloader session; here esptool reports both from one `flash-id`
@@ -286,6 +287,74 @@ def detect(port: str, log=lambda _m: None) -> tuple[str, Optional[int]]:
     return binary_type, flash_mb
 
 
+# ── Update FW: the partition-table check flasher.js makes ───────────────────
+# flasher.js comparePartitionTable() and its appOnly path (Step 3b). A board that
+# only ever takes Update FW never gets a new partition table, so once the app
+# outgrows the OLD scheme's app slot an app-only write runs into the partition
+# after it: a board still on the default table has a 1.25 MB ota_0, and a
+# min_spiffs build's app is ~1.4 MB. So the table at 0x8000 is read first and,
+# when it differs from the build's, the update escalates ONCE to bootloader +
+# table + app. NVS is not in that set, so the saved config survives.
+TABLE_CMP_LEN   = 0x200      # flasher.js CMP_LEN: every entry, ahead of the MD5/padding
+LEGACY_APP_SLOT = 0x140000   # the default scheme's ota_0 (flasher.js OLD_OTA0_SIZE)
+
+
+def read_partition_table(port: str, chip: str,
+                         log=lambda _m: None) -> Optional[bytes]:
+    """The first TABLE_CMP_LEN bytes at 0x8000, or None when they cannot be read.
+
+    Its own esptool run, like detect(), and like detect() it leaves the chip in its
+    ROM loader (--after no-reset): the write that follows resets into it anyway.
+    """
+    with tempfile.TemporaryDirectory(prefix="intellex-wcbpart-") as td:
+        out = pathlib.Path(td) / "part.bin"
+        cmd = _esptool_argv() + ["--chip", chip, "--port", port,
+                                 "--before", "default-reset", "--after", "no-reset",
+                                 "read-flash", hex(ADDR_PART), hex(TABLE_CMP_LEN), str(out)]
+        log(f"$ esptool --chip {chip} --port {port} read-flash "
+            f"{ADDR_PART:#x} {TABLE_CMP_LEN:#x}")
+        try:
+            p = proc.run(cmd, capture_output=True, text=True, timeout=90)
+            if p.returncode != 0:
+                said = ((p.stdout or "") + (p.stderr or "")).strip().splitlines()
+                log("  could not read it: " + (said[-1] if said else f"esptool exit {p.returncode}"))
+                return None
+            return out.read_bytes()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"  could not read it: {e}")
+            return None
+
+
+def update_needs_full(port: str, chip: str, fw: dict, log=lambda _m: None) -> bool:
+    """Must this Update FW write the bootloader and table too? (flasher.js :465-511)
+
+    True when the board's table differs from the build's. A table that cannot be
+    read keeps the update app-only, as flasher.js does -- Update is conservative by
+    contract -- unless the app no longer fits the old layout's slot, which is
+    refused rather than guessed at.
+    """
+    part = fw.get("part")
+    if not part:
+        log("No partition table in this build -- migration check skipped, app only.")
+        return False
+    want = part["data"][:TABLE_CMP_LEN]
+    got = read_partition_table(port, chip, log)
+    if got is not None:
+        if len(got) >= len(want) and got[:len(want)] == want:
+            log("Partition table matches this build -- updating the app only.")
+            return False
+        log("Partition table differs from this build's -- one-time full update "
+            "(bootloader + partition table + app) to migrate it; NVS/config preserved.")
+        return True
+    if len(fw["app"]["data"]) > LEGACY_APP_SLOT:
+        raise FlashError(
+            "Could not read the board's partition table, and this firmware no longer "
+            "fits the old layout's app slot, so updating the app alone could overrun "
+            "it. Use Flash FW instead: a full flash that keeps the saved config.")
+    log("Could not read the partition table -- migration check skipped, app only.")
+    return False
+
+
 # ── The write list ──────────────────────────────────────────────────────────
 def write_list(fw: dict, app_only: bool, erase_nvs: bool,
                log=lambda _m: None) -> list[dict]:
@@ -300,9 +369,10 @@ def write_list(fw: dict, app_only: bool, erase_nvs: bool,
     NVS is the ONLY difference between Update/Flash and Factory Reset.
     """
     if app_only:
-        # Update FW: app only, exactly as flasher.js's appOnly path. The bootloader
-        # and partition table are left alone, so no size hazard applies and a
-        # missing bootloader is not a problem worth mentioning.
+        # Update FW: app only, as flasher.js's appOnly path once its partition check
+        # has passed (flash() runs update_needs_full() first). The bootloader and
+        # partition table are left alone, so no size hazard applies and a missing
+        # bootloader is not a problem worth mentioning.
         images = [fw["app"]]
         log("Update: app only (bootloader and partition table left as they are).")
     else:
@@ -400,14 +470,30 @@ def flash(port: str, app_only: bool, erase_nvs: bool, log, progress=None,
     Detection FIRST, before a single byte is downloaded. It decides the chip family
     (which images even exist) and the flash size (which S3 bootloader is safe), so
     fetching first would mean downloading a set that detection then invalidates.
+
+    An Update reads the board's partition table before choosing what to write
+    (update_needs_full), and escalates to a full, NVS-preserving flash when it
+    differs from the build's -- flasher.js's one-time migration.
     """
     # Read HERE, not as a default argument: a default is evaluated once at import
     # and would pin the branch for the life of the process.
     branch = branch or settings.branch(settings.WCB)
     binary_type, flash_mb = detect(port, log)
+    chip = TYPE_TO_CHIP[binary_type]
     fw = fetch_images(binary_type, flash_mb, branch, log)
+    if app_only and update_needs_full(port, chip, fw, log):
+        if fw["bootBlocked"]:
+            # Said here rather than by write_list(), whose refusal advises Update FW
+            # -- which is what was asked for.
+            raise FlashError(
+                "This board's partition table differs from the build's, so Update FW "
+                "has to write the bootloader and table as well (a one-time migration "
+                "that keeps the saved config), and it cannot: " + fw["bootBlocked"]
+                + ". Updating the app alone onto the old table could overrun its app "
+                "slot.")
+        app_only = False
     entries = write_list(fw, app_only, erase_nvs, log)
     total_kb = sum(len(e["data"]) for e in entries) // 1024
     log(f"Writing {total_kb} KB across {len(entries)} region(s) to {port}...")
-    run_esptool(port, TYPE_TO_CHIP[binary_type], entries, log, progress)
+    run_esptool(port, chip, entries, log, progress)
     return fw["version"]
