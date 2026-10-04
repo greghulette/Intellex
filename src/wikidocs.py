@@ -13,7 +13,9 @@ agree with each other: NaviCore and Intellex write `[[Page Name]]`, the WCB wiki
 writes `[Text](Page-Name)`. Rewriting is done in markdown-it's RENDERER RULES
 rather than by regex over the finished HTML, so a URL inside a code block or an
 example is left alone -- which a regex pass would not do, and those wikis are
-full of command examples.
+full of command examples. `[[...]]` is parsed by an INLINE RULE for the same
+reason: a regex over the markdown source rewrote it inside fences and backticks
+too, so an example showing the syntax came out as a different example.
 
 IMAGES THAT WERE TOO BIG TO DOWNLOAD become a link to the online copy, not a
 broken picture. tools/fetch_wiki.py leaves anything over 1 MB behind (the WCB
@@ -85,20 +87,35 @@ def _page_file(product: str, name: str) -> pathlib.Path | None:
     return f
 
 
-def _wikilinks_to_md(text: str) -> str:
-    """[[Target]] and [[Text|Target]] -> ordinary markdown links.
+def _wikilink_rule(state, silent: bool) -> bool:
+    """[[Target]] and [[Text|Target]] as link tokens, so the renderer rules below
+    see ONE kind of link. The pipe order is GitHub's: display text first, target
+    second.
 
-    Done before parsing so the renderer rules below see ONE kind of link. The
-    pipe order is GitHub's: display text first, target second.
+    AN INLINE RULE, NOT A REGEX OVER THE SOURCE. The source pass rewrote
+    `[[Target]]` inside fenced blocks and backticks as well, so a page showing
+    the syntax showed `[Target](Target)` instead. Inline rules never run inside a
+    fence, and the backticks rule ahead of this one has already claimed a code
+    span, so an example stays as written. The shown text is plain text, as on
+    GitHub, and the target goes through markdown-it's own normalizeLink and
+    validateLink, as a written [Text](Target) does.
     """
-    def one(m: re.Match) -> str:
-        inner = m.group(1)
-        if "|" in inner:
-            shown, target = inner.split("|", 1)
-        else:
-            shown = target = inner
-        return f"[{shown.strip()}]({target.strip().replace(' ', '-')})"
-    return _WIKILINK.sub(one, text)
+    if state.linkLevel > 0:
+        return False                      # no link inside a link's text
+    m = _WIKILINK.match(state.src, state.pos, state.posMax)
+    if not m:
+        return False
+    inner = m.group(1)
+    shown, target = inner.split("|", 1) if "|" in inner else (inner, inner)
+    href = state.md.normalizeLink(target.strip().replace(" ", "-"))
+    if not state.md.validateLink(href):
+        return False
+    if not silent:
+        state.push("link_open", "a", 1).attrs = {"href": href}
+        state.push("text", "", 0).content = shown.strip()
+        state.push("link_close", "a", -1)
+    state.pos = m.end()
+    return True
 
 
 def _make_md(product: str):
@@ -110,6 +127,7 @@ def _make_md(product: str):
     base = root(product)
 
     md = MarkdownIt("commonmark").enable(["table", "strikethrough"])
+    md.inline.ruler.before("link", "wikilink", _wikilink_rule)
 
     def resolve_href(href: str) -> str:
         if href.startswith(("http://", "https://", "mailto:", "#", "/")):
@@ -212,7 +230,7 @@ def render_page(product: str, name: str) -> tuple[str, str] | None:
     if f is None:
         return None
     text = f.read_text(encoding="utf-8", errors="replace")
-    body = _fix_raw_imgs(product, _make_md(product).render(_wikilinks_to_md(text)))
+    body = _fix_raw_imgs(product, _make_md(product).render(text))
     # The first heading is a better title than the filename when they differ.
     m = re.search(r"^#\s+(.+)$", text, re.M)
     title = (m.group(1) if m else name.replace("-", " ")).strip()
@@ -224,7 +242,7 @@ def render_sidebar(product: str) -> str:
     f = _page_file(product, "_Sidebar")
     if f is not None:
         text = f.read_text(encoding="utf-8", errors="replace")
-        return _make_md(product).render(_wikilinks_to_md(text))
+        return _make_md(product).render(text)
     items = "".join(
         f'<li><a href="/wiki/{product}/{urllib.parse.quote(p)}">'
         f'{html.escape(p.replace("-", " "))}</a></li>'

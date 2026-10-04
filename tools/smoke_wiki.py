@@ -31,8 +31,11 @@ import wikidocs                                                     # noqa: E402
 RE_REL_IMG = re.compile(r'<img[^>]+src="(?![/h])[^"]*"', re.I)
 # A link still aimed at the wiki on github.com rather than at this app.
 RE_GH_WIKI = re.compile(r'href="https://github\.com/[^"]*/wiki/', re.I)
-# Wiki-link syntax that never got converted.
+# Wiki-link syntax that never got converted -- OUTSIDE code. Inside a fence or
+# backticks it is an example and must stay as written (wikidocs._wikilink_rule),
+# so code is cut out before this looks.
 RE_RAW_WIKILINK = re.compile(r"\[\[[^\]]+\]\]")
+RE_CODE = re.compile(r"<pre\b.*?</pre>|<code\b.*?</code>", re.S | re.I)
 
 
 def main() -> int:
@@ -54,10 +57,11 @@ def main() -> int:
                 continue
             total += 1
             _title, body = r
-            for label, rx in (("relative <img>", RE_REL_IMG),
-                              ("link still on github.com", RE_GH_WIKI),
-                              ("un-converted [[wikilink]]", RE_RAW_WIKILINK)):
-                hits = rx.findall(body)
+            prose = RE_CODE.sub("", body)
+            for label, rx, text in (("relative <img>", RE_REL_IMG, body),
+                                    ("link still on github.com", RE_GH_WIKI, body),
+                                    ("un-converted [[wikilink]]", RE_RAW_WIKILINK, prose)):
+                hits = rx.findall(text)
                 if hits:
                     problems.append(f"{page}: {len(hits)} {label} — e.g. {hits[0][:70]}")
 
