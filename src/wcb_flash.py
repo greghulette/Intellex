@@ -270,12 +270,16 @@ def detect(port: str, log=lambda _m: None) -> tuple[str, Optional[int]]:
             "esptool could not talk to the board on {}:\n{}".format(
                 port, "\n".join(out.strip().splitlines()[-8:])))
 
+    # From here esptool has answered, so the chip is in its ROM loader: a refusal
+    # restarts it before raising (boot_app says why).
     m = _CHIP_RE.search(out)
     if not m:
+        boot_app(port, "auto", log)
         raise FlashError(f"esptool did not report a chip family for {port}")
     chip = m.group(1).replace("-", "").lower()          # "ESP32-S3" -> "esp32s3"
     binary_type = CHIP_TO_TYPE.get(chip)
     if not binary_type:
+        boot_app(port, chip, log)
         raise FlashError(
             f"{m.group(1)} is not a WCB target -- the firmware is built for ESP32 "
             f"and ESP32-S3 only, and there is no image to write to this chip.")
@@ -285,6 +289,40 @@ def detect(port: str, log=lambda _m: None) -> tuple[str, Optional[int]]:
     log(f"Chip: {m.group(1)} -> {binary_type} binary"
         + (f", {flash_mb} MB flash" if flash_mb else ", flash size unknown"))
     return binary_type, flash_mb
+
+
+def boot_app(port: str, chip: str, log=lambda _m: None) -> bool:
+    """Restart a board that detection left in its ROM loader, so it runs its own
+    firmware again. Returns whether esptool managed it; never raises.
+
+    detect() and read_partition_table() run esptool with --after no-reset, which
+    leaves the chip in its loader. That is right on the way to a write, whose
+    --after hard-reset boots the app. But a refusal between them -- no cached
+    image, two app images, a full flash with no bootloader or table, an Update that
+    cannot escalate -- raised with nothing written, and host.py then reattaches the
+    port with DTR and RTS low, which resets nothing: the board answered nothing
+    until someone pressed EN or replugged it, and the Wizard showed "Flash failed"
+    and then a board that never came back. flasher.js gets out of the same state by
+    closing and reopening its port, whose DTR/RTS toggle resets the board. Here
+    esptool does it, with the reset it knows for whichever USB bridge this is: one
+    more connect, ended by --after hard-reset.
+    """
+    # flash-id because it is the command detect() just ran on this very board; any
+    # command would do, the --after is the point.
+    cmd = _esptool_argv() + ["--chip", chip, "--port", port,
+                             "--before", "default-reset", "--after", "hard-reset",
+                             "flash-id"]
+    log("Nothing was written -- restarting the board into its firmware...")
+    try:
+        p = proc.run(cmd, capture_output=True, text=True, timeout=60)
+        if p.returncode == 0:
+            return True
+        said = ((p.stdout or "") + (p.stderr or "")).strip().splitlines()
+        why = said[-1] if said else f"esptool exit {p.returncode}"
+    except Exception as e:                       # noqa: BLE001 - reported; the refusal is the error
+        why = str(e)
+    log(f"  could not restart it ({why}) -- press its reset button or replug it.")
+    return False
 
 
 # ── Update FW: the partition-table check flasher.js makes ───────────────────
@@ -480,19 +518,25 @@ def flash(port: str, app_only: bool, erase_nvs: bool, log, progress=None,
     branch = branch or settings.branch(settings.WCB)
     binary_type, flash_mb = detect(port, log)
     chip = TYPE_TO_CHIP[binary_type]
-    fw = fetch_images(binary_type, flash_mb, branch, log)
-    if app_only and update_needs_full(port, chip, fw, log):
-        if fw["bootBlocked"]:
-            # Said here rather than by write_list(), whose refusal advises Update FW
-            # -- which is what was asked for.
-            raise FlashError(
-                "This board's partition table differs from the build's, so Update FW "
-                "has to write the bootloader and table as well (a one-time migration "
-                "that keeps the saved config), and it cannot: " + fw["bootBlocked"]
-                + ". Updating the app alone onto the old table could overrun its app "
-                "slot.")
-        app_only = False
-    entries = write_list(fw, app_only, erase_nvs, log)
+    # The chip is in its ROM loader now, and only the write's hard reset gets it out.
+    # So whatever refuses before the write restarts it first (boot_app says why).
+    try:
+        fw = fetch_images(binary_type, flash_mb, branch, log)
+        if app_only and update_needs_full(port, chip, fw, log):
+            if fw["bootBlocked"]:
+                # Said here rather than by write_list(), whose refusal advises Update
+                # FW -- which is what was asked for.
+                raise FlashError(
+                    "This board's partition table differs from the build's, so Update "
+                    "FW has to write the bootloader and table as well (a one-time "
+                    "migration that keeps the saved config), and it cannot: "
+                    + fw["bootBlocked"] + ". Updating the app alone onto the old table "
+                    "could overrun its app slot.")
+            app_only = False
+        entries = write_list(fw, app_only, erase_nvs, log)
+    except Exception:
+        boot_app(port, chip, log)
+        raise
     total_kb = sum(len(e["data"]) for e in entries) // 1024
     log(f"Writing {total_kb} KB across {len(entries)} region(s) to {port}...")
     run_esptool(port, chip, entries, log, progress)
