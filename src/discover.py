@@ -218,8 +218,18 @@ def identify_serial(port: str, timeout: float = 2.5) -> dict:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if obj.get("type") == "PONG":
-                    return {"version": str(obj.get("version", "unknown")), "busy": False}
+                if obj.get("type") != "PONG":
+                    continue
+                # A PONG IS NOT ENOUGH -- only a DIRECT one, as the docstring says.
+                # NaviCore answers a PING from its own USB bare ({"type":"PONG",
+                # "version":...}); one that came over the mesh is answered with
+                # {"sys":1,"type":"PONG","id":<deviceId>,...} sent back over ESP-NOW,
+                # and a doorway on this port prints it like all mesh traffic. Taking
+                # that one named a WCB or a relay on USB a NaviCore. probe() draws the
+                # same line on a socket.
+                if "id" in obj or "sys" in obj:
+                    continue
+                return {"version": str(obj.get("version", "unknown")), "busy": False}
         return {"version": None, "busy": False}
     except Exception:
         return {"version": None, "busy": False}
