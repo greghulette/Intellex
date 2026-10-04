@@ -320,7 +320,9 @@ both flashers and the offline cache read it.
 
 - The branch is interpolated into a GitHub API URL, so it is **whitelisted**
   (`[A-Za-z0-9._/-]`, ≤100 chars) — the same guard, for the same reason, that
-  `flasher.js` documents.
+  `flasher.js` documents. **The character set alone lets `../x` through**, and
+  `tool_base()` puts the branch in a Pages URL *path*, so `valid_branch()` also
+  applies git's own ref rules: no `..`, no empty or `.`-led segment, no `.lock`.
 - Resolved **at call time**, never as a default argument: a default is evaluated once at
   import and would pin the branch for the life of the process.
 - A non-main branch warns in the flash log and is called out in the launcher. Flashing a

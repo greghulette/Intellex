@@ -32,8 +32,14 @@ DEFAULT_BRANCH = "main"
 
 # The same whitelist flasher.js applies, and for the same reason it gives: this
 # value is interpolated into a GitHub API URL, so it must not be able to smuggle
-# in URL operators (?, &, #, =, /../). Alphanumerics, dot, underscore, hyphen and
+# in URL operators (?, &, #, =). Alphanumerics, dot, underscore, hyphen and
 # slash is the safe subset of real git ref names.
+#
+# THE CHARACTER SET ALONE DOES NOT KEEP /../ OUT. '.' and '/' are both in it, so
+# '../x' passed, and tool_base() below puts the branch in a URL PATH: the tool
+# update fetched from https://greghulette.github.io/<product>/dev/../x/..., which
+# is another of the Pages sites. valid_branch() adds the segment rules git itself
+# enforces (git check-ref-format), so no real branch name is refused.
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 
@@ -59,7 +65,18 @@ def _save(d: dict) -> bool:
 
 
 def valid_branch(b: str) -> bool:
-    return bool(b) and len(b) <= 100 and bool(_BRANCH_RE.match(b))
+    """A usable branch name: the whitelist above, plus git's own segment rules.
+
+    No '..' anywhere, and no '/'-separated segment that is empty or starts with
+    '.', or ends with '.lock'; no trailing '.'. Git refuses every one of these as
+    a ref name, so they can only be a URL path trick, never a branch.
+    """
+    if not b or len(b) > 100 or not _BRANCH_RE.match(b):
+        return False
+    if ".." in b or b.endswith("."):
+        return False
+    return all(seg and not seg.startswith(".") and not seg.endswith(".lock")
+               for seg in b.split("/"))
 
 
 def branch(product: str) -> str:
@@ -80,7 +97,8 @@ def set_branch(product: str, b: str) -> Optional[str]:
     b = (b or "").strip() or DEFAULT_BRANCH
     if not valid_branch(b):
         return (f"{b!r} is not a usable branch name - letters, digits, "
-                "'.', '_', '-' and '/' only")
+                "'.', '_', '-' and '/' only, and no '..', empty or "
+                "'.'-led path segment (git refuses those too)")
     d = _load()
     d.setdefault("branch", {})[product] = b
     return None if _save(d) else "could not write the settings file"
