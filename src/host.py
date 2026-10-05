@@ -146,6 +146,10 @@ class Bridge:
         # worse than the memory, and the only producer is one serial/WS reader.
         self._outq: "Optional[asyncio.Queue[bytes]]" = None
         self._pumping: bool = False
+        # Callables that see every chunk from the transport too, page or no page:
+        # how the host asks a COM port what it is (_identify_attached_serial). A
+        # tuple, replaced whole, so the reader thread can read it without the lock.
+        self._taps: tuple = ()
         self.target_label = ""     # human-readable label for /_api/status
         self.last_error = ""
         # What to reconnect to, and whether we should be trying. Set by attach()
@@ -319,10 +323,21 @@ class Bridge:
         t.write(data)                 # raises on device loss — contract 2
 
     # -- the thread boundary -----------------------------------------------------
+    def add_tap(self, fn) -> None:
+        with self._lock:
+            self._taps = self._taps + (fn,)
+
+    def remove_tap(self, fn) -> None:
+        with self._lock:
+            self._taps = tuple(t for t in self._taps if t is not fn)
+
     def _on_transport_data(self, chunk: bytes) -> None:
         """Called on a READER THREAD. Must not touch aiohttp directly."""
         import time as _t
         self.last_rx = _t.monotonic()     # cheap, and it gates the liveness probe
+        for tap in self._taps:            # before the page checks: a tap needs no page
+            with contextlib.suppress(Exception):
+                tap(chunk)
         loop, q = self._loop, self._outq
         if loop is None or q is None:
             return
@@ -1133,6 +1148,89 @@ async def api_status(_req: web.Request) -> web.Response:
     })
 
 
+# ── What is on a COM port ──────────────────────────────────────────────────────
+SERIAL_PONG_WAIT_S = 0.6     # a NaviCore on USB answers a PING in tens of ms
+SERIAL_IDENTIFY_S  = 2.5     # then the doorway questions: a WCB's dump takes ~0.1 s
+
+
+def _identify_attached_serial(spec: dict) -> None:
+    """Ask the COM port just attached what it is, and record that as its ROLE.
+
+    WHY. The NaviCore tool must be in Via WCB through a doorway (CLAUDE.md rule
+    10), and the shim forces it only for role "wcb" or "relay" -- a role only a
+    WiFi attach ever had, from discovery. So the tool reached through a WCB on USB
+    believed it was wired to the droid whenever its PING drew the NaviCore's PONG
+    mirrored back, which W1 prints inside its 20 s relay window: a reload, or the
+    shim's reconnect, within 20 s of the tool's last Via-WCB line. "Update over USB
+    (OTA)" then sends ?OTALOCAL to the WCB itself, which an ESP32-S3 WCB would take.
+
+    The same three questions discover.probe() asks a WiFi host, read through the
+    same discover.classify(), over the port the bridge already holds (a tap sees
+    every chunk). The PING goes alone first: a NaviCore answers it directly and
+    that settles it, so the NaviCore tool -- the usual thing on a COM port -- does
+    not get "Unknown command: ?RELAY,WIFI" and a WDP dump in its console. Only
+    when no direct PONG comes do ?RELAY,WIFI and ?WDP,DUMP follow.
+
+    Runs in a thread (it waits on the port), after the attach and before the
+    attach request is answered, so the role is in /_api/status before any page
+    reads it. Unidentified leaves the role empty, as before; the next reattach
+    asks again.
+    """
+    if spec.get("kind") != "serial" or spec.get("role"):
+        return
+    import queue
+    import time as _t
+    q: "queue.SimpleQueue[bytes]" = queue.SimpleQueue()
+    tap = q.put
+
+    def lines(seconds: float):
+        buf, end = b"", _t.monotonic() + seconds
+        while True:
+            left = end - _t.monotonic()
+            if left <= 0:
+                return
+            try:
+                buf += q.get(timeout=min(left, 0.25))
+            except queue.Empty:
+                continue
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                yield line.decode("utf-8", "replace").strip()
+
+    def answers():
+        yield from lines(SERIAL_PONG_WAIT_S)
+        # Reached only when classify() did not stop on a direct PONG.
+        bridge.write("".join(discover.PROBE_LINES[1:]).encode())
+        yield from lines(SERIAL_IDENTIFY_S)
+
+    bridge.add_tap(tap)
+    try:
+        bridge.write(discover.PROBE_LINES[0].encode())
+        info = discover.classify(answers())
+    except TransportError as e:
+        print(f"{spec.get('port')}: could not ask what it is ({e})")
+        return
+    finally:
+        bridge.remove_tap(tap)
+
+    kind = info.get("kind")
+    if kind not in ("navicore", "relay", "wcb"):
+        print(f"{spec.get('port')} did not say what it is - treated as a direct link")
+        return
+    if bridge._spec is not spec:
+        return                  # re-targeted or detached while it was asked: theirs wins
+    new = dict(spec, role=kind)
+    try:
+        rid = int(info.get("relayId") or 0)
+    except (TypeError, ValueError):
+        rid = 0
+    if kind != "navicore" and 1 <= rid <= 20:
+        new["relayId"] = rid    # as _reidentify_if_moved records it
+    bridge.set_target(new)
+    what = {"navicore": "a NaviCore", "relay": "a relay", "wcb": "a WCB"}[kind]
+    print(f"{spec.get('port')} is " + (f"{info['alias']}, {what}" if info.get("alias") else what))
+
+
 async def api_attach(req: web.Request) -> web.Response:
     try:
         body = await req.json()
@@ -1201,7 +1299,11 @@ async def api_attach(req: web.Request) -> web.Response:
         bridge.last_error = str(e)
         return web.json_response({"ok": False, "error": str(e)}, status=502)
 
-    return web.json_response({"ok": True, "target": bridge.target_label})
+    # Before answering: whoever attached opens the tools next, and they read the
+    # role from /_api/status as they connect.
+    await asyncio.to_thread(_identify_attached_serial, spec)
+    return web.json_response({"ok": True, "target": bridge.target_label,
+                              "role": (bridge._spec or {}).get("role", "")})
 
 
 async def api_identify(req: web.Request) -> web.Response:
@@ -1647,6 +1749,9 @@ async def reconnect_loop(_app: web.Application) -> None:
                 fails = 0
                 held = None
                 failed_why = None
+                # A COM port that was not identified at its first attach (it was
+                # busy, or did not answer) is asked now. No-op once it has a role.
+                await asyncio.to_thread(_identify_attached_serial, spec)
             except TransportError as e:
                 fails += 1
                 # SAY WHY. A failed reattach used to be counted and nothing else, so
@@ -1889,6 +1994,7 @@ def main() -> int:
         try:
             bridge.attach(bridge.rebuild(), _label_for(spec), spec)
             print(f"attached  {bridge.target_label}")
+            _identify_attached_serial(spec)
         except TransportError as e:
             print(f"attach failed: {e}")
             print("           will keep retrying every second")

@@ -268,6 +268,19 @@ and never re-broadcast to the mesh (`WCB_Help.cpp:858`), so this asks nothing of
 is the same, only the noun differs — and the noun has to be right, or a WCB labelled *"Mgmt
 relay"* sends someone hunting for a board they never flashed.
 
+**A COM port is asked the same questions.** A serial attach used to record no role, so the
+shim never put the NaviCore tool in Via WCB through a WCB on USB, and the tool took the
+NaviCore PONG that W1 prints inside its 20 s relay window for a direct one — a reload, or the
+shim's reconnect, within 20 s of the tool's last Via-WCB line came up "direct", with
+*Update over USB (OTA)* aimed at the WCB. `host.py`'s `_identify_attached_serial()` now asks the
+port, before the attach is answered, through the same `discover.classify()` that reads
+`probe()`'s answers, using a tap on the bridge (the port is already held). The PING goes alone
+first and a direct PONG settles it, so a NaviCore — the usual thing on a COM port — never sees
+the doorway questions in its console; only when none comes do `?RELAY,WIFI` and `?WDP,DUMP`
+follow. The role and `relayId` land in the spec, so `/_api/status` reports them and a reattach
+keeps them; a port that does not answer is left without a role, as before, and asked again on
+its next reattach.
+
 One thing that **does** differ, and matters: the SSID to re-associate after a drop. All three
 firmwares derive `<prefix>-<id>` from a *different* prefix — `NaviCore-<id>`,
 `MgmtRelay-<id>`, `WCB-<alias|number>` (`WCB_WiFi.cpp` `wcbWifiDefaultSsid`) — and the bounce
@@ -583,6 +596,7 @@ text against fakes.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-10-04 | _(this commit)_ | **The NaviCore tool reached through a WCB on USB could come up "direct".** Only a WiFi attach ever carried a role (from discovery), so a serial attach reported `role: ""` and the shim never forced Via WCB; through W1 the tool's PING draws NaviCore's PONG back whenever W1's 20 s relay window is open, so a reload or reconnect inside it left *Update over USB (OTA)* enabled and pointed at the WCB — rule 10's hazard, over USB. `api_attach` (and the reconnect loop, and a `--serial` start) now identifies a serial target through the open port with `discover.classify()`, split out of `probe()` so both read answers one way, and records `role`/`relayId` before answering. WCB HIL `intellex.nc_via_usb_doorway` (INTELLEX.md finding 4; bench). |
 | 2026-10-04 | _(this commit)_ | **Mesh boards the shim routed through a WCB doorway were filed under a string relay slot.** `routeMeshThroughBoard()` passed `_wdpMeshConn().slot` — a key of `Object.entries(boardConnections)`, so `"1"` — to `setRemoteConnected` and `remoteBoardPull`, while the Wizard files relay slots as numbers and tests them with `===` (`app.js` `[TERM:n]` demux, the re-arm after a relay drop, `clearRemoteBoardsForRelay`), so a routed board was neither cleared nor re-armed when W1's link dropped. It passes the number now. `tools/smoke_mesh_route.js` expected the string; it now requires the number (and fails 7 checks on the old shim), and it normalises CRLF before extracting, since on a CRLF checkout (`core.autocrlf=true`) its end mark never matched. WCB HIL `intellex.wizard_mesh_relay_slot_number` (INTELLEX.md finding 17; bench). |
 | 2026-10-04 | _(this commit)_ | **The Wizard's guided setup showed broken pictures.** `app.js` names `../Images/LabelOnly.jpg` (the hardware-version step) and `../Images/PololuLogo.png` (the Maestro step), and `WCB_IMAGES` listed neither, so neither was bundled. Both are listed now, and `fetch_wcb()` also fetches any `../Images/<file>` the downloaded `index.html`, `app.js` or `styles.css` names that the list lacks, printing it, so the next new picture is bundled before anyone edits the list. An existing install gets them with its next Wizard update (a run with `--force` fetches them now). WCB HIL `intellex.ui_wizard_setup_images` (INTELLEX.md finding 2). |
 | 2026-10-04 | _(this commit)_ | **A card flashed through Intellex was labelled with GitHub's "latest", not the build written.** The replacement `flashFirmware()` set `window.latestFirmwareVersion`, but the Wizard's is a top-level `let` (`app.js:128`), which a property on `window` cannot reach — the shim's own `wizState()` comment says so — and `boardGo()` labels the card from the `let` (`app.js:7586-7587`), so offline the card kept no version at all. The shim now assigns the `let` by bare name, as `v` + version + DTG (the form `fetchLatestFirmwareVersion` extracts, branch dropped). WCB HIL `intellex.ui_latest_fw_version` (INTELLEX.md finding 1). |

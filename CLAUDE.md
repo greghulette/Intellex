@@ -222,7 +222,11 @@ one failing offline must not roll back the other.
     Via-WCB checkbox is gone (NaviCore `99536e2`), so `autoConnect()` calls the tool's own
     `onViaWcbToggle(true)` for role `wcb` or `relay` -- **after** `connectDirect()`, because
     `openPortAndStart()` resets the flag at its start. `tools/smoke_doorway_via_wcb.js` guards
-    both the switch and its order. Via WCB also strips the `wcbNetwork` transport fields from a
+    both the switch and its order. **A COM port gets a role too**: `host.py`
+    `_identify_attached_serial()` asks it probe()'s questions through the held port before the
+    attach is answered, so a WCB on USB is a doorway like one over WiFi -- without it, a reload
+    inside W1's 20 s relay window brought the tool up "direct". Via WCB also strips the
+    `wcbNetwork` transport fields from a
     Save and warns -- the tool's designed behaviour for a bridge, not a regression. Do not undo
     the switch to get doorway Saves of those fields back.
     **The role it trusts is re-checked when the laptop changes network.** Every AP here is

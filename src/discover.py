@@ -304,12 +304,52 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
     Returns {"kind", "version", "relayId", "alias", "peers"}, where kind is
     navicore | relay | wcb | unknown.
     """
-    info = {"kind": "unknown", "version": None, "relayId": None,
-            "alias": None, "peers": []}
     try:
         from websockets.sync.client import connect
     except ImportError:
-        return info
+        return _unknown()
+
+    try:
+        with connect(f"ws://{host}/ws", open_timeout=timeout, close_timeout=0.5) as ws:
+            # ALL THREE QUESTIONS UP FRONT, then one read.
+            #
+            # They used to be two rounds with an early return on the first PONG,
+            # and that is precisely what made a WCB flap between "WCB" and
+            # "NaviCore" on alternating scans: whether the mesh's PONG landed
+            # inside the first read window was a race, and winning it ended the
+            # probe before the SELF row that would have named the real host was
+            # ever asked for. Both firmwares handle lines in order, so pipelining
+            # costs no extra round trip and removes the ordering dependence.
+            #
+            # TRAILING NEWLINE IS REQUIRED: both firmwares frame on it, so a bare
+            # message is buffered forever waiting for a terminator.
+            for q in PROBE_LINES:
+                ws.send(q)
+            return classify(_read_lines(ws, timeout * 2))
+    except Exception:
+        return _unknown()
+
+
+# The three questions, each newline-terminated -- both firmwares frame on it, so a
+# bare message is buffered forever. Also asked of a COM port: host.py's
+# _identify_attached_serial() reads the replies through the same classify().
+PROBE_LINES = (json.dumps({"type": "PING"}) + "\n", "?RELAY,WIFI\n", "?WDP,DUMP\n")
+
+
+def _unknown() -> dict:
+    return {"kind": "unknown", "version": None, "relayId": None,
+            "alias": None, "peers": []}
+
+
+def classify(lines) -> dict:
+    """What the answers to PROBE_LINES say the host is, from any stream of
+    lines: a socket (probe()) or a COM port (host.py). Stops reading at
+    [WDP:END, and at a direct PONG, which is decisive.
+
+    Returns {"kind", "version", "relayId", "alias", "peers"}, where kind is
+    navicore | relay | wcb | unknown.
+    """
+    info = _unknown()
 
     # A PONG the HOST sent for itself, versus one that merely CROSSED it.
     #
@@ -329,65 +369,45 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
     self_id = None
     said_relay = False
 
-    try:
-        with connect(f"ws://{host}/ws", open_timeout=timeout, close_timeout=0.5) as ws:
-            # ALL THREE QUESTIONS UP FRONT, then one read.
-            #
-            # They used to be two rounds with an early return on the first PONG,
-            # and that is precisely what made a WCB flap between "WCB" and
-            # "NaviCore" on alternating scans: whether the mesh's PONG landed
-            # inside the first read window was a race, and winning it ended the
-            # probe before the SELF row that would have named the real host was
-            # ever asked for. Both firmwares handle lines in order, so pipelining
-            # costs no extra round trip and removes the ordering dependence.
-            #
-            # TRAILING NEWLINE IS REQUIRED: both firmwares frame on it, so a bare
-            # message is buffered forever waiting for a terminator.
-            ws.send(json.dumps({"type": "PING"}) + "\n")
-            ws.send("?RELAY,WIFI\n")
-            ws.send("?WDP,DUMP\n")
-
-            for line in _read_lines(ws, timeout * 2):
-                if line.startswith("[WDP:END"):
-                    break
-                if line.startswith("[relay]"):
-                    said_relay = True
-                    continue
-                if line.startswith("{"):
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if obj.get("type") == "PONG":
-                        version = str(obj.get("version", "unknown"))
-                        if "id" in obj:
-                            mesh_pong_id = str(obj.get("id"))
-                        else:
-                            # DECISIVE, so stop here: an id-less PONG can only be
-                            # the host answering for itself, and waiting out the
-                            # WDP window would cost every NaviCore-hosted AP the
-                            # full timeout for an answer already known. This is
-                            # the same claim the classification below rests on --
-                            # trusting it there and not here would be incoherent.
-                            direct_pong = True
-                            break
-                    continue
-                if not line.startswith("[WDP:"):
-                    continue
-                f = _wdp_fields(line)
-                if f.get("PEER") == "3":              # SELF - the device we are on
-                    self_id = f.get("N")
-                    info["relayId"] = f.get("N")
-                    info["alias"] = f.get("ALIAS")
+    for line in lines:
+        if line.startswith("[WDP:END"):
+            break
+        if line.startswith("[relay]"):
+            said_relay = True
+            continue
+        if line.startswith("{"):
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("type") == "PONG":
+                version = str(obj.get("version", "unknown"))
+                if "id" in obj:
+                    mesh_pong_id = str(obj.get("id"))
                 else:
-                    info["peers"].append({
-                        "id": f.get("N"),
-                        "alias": f.get("ALIAS"),
-                        "fw": f.get("FW"),
-                        "hwrev": f.get("HWREV"),
-                    })
-    except Exception:
-        return info
+                    # DECISIVE, so stop here: an id-less PONG can only be
+                    # the host answering for itself, and waiting out the
+                    # WDP window would cost every NaviCore-hosted AP the
+                    # full timeout for an answer already known. This is
+                    # the same claim the classification below rests on --
+                    # trusting it there and not here would be incoherent.
+                    direct_pong = True
+                    break
+            continue
+        if not line.startswith("[WDP:"):
+            continue
+        f = _wdp_fields(line)
+        if f.get("PEER") == "3":              # SELF - the device we are on
+            self_id = f.get("N")
+            info["relayId"] = f.get("N")
+            info["alias"] = f.get("ALIAS")
+        else:
+            info["peers"].append({
+                "id": f.get("N"),
+                "alias": f.get("ALIAS"),
+                "fw": f.get("FW"),
+                "hwrev": f.get("HWREV"),
+            })
 
     # Settled after the read, never inside it, so the answer cannot depend on the
     # order the replies happened to arrive in.
