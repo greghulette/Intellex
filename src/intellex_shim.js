@@ -1385,9 +1385,22 @@
         if (!st.ok) throw new Error(st.error || 'flash failed — see the log');
         onStatus('Flash complete');
         onLog(`Done — board is running ${st.version}.`);
-        // The tool reads this to label the card after a flash. Setting it keeps
-        // that display honest instead of leaving it on the pre-flash build.
-        try { window.latestFirmwareVersion = st.version; } catch (_) {}
+        // LABEL THE CARD WITH THE BUILD THE HOST WROTE. boardGo() labels a flashed
+        // card from the Wizard's latestFirmwareVersion, a top-level `let`
+        // (app.js:128) -- reachable here by BARE NAME, never as window.x (see
+        // wizState()). Assigning window.latestFirmwareVersion only made a new
+        // property, so the card kept whatever GitHub listed when the page loaded:
+        // nothing at all, offline. Written in the Wizard's own form, 'v' + version
+        // and DTG with the branch dropped (fetchLatestFirmwareVersion, app.js:174-
+        // 176). window.latestFirmwareVersion keeps the host's whole tag, as before.
+        if (st.version) {
+          const m = /^v?([\d.]+_\d{6}R[A-Z]{3}\d{4})/.exec(st.version);
+          try { latestFirmwareVersion = m ? `v${m[1]}` : `v${st.version}`; } catch (_) {
+            console.warn('[Intellex] the Wizard has no latestFirmwareVersion -- the flashed '
+              + 'card keeps its old version label');
+          }
+          try { window.latestFirmwareVersion = st.version; } catch (_) {}
+        }
         return;
       }
     };
