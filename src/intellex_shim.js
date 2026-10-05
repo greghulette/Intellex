@@ -1227,6 +1227,15 @@
         continue;
       }
 
+      // THE SLOT AS A NUMBER. _wdpMeshConn() returns the key of
+      // Object.entries(boardConnections) (app.js:13420-13428), a string. The
+      // Wizard's own callers file a relay slot as a number (relayManageOne,
+      // modalRemoteConnect) and compare it with ===: the [TERM:n] demux, the boards
+      // re-armed after a relay drop, clearRemoteBoardsForRelay. Filed under '1', a
+      // board routed here was neither cleared nor re-armed when the doorway's link
+      // dropped.
+      const slot = parseInt(parent.slot, 10);
+      if (!Number.isInteger(slot)) continue;
       // PREFER the sweep's own nodes: they carry CLIENT, so a relay or a NaviCore
       // is excluded on the authoritative flag rather than on a guess.
       const parentNum = parseInt(parent.wcbNum, 10);
@@ -1248,7 +1257,7 @@
 
       const targets = seen.filter(n =>
         Number.isInteger(n) && n >= 1 && n <= 20
-        && n !== parentNum && String(n) !== String(parent.slot)
+        && n !== parentNum && n !== slot
         && !st.conns[n]?.isConnected?.()   // a directly-cabled board is not ours to route
         && !st.baselines[n]                // already pulled — do not re-pull on every sweep
         && !st.pulling.has(n)
@@ -1261,7 +1270,7 @@
         _meshRoutedOnce.add(n);            // claim it before awaiting, so the next
                                            // tick cannot pick the same board up again
         try {
-          if (st.relayFor[n] !== parent.slot) window.setRemoteConnected(n, parent.slot);
+          if (st.relayFor[n] !== slot) window.setRemoteConnected(n, slot);
           // remoteBoardPull signals through its onComplete CALLBACK, not by
           // resolving — the same contract relayRouteAll relies on.
           //
@@ -1276,7 +1285,7 @@
           let timer;
           const done = await Promise.race([
             new Promise(res => {
-              const p = window.remoteBoardPull(parent.slot, n, 1, 3, res);
+              const p = window.remoteBoardPull(slot, n, 1, 3, res);
               if (p && p.catch) p.catch(() => res(false));
             }),
             new Promise(res => { timer = setTimeout(() => res('timeout'), PULL_WATCHDOG_MS); }),

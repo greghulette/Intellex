@@ -170,6 +170,13 @@ only one. The page side is equally general: `remoteBoardPull(parent, target)` ne
 `boardConnections[parent]` live, and `setRemoteConnected(target, parent)` has no relay check in
 it at all. **Only the entry point was relay-shaped.**
 
+**The parent slot goes in as a number.** `_wdpMeshConn().slot` is a key of
+`Object.entries(boardConnections)`, so a string, while the Wizard's own callers file a relay
+slot as a number and compare it with `===` — the `[TERM:n]` demux, the boards re-armed after a
+relay drop, `clearRemoteBoardsForRelay`. A board filed under `"1"` was neither cleared nor
+re-armed when the doorway's link dropped, so `routeMeshThroughBoard()` passes
+`parseInt(slot, 10)`.
+
 ### Why not just call `relayRouteAll()` with the WCB's slot
 
 Two reasons, both fatal:
@@ -576,6 +583,7 @@ text against fakes.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-10-04 | _(this commit)_ | **Mesh boards the shim routed through a WCB doorway were filed under a string relay slot.** `routeMeshThroughBoard()` passed `_wdpMeshConn().slot` — a key of `Object.entries(boardConnections)`, so `"1"` — to `setRemoteConnected` and `remoteBoardPull`, while the Wizard files relay slots as numbers and tests them with `===` (`app.js` `[TERM:n]` demux, the re-arm after a relay drop, `clearRemoteBoardsForRelay`), so a routed board was neither cleared nor re-armed when W1's link dropped. It passes the number now. `tools/smoke_mesh_route.js` expected the string; it now requires the number (and fails 7 checks on the old shim), and it normalises CRLF before extracting, since on a CRLF checkout (`core.autocrlf=true`) its end mark never matched. WCB HIL `intellex.wizard_mesh_relay_slot_number` (INTELLEX.md finding 17; bench). |
 | 2026-10-04 | _(this commit)_ | **The Wizard's guided setup showed broken pictures.** `app.js` names `../Images/LabelOnly.jpg` (the hardware-version step) and `../Images/PololuLogo.png` (the Maestro step), and `WCB_IMAGES` listed neither, so neither was bundled. Both are listed now, and `fetch_wcb()` also fetches any `../Images/<file>` the downloaded `index.html`, `app.js` or `styles.css` names that the list lacks, printing it, so the next new picture is bundled before anyone edits the list. An existing install gets them with its next Wizard update (a run with `--force` fetches them now). WCB HIL `intellex.ui_wizard_setup_images` (INTELLEX.md finding 2). |
 | 2026-10-04 | _(this commit)_ | **A card flashed through Intellex was labelled with GitHub's "latest", not the build written.** The replacement `flashFirmware()` set `window.latestFirmwareVersion`, but the Wizard's is a top-level `let` (`app.js:128`), which a property on `window` cannot reach — the shim's own `wizState()` comment says so — and `boardGo()` labels the card from the `let` (`app.js:7586-7587`), so offline the card kept no version at all. The shim now assigns the `let` by bare name, as `v` + version + DTG (the form `fetchLatestFirmwareVersion` extracts, branch dropped). WCB HIL `intellex.ui_latest_fw_version` (INTELLEX.md finding 1). |
 | 2026-10-04 | _(this commit)_ | **A WCB flash refused after detection left the board in its ROM loader.** `detect()` runs `esptool --before default-reset --after no-reset flash-id`, which leaves the chip in its loader (`Staying in bootloader.`); every refusal after it — no cached image, two app images, a full flash with no bootloader or table, an Update that cannot escalate — raised with nothing written, and `_start_flash_job` reattached the port with DTR/RTS low, so nothing reset the chip: on the bench W2 answered nothing on its own port until the harness's EN pulse. `wcb_flash.boot_app()` restarts it (one esptool connect, `--after hard-reset`) before any such refusal is raised, `detect()`'s own included. A failed *write* is not covered: that board may hold half an image. WCB HIL `intellex.flash_refused_board_runs` (INTELLEX.md finding 18; bench only). |

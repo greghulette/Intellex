@@ -19,7 +19,9 @@
 // this file stops terminating at all -- which is precisely the bug.
 const fs = require('fs');
 const shimPath = require('path').join(__dirname, '..', 'src', 'intellex_shim.js');
-const src = fs.readFileSync(shimPath, 'utf8');
+// LF, whatever the checkout: with core.autocrlf=true (the Windows default) the
+// working tree is CRLF and the end mark below never matched -- "could not extract".
+const src = fs.readFileSync(shimPath, 'utf8').replace(/\r\n/g, '\n');
 
 const start = src.indexOf('  const _meshRoutedOnce = new Set();');
 const endMark = '\n  }\n\n  // ── Native flashing for the Wizard';
@@ -115,10 +117,16 @@ const check = (name, cond, extra='') => {
   // 1 — plain WCB doorway: both mesh boards armed + pulled, one at a time.
   reset();
   await makeScope()();
+  // Slot 21 as the NUMBER 21, though _wdpMeshConn() hands it over as the string
+  // '21': the Wizard compares relay slots with ===, so a board filed under '21'
+  // missed the relay-drop clear and re-arm.
   check('armed both mesh boards through the doorway',
-        JSON.stringify(armed) === JSON.stringify([[1,'21'],[2,'21']]), JSON.stringify(armed));
+        JSON.stringify(armed) === JSON.stringify([[1,21],[2,21]]), JSON.stringify(armed));
   check('pulled both, through slot 21',
-        JSON.stringify(pulls) === JSON.stringify([['21',1],['21',2]]), JSON.stringify(pulls));
+        JSON.stringify(pulls) === JSON.stringify([[21,1],[21,2]]), JSON.stringify(pulls));
+  check('filed each under relay slot 21, a number',
+        globalThis.remoteRelayForBoard[1] === 21 && globalThis.remoteRelayForBoard[2] === 21,
+        JSON.stringify(globalThis.remoteRelayForBoard));
   check('pulls were SEQUENTIAL (never two in flight)', maxConcurrent === 1, `max=${maxConcurrent}`);
   check('did not pull the doorway itself', !pulls.some(p => p[1] === 21));
 
@@ -131,13 +139,13 @@ const check = (name, cond, extra='') => {
   reset(); globalThis.boardBaselines[1] = {pulled:true};
   await makeScope()();
   check('skipped the board that already had a baseline',
-        JSON.stringify(pulls) === JSON.stringify([['21',2]]), JSON.stringify(pulls));
+        JSON.stringify(pulls) === JSON.stringify([[21,2]]), JSON.stringify(pulls));
 
   // 4 — a directly-cabled board is left alone.
   reset(); globalThis.boardConnections[2] = { isConnected: () => true };
   await makeScope()();
   check('left the directly-connected board alone',
-        JSON.stringify(pulls) === JSON.stringify([['21',1]]), JSON.stringify(pulls));
+        JSON.stringify(pulls) === JSON.stringify([[21,1]]), JSON.stringify(pulls));
 
   // 5 — nothing connected yet: no crash, no pulls.
   reset(); globalThis.boardConnections = {};
@@ -164,7 +172,7 @@ const check = (name, cond, extra='') => {
   check('did not pull the NaviCore client at 20', !pulls.some(p => p[1] === 20),
         JSON.stringify(pulls));
   check('still pulled both REAL boards',
-        JSON.stringify(pulls) === JSON.stringify([['21',1],['21',2]]), JSON.stringify(pulls));
+        JSON.stringify(pulls) === JSON.stringify([[21,1],[21,2]]), JSON.stringify(pulls));
 
   // 8 — same, before any sweep has been captured: the fallback must subtract
   //     clients too, or the first poll pulls them in the window before a sweep.
@@ -173,7 +181,7 @@ const check = (name, cond, extra='') => {
   check('no sweep yet → fallback still excluded both clients',
         !pulls.some(p => p[1] === 19 || p[1] === 20), JSON.stringify(pulls));
   check('no sweep yet → still pulled the real boards',
-        JSON.stringify(pulls) === JSON.stringify([['21',1],['21',2]]), JSON.stringify(pulls));
+        JSON.stringify(pulls) === JSON.stringify([[21,1],[21,2]]), JSON.stringify(pulls));
 
   console.log(failed ? `\nmesh-route: ${failed} FAILURE(S)` : '\nmesh-route: OK');
   process.exitCode = failed ? 1 : 0;
