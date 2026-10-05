@@ -334,6 +334,7 @@ src/webui_wcb/
                    serial-hub.js styles.css favicon.png manifest.json
                    vendor/crypto-js/…  vendor/esptool-js/…
   Images/          r2logo.png navicore-icon.png kyberLogo.png qr-code.png
+                   LabelOnly.jpg PololuLogo.png
 ```
 
 `host.py` mounts that directory at `/wcb/`, so the Wizard is served at `/wcb/Wizard/`.
@@ -344,8 +345,16 @@ published file is served *byte-identically*; flattening it would mean rewriting 
 `index.html`, which is a fork. It also keeps the two tools' images apart — both ship a
 `qr-code.png` and an `r2logo.png`.
 
+**`app.js` reaches into `../Images` too**, not only `index.html`: the guided setup's
+hardware-version step shows `LabelOnly.jpg` and its Maestro step `PololuLogo.png`. Pages serves
+no directory index, so `WCB_IMAGES` names each file, and a picture missing from it is a broken
+image here while the published site looks fine. So the fetcher also scans the Wizard files it
+just downloaded for `../Images/<file>` references (`image_refs()`) and fetches any the list
+lacks, saying so. `WCB_IMAGES` stays a literal list: the WCB repo's HIL harness reads it to stage
+the same bundle.
+
 Firmware binaries are **not** bundled: `flasher.js` pulls them from the GitHub Contents API at
-flash time, and so does `src/wcb_flash.py`. The bundle is ~1.1 MB, 16 files.
+flash time, and so does `src/wcb_flash.py`. The bundle is ~1.2 MB, 18 files.
 
 Version handle: `UI_VERSION` in `app.js` (`app.js:115`), stamped by the WCB repo's pre-commit
 hook. It plays the role `footer-dtg` plays for the NaviCore tool. `/_api/webui-version` reports
@@ -567,6 +576,7 @@ text against fakes.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-10-04 | _(this commit)_ | **The Wizard's guided setup showed broken pictures.** `app.js` names `../Images/LabelOnly.jpg` (the hardware-version step) and `../Images/PololuLogo.png` (the Maestro step), and `WCB_IMAGES` listed neither, so neither was bundled. Both are listed now, and `fetch_wcb()` also fetches any `../Images/<file>` the downloaded `index.html`, `app.js` or `styles.css` names that the list lacks, printing it, so the next new picture is bundled before anyone edits the list. An existing install gets them with its next Wizard update (a run with `--force` fetches them now). WCB HIL `intellex.ui_wizard_setup_images` (INTELLEX.md finding 2). |
 | 2026-10-04 | _(this commit)_ | **A card flashed through Intellex was labelled with GitHub's "latest", not the build written.** The replacement `flashFirmware()` set `window.latestFirmwareVersion`, but the Wizard's is a top-level `let` (`app.js:128`), which a property on `window` cannot reach — the shim's own `wizState()` comment says so — and `boardGo()` labels the card from the `let` (`app.js:7586-7587`), so offline the card kept no version at all. The shim now assigns the `let` by bare name, as `v` + version + DTG (the form `fetchLatestFirmwareVersion` extracts, branch dropped). WCB HIL `intellex.ui_latest_fw_version` (INTELLEX.md finding 1). |
 | 2026-10-04 | _(this commit)_ | **A WCB flash refused after detection left the board in its ROM loader.** `detect()` runs `esptool --before default-reset --after no-reset flash-id`, which leaves the chip in its loader (`Staying in bootloader.`); every refusal after it — no cached image, two app images, a full flash with no bootloader or table, an Update that cannot escalate — raised with nothing written, and `_start_flash_job` reattached the port with DTR/RTS low, so nothing reset the chip: on the bench W2 answered nothing on its own port until the harness's EN pulse. `wcb_flash.boot_app()` restarts it (one esptool connect, `--after hard-reset`) before any such refusal is raised, `detect()`'s own included. A failed *write* is not covered: that board may hold half an image. WCB HIL `intellex.flash_refused_board_runs` (INTELLEX.md finding 18; bench only). |
 | 2026-10-04 | _(this commit)_ | **Update FW skipped the partition-table check the Wizard's own flasher makes.** `wcb_flash.write_list(app_only=True)` wrote the app alone and never read the board's table, while `flasher.js` compares the table at `0x8000` and escalates once to a full, NVS-preserving flash when it differs — the module header claimed parity. A board still on the default table would have taken a min_spiffs-sized app (1.38 MB) into a 1.25 MB slot. `flash()` now runs `update_needs_full()` (an `esptool read-flash` of `0x200` bytes) before choosing the write list, with `flasher.js`'s rules for an unreadable table. An Update therefore runs esptool three times (flash-id, read-flash, write-flash). The bench boards are min_spiffs already, so only the unit shows it: WCB HIL `intellex.flash_update_partition_escalates` (INTELLEX.md finding 5). `intellex.flash_pipeline_fake` pins the old two-run sequence, and its fake esptool reads a blank table unless `FAKE_ESPTOOL_TABLE` is set, so that case needs the build's table seeded and `read-flash` in its expected runs. |

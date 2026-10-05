@@ -146,8 +146,22 @@ WCB_VENDOR = [
 ]
 # Siblings of Wizard/ on gh-pages, same as NaviCore's Images. Named explicitly
 # because Pages serves no directory index and the repo's Images/ also holds
-# large art the Wizard never references.
-WCB_IMAGES = ["r2logo.png", "navicore-icon.png", "kyberLogo.png", "qr-code.png"]
+# large art the Wizard never references. The last two are the guided setup's
+# hardware-version and Maestro steps (app.js), which showed broken pictures here
+# until they were added. A literal list, because the WCB repo's HIL harness reads
+# it to stage the same bundle; image_refs() below catches the next one the Wizard
+# starts using before this list learns of it.
+WCB_IMAGES = ["r2logo.png", "navicore-icon.png", "kyberLogo.png", "qr-code.png",
+              "LabelOnly.jpg", "PololuLogo.png"]
+# A "../Images/<file>" reference in the Wizard's own source. A bare file name
+# with an image extension, never a path: the name becomes a URL and a filename.
+_IMG_REF_RE = re.compile(
+    rb"\.\./Images/([A-Za-z0-9_-][A-Za-z0-9._-]*\.(?:png|jpe?g|gif|svg|webp|ico))\b", re.I)
+
+
+def image_refs(*sources: bytes) -> list[str]:
+    """Every ../Images file these sources name, sorted."""
+    return sorted({m.decode("ascii") for s in sources for m in _IMG_REF_RE.findall(s)})
 
 # The Wizard has no footer-dtg. Its stamp is a JS constant in app.js, written by
 # the WCB repo's pre-commit hook and by Wizard/watch-version.js -- the same role
@@ -406,7 +420,16 @@ def fetch_wcb(base: str, check: bool, force: bool) -> int:
         # ".../Wizard" -> ".../Images", the sibling the page reaches with "..".
         img_base = base.rsplit("/", 1)[0] + "/Images"
         (staged / "Images").mkdir()
-        for name in WCB_IMAGES:
+        # The list, plus anything the fetched Wizard names that the list lacks:
+        # a picture missing from the bundle is a broken image in the app while the
+        # published site looks fine, which is how two went unnoticed.
+        named = image_refs(*((wiz / n).read_bytes() for n in WCB_FILES
+                             if n.endswith((".html", ".js", ".css"))))
+        extra = [n for n in named if n not in WCB_IMAGES]
+        for name in extra:
+            print(f"  Images/{name}: the Wizard uses it and WCB_IMAGES does not list "
+                  f"it -- fetched anyway; add it to the list")
+        for name in WCB_IMAGES + extra:
             try:
                 (staged / "Images" / name).write_bytes(get(f"{img_base}/{name}"))
                 got += 1

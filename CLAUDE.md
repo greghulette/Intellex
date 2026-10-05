@@ -155,7 +155,7 @@ against a newer UI. Skip `index-Old.html` and `index1.html` (frozen, nothing loa
 Source: `https://greghulette.github.io/NaviCore/config_tool/`. Per-branch previews exist at
 `/dev/<branch>/config_tool/` — a free test channel.
 
-**The Wizard is not one file either.** ~1.1 MB across 16 files: `index.html` + `app.js` +
+**The Wizard is not one file either.** ~1.2 MB across 18 files: `index.html` + `app.js` +
 `parser.js` + `flasher.js` + `device-labels.js` + `serial-hub.js` + `styles.css` + `vendor/`,
 plus the sibling `Images/`. Its version stamp is **`UI_VERSION` in `app.js`**, not a footer
 element — the WCB pre-commit hook writes it, so it plays the same role `footer-dtg` does.
