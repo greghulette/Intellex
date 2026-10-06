@@ -13,6 +13,11 @@ set in this process's environment the way a test bench sets it for a host
                                   outside the list -- BEFORE anything opens it
     H3  INTELLEX_DISCOVER_HOSTS   discover.scan() probes only the named hosts; set-but-empty
                                   probes nothing; an explicit list still wins
+    H4  INTELLEX_DATA_DIR         paths.user_data_dir() is the named directory, on every platform
+
+and, not a hook but the same fake makes it checkable: SerialTransport.open() opens quietly
+and alone -- on Windows DTR and RTS low before the open; on macOS/Linux RTS low and the port
+exclusive at the open, DTR low after it (the order that does not reset a board there).
 
 WHY IT CANNOT PASS WITHOUT THE HOOKS
 pyserial is replaced by a fake that records every open(), and discover.local_ip_for is
@@ -42,17 +47,20 @@ def check(ok: bool, what: str) -> None:
 
 # ── A pyserial that opens nothing and remembers what it was asked to open ─────────────────
 OPENS: list[str] = []
+LINES_AT_OPEN: list[tuple] = []      # (port, dtr, rts, exclusive) as each open() found them
 PORTS = ["COM5", "COM6", "COM99"]
 
 
 class _FakeSerial:
     def __init__(self, *a, **k):
         self.port, self.baudrate, self.timeout, self.write_timeout = None, 115200, None, None
-        self.dtr = self.rts = False
+        self.dtr = self.rts = True          # pyserial's defaults: both asserted unless told otherwise
+        self.exclusive = None
         self.is_open = False
 
     def open(self):
         OPENS.append(str(self.port))
+        LINES_AT_OPEN.append((str(self.port), self.dtr, self.rts, self.exclusive))
         self.is_open = True
 
     def close(self):
@@ -85,9 +93,10 @@ fake_tools.list_ports = fake_list_ports
 fake_serial.tools = fake_tools
 sys.modules.update({"serial": fake_serial, "serial.tools": fake_tools, "serial.tools.list_ports": fake_list_ports})
 
-for var in ("INTELLEX_OFFLINE", "INTELLEX_SERIAL_ALLOW", "INTELLEX_DISCOVER_HOSTS"):
+for var in ("INTELLEX_OFFLINE", "INTELLEX_SERIAL_ALLOW", "INTELLEX_DISCOVER_HOSTS", "INTELLEX_DATA_DIR"):
     os.environ.pop(var, None)
 
+import paths                                                   # noqa: E402
 import flash                                                   # noqa: E402
 import transport                                               # noqa: E402
 import discover                                                # noqa: E402
@@ -179,6 +188,30 @@ try:
 finally:
     discover.local_ip_for = real_local_ip_for
     os.environ.pop("INTELLEX_DISCOVER_HOSTS", None)
+
+# ── H4 ────────────────────────────────────────────────────────────────────────────────────
+print("-- H4 INTELLEX_DATA_DIR")
+stage = pathlib.Path(__file__).resolve().parent / "_smoke_stage" / "appdata" / "Intellex"   # never created
+os.environ["INTELLEX_DATA_DIR"] = str(stage)
+check(paths.user_data_dir() == stage, f"user_data_dir() is the named directory ({paths.user_data_dir()})")
+check(not stage.exists(), "...and naming it creates nothing")
+os.environ.pop("INTELLEX_DATA_DIR")
+
+# ── The open itself ───────────────────────────────────────────────────────────────────────
+print("-- SerialTransport.open(): quiet and alone")
+LINES_AT_OPEN.clear()
+t = SerialTransport("COM6", on_data=lambda b: None)
+t.open()
+try:
+    port, dtr, rts, exclusive = LINES_AT_OPEN[-1]
+    if os.name == "nt":
+        check((dtr, rts) == (False, False), f"Windows: DTR and RTS low before the open (dtr={dtr}, rts={rts})")
+    else:
+        check(rts is False, f"macOS/Linux: RTS low at the open (rts={rts})")
+        check(exclusive is True, f"...the port exclusive (exclusive={exclusive})")
+        check(t._ser.dtr is False, f"...and DTR low after it (dtr={t._ser.dtr})")
+finally:
+    t.close()
 
 print()
 print("PASSED" if not failures else f"FAILED: {len(failures)} check(s)")

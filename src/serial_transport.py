@@ -6,6 +6,7 @@ rules there are each a specific bug, and this file is where two of them are kept
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Optional
 
@@ -61,12 +62,31 @@ class SerialTransport(Transport):
         s.baudrate = self._baud
         s.timeout = _READ_TIMEOUT_S
         s.write_timeout = 2.0
-        # Not flow control -- these are the control-line states applied on open.
-        s.dtr = False
-        s.rts = False
+        if os.name == "nt":
+            # Not flow control -- these are the control-line states applied on open.
+            s.dtr = False
+            s.rts = False
+        else:
+            # macOS and Linux raise DTR and RTS when the port opens, and pyserial then
+            # lowers DTR BEFORE RTS: for that moment RTS alone is asserted, which is the
+            # auto-reset circuit's reset (and the S3 USB-Serial/JTAG's), so both lines low
+            # before open() still rebooted the board on every open (the WCB repo's HIL
+            # intellex.serial_no_reset_w1 / _navicore, run 20261005-221308). RTS goes low
+            # at the open and DTR after it: DTR alone only straps IO0, which is read at a
+            # reset that never comes. exclusive is Windows' one owner per port: without it
+            # a host attached a port another process held, and the two split its bytes
+            # (intellex.bridge_failed_attach_w1).
+            s.exclusive = True
+            s.rts = False
         try:
             s.open()
+            if os.name != "nt":
+                s.dtr = False
         except (serial.SerialException, OSError) as e:
+            try:
+                s.close()
+            except Exception:  # noqa: BLE001 - the open failed; nothing more to undo
+                pass
             raise TransportError(f"cannot open {self._path}: {e}") from e
 
         self._ser = s

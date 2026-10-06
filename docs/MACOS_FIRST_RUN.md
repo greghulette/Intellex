@@ -186,6 +186,11 @@ pyserial lists both; the chooser now filters `tty.` out, so you should only ever
 offered the `cu.` side. Confirmed on the real machine: `/dev/tty.usbmodem141301`
 and friends exist and none of them reach the chooser.
 
+Opening a port must not reset the board, and on macOS that takes an order: the OS raises
+DTR and RTS at the open, so `SerialTransport.open()` lowers RTS at the open and DTR after it
+(both low before the open still reset it, because pyserial lowered DTR first). It also opens
+with `exclusive`, so a port another program holds is refused rather than shared.
+
 Two things worth knowing that the list makes obvious:
 
 - VIDs decode as designed — `12346` = `0x303A` Espressif, `4292` = `0x10C4` CP210x.
@@ -230,6 +235,7 @@ running before debugging the window.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-10-06 | _(pending)_ | **Opening a port no longer resets the board, and a held port is refused.** macOS raises DTR and RTS when a port opens and pyserial then lowers DTR first, so for a moment RTS alone was asserted — the auto-reset (and the S3 USB-Serial/JTAG) reset — and every attach rebooted a WCB or NaviCore even with both lines set low before `open()`. `SerialTransport.open()` now lowers RTS at the open and DTR after it, and opens with `exclusive` (Windows' one-owner rule), so it can no longer attach a port another process holds. Found by the WCB repo's HIL bench on this Mac (`intellex.serial_no_reset_w1`/`_navicore`, `bridge_failed_attach_w1`, run 20261005-221308); `tools/smoke_test_hooks.py` checks the order. Also `INTELLEX_DATA_DIR`: a test host's data directory on every platform, since `LOCALAPPDATA` isolates one on Windows only. |
 | 2026-09-08 | _(uncommitted)_ | Renamed NaviLink -> Intellex, so the macOS launcher at the repo root is now `Intellex.command` and the build products are `Intellex.app` / `Intellex.dmg`. The quarantine command changes with it. Rows above this one were swept too and name the app Intellex for work done while it was still NaviLink. |
 | 2026-09-01 | _(uncommitted)_ | **First real run on a Mac.** Four things, in the order they bit. (1) A fresh clone has no UI — `src/webui/` is gitignored — so the first screen was "No bundled config tool". All four launchers now fetch it when `src/webui/index.html` is absent, non-fatally. (2) The fetch then failed anyway: python.org Python ships an EMPTY CA store, so every HTTPS request died as `CERTIFICATE_VERIFY_FAILED` while reporting itself as *"cannot reach ... (offline is fine)"*. Added `certifi` to requirements and `src/certs.py`, shared by the fetcher and the app's update probe; a cert failure is now told apart from being offline everywhere it surfaces, including the launcher's version line, which had been saying "offline — cannot compare" on a networked machine. (3) `fetch_webui.py` had no retry, and Pages throttled the ~35-file burst with a 503 partway through cmdlib, aborting the whole update with a traceback that named `urlopen` but not the file. It now retries what is worth retrying, skips what is not (404s, cert failures), and names the URL that lost. (4) `_wifi_bounce_macos()` confirmed broken on real hardware — see item 3 above; diagnosed and written up, not yet fixed. Also: pywebview/WKWebView verified working first try, serial `cu.*`/VID handling verified, and `smoke_host.py` no longer needs 3.11. |
 | 2026-08-31 | _(uncommitted)_ | Added `Intellex.command` at the repo root, so "how do I open it" has the same answer on both platforms — the Windows launcher was at the root while macOS users had to know `scripts/` existed. Added `.gitattributes` pinning `*.command`/`*.sh` to LF and `*.bat` to CRLF: these are authored on a Windows box with `core.autocrlf=true`, and a CRLF shebang fails on macOS as `bad interpreter: /bin/bash^M`, which does not look like a line-ending problem. Recorded the quarantine distinction (downloads carry it, clones do not) where someone hitting it will look. |

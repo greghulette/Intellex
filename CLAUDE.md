@@ -100,7 +100,9 @@ Not preference. `NaviCore/config_tool/index.html` ≈4468 records a measured fin
 asserts DTR/RTS inside `open()` and Web Serial exposes no way to suppress it, so **the droid
 reboots on every page refresh** (`Reset reason: 11 - USB peripheral`). No browser-side work can
 fix it — including Electron, which is the same Chromium implementation. `pyserial` can open a
-port without touching the control lines.
+port without touching the control lines — on Windows by setting both low before the open; on
+macOS and Linux, where the OS raises both at the open and pyserial lowers DTR first (RTS alone
+is the reset), only by lowering RTS at the open and DTR after it (`SerialTransport.open()`).
 
 That is the strongest technical justification for this project, and it is not "we wanted an app".
 
@@ -476,7 +478,7 @@ A host started by a test bench shares the PC with boards other tests are using. 
 alone it reaches for all of them: the launcher PINGs **every** Espressif serial port it can
 see (an SBUS controller resets when its port opens; a NaviCore may be mid-run), discovery
 probes `192.168.4.1` over whatever adapter routes there, and every network feature waits on
-a GitHub probe. Three environment variables hold it to what the test wants. Unset, each
+a GitHub probe. Four environment variables hold it to what the test wants. Unset, each
 changes nothing, so the app as users run it is untouched:
 
 | Variable | Effect | Where |
@@ -484,10 +486,13 @@ changes nothing, so the app as users run it is untouched:
 | `INTELLEX_OFFLINE=1` | GitHub is unreachable, deterministically. Every network consumer asks one probe, so this reaches all of them, fetch subprocesses included. | `flash.reachable()` |
 | `INTELLEX_SERIAL_ALLOW=COM5,COM6` | Only these ports are listed, identified, opened or handed to esptool (case-insensitive; set-but-empty means none). | `transport.serial_allowed()`, used by `list_serial_ports`, `SerialTransport.open`, `discover.identify_serial`, `_claim_port_for_flash` |
 | `INTELLEX_DISCOVER_HOSTS=192.168.4.1` | The hosts discovery probes (set-but-empty means none); an explicit `?hosts=` still wins. | `discover.scan()` |
+| `INTELLEX_DATA_DIR=<dir>` | The per-user directory itself — settings, logs, bundles, the firmware cache — on every platform. | `paths.user_data_dir()` |
 
-Isolation needs no hook on Windows: point `LOCALAPPDATA` at a scratch directory and the
-settings, logs, bundles and firmware cache go there (`paths.user_data_dir()`). The WCB repo's
-HIL harness runs every Intellex test this way, against a staged copy of `src/`.
+`LOCALAPPDATA` alone isolates a host on Windows only: on macOS and Linux the directory hangs
+off the home folder, so a staged host wrote the real `~/Library/Application Support/Intellex`
+and missed the firmware cache its test had seeded. The WCB repo's HIL harness runs every
+Intellex test against a staged copy of `src/` with `INTELLEX_DATA_DIR` (and `LOCALAPPDATA`)
+pointing into the stage.
 
 ## Verifying
 

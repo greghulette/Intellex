@@ -85,7 +85,15 @@ def user_data_dir() -> pathlib.Path:
     executable: an installed app directory is not writable by a normal user on
     either platform, and putting user state there is what makes an app need
     admin rights to do something as ordinary as refreshing its UI.
+
+    INTELLEX_DATA_DIR names the directory outright, on every platform (H4, CLAUDE.md "A
+    test host needs a leash"): a test bench's staged host keeps its settings, logs, bundles
+    and firmware cache there. LOCALAPPDATA did that on Windows alone; on macOS and Linux
+    the directory hangs off the home folder, so a staged host wrote the real one.
     """
+    override = os.environ.get("INTELLEX_DATA_DIR")
+    if override:
+        return pathlib.Path(override)
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
         d = pathlib.Path(base) / "Intellex"
