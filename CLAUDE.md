@@ -535,7 +535,9 @@ node tools/smoke_doorway_via_wcb.js
 
 # Moved to another board's access point while attached: does the host
 # re-identify BEFORE reattaching, and hold rather than guess when nothing
-# answers? Runs the REAL reconnect_loop against a fake Bridge and a faked
+# answers? With no SSID to compare (macOS) it asks the board instead, and
+# reattaches as before when nothing identifies itself. Runs the REAL
+# reconnect_loop against a fake Bridge and a faked
 # route/SSID/probe, and asserts the order. Also checks the bounce's failure
 # message. Run after touching reconnect_loop, ssid_for_host or wifi_bounce.
 python tools/smoke_reconnect_identity.py

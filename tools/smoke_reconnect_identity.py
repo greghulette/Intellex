@@ -213,13 +213,36 @@ def no_route_at_all_asks_nothing_more():
     return got is None and os_.calls == ["route"], f"got {got!r}, calls {os_.calls}"
 
 
+# No recorded SSID (macOS, where ssid_for_host cannot answer): the board is asked
+# instead (_reidentify_by_probe) - before 2026-10-07 nothing was asked, and a Mac
+# hopping from a WCB's access point to NaviCore's kept the WCB's role.
 @case
-def no_recorded_ssid_asks_nothing():
+def no_recorded_ssid_asks_the_board():
     os_ = FakeOS(ssid="NaviCore", kind="navicore")
     spec = wcb1()
     del spec["ssid"]
     got = hostmod._reidentify_if_moved(spec)
-    return got is None and os_.calls == [], f"got {got!r}, calls {os_.calls}"
+    ok = (got and got.get("spec", {}).get("role") == "navicore" and "relayId" not in got["spec"]
+          and "network changed" in got.get("note", "") and os_.calls == ["route", "probe"])
+    return ok, f"got {got!r}, calls {os_.calls}"
+
+
+@case
+def no_recorded_ssid_same_board_is_not_a_move():
+    os_ = FakeOS(ssid="NaviCore", kind="wcb", relay_id=1)
+    spec = wcb1()
+    del spec["ssid"]
+    got = hostmod._reidentify_if_moved(spec)
+    return got is None and os_.calls == ["route", "probe"], f"got {got!r}, calls {os_.calls}"
+
+
+@case
+def no_recorded_ssid_unidentified_reattaches():
+    os_ = FakeOS(ssid="NaviCore", kind="unknown")
+    spec = wcb1()
+    del spec["ssid"]
+    got = hostmod._reidentify_if_moved(spec)
+    return got is None and os_.calls == ["route", "probe"], f"got {got!r}, calls {os_.calls}"
 
 
 @case

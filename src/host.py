@@ -1577,21 +1577,24 @@ def _reidentify_if_moved(spec: Optional[dict]) -> Optional[dict]:
     no role would leave a WCB doorway looking like a direct link, which is the
     OTA hazard again; the loop simply asks again on the next pass.
 
-    Cheap in the common case. No recorded SSID (serial, macOS -- where
-    ssid_for_host cannot answer -- or an attach the OS could not name) or no
-    address on the host's subnet costs no netsh at all, and a reboot on the SAME
-    network, which is every OTA, costs one SSID lookup and no probe.
+    Cheap in the common case. A serial attach, or no address on the host's
+    subnet, costs nothing; a reboot on the SAME network, which is every OTA, costs
+    one SSID lookup and no probe. With no recorded SSID (macOS -- where
+    ssid_for_host cannot answer -- or an attach the OS could not name) there is no
+    name to compare, so the host is probed instead (_reidentify_by_probe).
 
     FAILS OPEN. This runs in the loop that makes OTA recover; an unexpected error
     here must cost the check, never the reconnect.
     """
     try:
-        if not spec or spec.get("kind") != "ws" or not spec.get("ssid"):
+        if not spec or spec.get("kind") != "ws":
             return None
         host = spec.get("host", "192.168.4.1")
         via = discover.local_ip_for(host)
         if not via or via.rsplit(".", 1)[0] != host.rsplit(".", 1)[0]:
             return None                    # no lease there; the attach fails regardless
+        if not spec.get("ssid"):
+            return _reidentify_by_probe(spec, host)
         was, now = spec["ssid"], discover.ssid_for_host(host)
         # Matched the bounce's way, not with ==: a droid left on its default name
         # is "NaviCore-20" while a --ssid target records the bare "NaviCore", and
@@ -1622,6 +1625,46 @@ def _reidentify_if_moved(spec: Optional[dict]) -> Optional[dict]:
                 "note": f'network changed "{was}" -> "{now}": {host} is now {who}'}
     except Exception:
         return None
+
+
+def _reidentify_by_probe(spec: dict, host: str) -> Optional[dict]:
+    """_reidentify_if_moved with no network name to compare: ask the host what it is.
+
+    macOS cannot name the network (ssid_for_host answers None there: a USB adapter
+    is not a "Wi-Fi" port, and from macOS 14 the SSID is behind Location Services),
+    so the SSID check never ran on a Mac and a move was never seen: attached to
+    NaviCore's access point, the adapter moved to WCB1's, and the host reattached
+    to 192.168.4.1 still calling it NaviCore (HIL intellex.wifi_ap_hop_reidentify
+    on the Mac, 2026-10-07) - the rule-10 hazard the SSID check exists to stop.
+    So on every reattach without a recorded SSID the host is probed, and a
+    different board - NaviCore where a WCB was, a WCB where NaviCore was, or
+    another WCB number - is a move, with the same note and the same new spec.
+
+    FAILS OPEN, unlike the SSID path's hold: here nothing says the laptop moved,
+    so a host that does not identify itself (still booting after an OTA, a WCB
+    with WDP off) is reattached as before rather than held forever.
+    """
+    role = spec.get("role")
+    if role not in ("navicore", "relay", "wcb"):
+        return None                        # no role recorded: nothing to contradict
+    info = discover.probe(host)
+    kind = info.get("kind")
+    if kind not in ("navicore", "relay", "wcb"):
+        return None
+    try:
+        rid = int(info.get("relayId") or 0)
+    except (TypeError, ValueError):
+        rid = 0
+    if kind == role and (kind == "navicore" or not spec.get("relayId") or rid == spec.get("relayId")):
+        return None
+    new = {k: v for k, v in spec.items() if k != "relayId"}
+    new["role"] = kind
+    if kind != "navicore" and 1 <= rid <= 20:
+        new["relayId"] = rid
+    what = {"navicore": "a NaviCore", "relay": "a relay", "wcb": "a WCB"}[kind]
+    who = f'{info["alias"]}, {what}' if info.get("alias") else what
+    return {"spec": new,
+            "note": f"network changed (no network name here, so the board was asked): {host} is now {who}"}
 
 
 async def reconnect_loop(_app: web.Application) -> None:
