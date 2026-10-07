@@ -675,31 +675,6 @@ def _mac_iface_for_ip(ip: str, run) -> Optional[str]:
     return None
 
 
-def _mac_service_for_device(dev: str, run) -> Optional[str]:
-    """The network SERVICE name for a device — en6 -> "802.11ac NIC".
-
-    Needed because `-setairportpower` only works on ports macOS itself considers
-    Wi-Fi, and a USB 802.11 adapter is very often not one of them: it answers
-    "en6 is not a Wi-Fi interface" to every airport verb. Toggling its service is
-    then the only way to cycle it that still needs no sudo.
-
-    The listing pairs a "(N) Name" line with the "(Hardware Port: ..., Device: enX)"
-    line that follows it.
-    """
-    import re
-    r = run(["networksetup", "-listnetworkserviceorder"])
-    name = None
-    for ln in (r.stdout or "").splitlines():
-        ln = ln.strip()
-        m = re.match(r"^\(\d+\)\s+(.*\S)\s*$", ln)
-        if m:
-            name = m.group(1)
-            continue
-        if ln.startswith("(Hardware Port:") and ln.rstrip(")").endswith(f"Device: {dev}"):
-            return name
-    return None
-
-
 def _wifi_bounce_macos(ssid: str, ip: str = "") -> tuple[bool, str]:
     """Power-cycle only the interface that is actually carrying the droid.
 
@@ -767,24 +742,26 @@ def _wifi_bounce_macos(ssid: str, ip: str = "") -> tuple[bool, str]:
                            "Services is granted, so the routing check is the one "
                            "that normally answers")
 
-        # Cycle it the only way this particular adapter allows. -setairportpower is
-        # preferred where it works (it is what the Wi-Fi menu does), but it is
-        # refused outright on a port macOS does not classify as Wi-Fi -- which is
-        # exactly the USB adapter this rewrite exists for. Probe, do not assume:
-        # a failed "off" followed by a failed "on" would otherwise report success
-        # while having done nothing at all.
+        # Power-cycle it where macOS counts it as Wi-Fi (-setairportpower, what the
+        # Wi-Fi menu does): macOS then joins the network again by itself. Probe, do
+        # not assume: a failed "off" followed by a failed "on" would otherwise
+        # report success while having done nothing at all.
+        #
+        # NOT A USB ADAPTER macOS does not count as Wi-Fi. Its own utility (the
+        # TP-Link's Realtek menu-bar app) does the joining, and cycling its network
+        # service only disconnected it: nothing joined it again, and it was still
+        # off two minutes later (WCB HIL intellex.wifi_bounce_scoped, 2026-10-07).
+        # A self-heal that leaves the link down is worse than none, so it is left
+        # alone and the user is told where to rejoin.
         if run(["networksetup", "-getairportpower", target]).returncode == 0:
             run(["networksetup", "-setairportpower", target, "off"])
             r = run(["networksetup", "-setairportpower", target, "on"])
             did = "power-cycled"
         else:
-            svc = _mac_service_for_device(target, run)
-            if not svc:
-                return False, (f"{target} ({how}) is not a Wi-Fi interface and has "
-                               "no network service to cycle")
-            run(["networksetup", "-setnetworkserviceenabled", svc, "off"])
-            r = run(["networksetup", "-setnetworkserviceenabled", svc, "on"])
-            did = f'service "{svc}" cycled'
+            return False, (f"{target} ({how}) is an adapter macOS does not count as "
+                           "Wi-Fi: its own utility joins it, and cycling its network "
+                           "service would only disconnect it - rejoin the droid's "
+                           "network from that utility")
         if r.returncode != 0:
             return False, (r.stderr or r.stdout or f"exited {r.returncode}").strip()
         return True, f"{target} ({how}): {did}, reconnecting"
