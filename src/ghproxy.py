@@ -40,6 +40,7 @@ import urllib.parse
 
 import flash
 import fwcache
+import settings
 import wcb_flash
 
 # (owner, repo) -> the cache product it belongs to. Imported rather than
@@ -61,6 +62,21 @@ def product_for(owner: str, repo: str) -> str:
         raise ProxyError(f"not a firmware repository: {owner}/{repo}") from None
 
 
+def _check_ref(ref: str) -> None:
+    """The ref must be a branch name -- the rule the stored branch already obeys.
+
+    It names the CACHE DIRECTORY (fwcache._key flattens '/' and '\\' and nothing
+    else), so a ref of '..' filed the listing at the cache root and '.' in the
+    product's own directory, and offline served whatever was there. raw() also puts
+    it in the raw.githubusercontent.com URL PATH, where '../../<owner>/<repo>/main'
+    walks out of the firmware repository this proxy is limited to. The tools only
+    ever ask for the branch Intellex hands them (the shim sends 'main' for none), so
+    nothing real is refused.
+    """
+    if not settings.valid_branch(ref):
+        raise ProxyError(f"not a branch name: {ref!r}")
+
+
 def _raw_url(owner: str, repo: str, ref: str, name: str) -> str:
     q = urllib.parse.urlencode({"owner": owner, "repo": repo, "ref": ref, "name": name})
     return f"/_api/gh/raw?{q}"
@@ -73,6 +89,7 @@ def contents(owner: str, repo: str, path: str, ref: str) -> tuple[bytes, bool]:
     except that every `download_url` points back at this host -- see the header.
     """
     product = product_for(owner, repo)
+    _check_ref(ref)
     # THE FIRMWARE DIRECTORY AND NOTHING ELSE. What comes back is stored as THE
     # listing for (product, ref) -- the same file both native flashers fall back to
     # offline -- and every download_url below is pointed at _bin_path(product). Any
@@ -127,6 +144,7 @@ def contents(owner: str, repo: str, path: str, ref: str) -> tuple[bytes, bool]:
 def raw(owner: str, repo: str, ref: str, name: str) -> tuple[bytes, bool]:
     """One firmware file's bytes, from GitHub or from the cache."""
     product = product_for(owner, repo)
+    _check_ref(ref)
     # The name is interpolated into a URL and used as a cache filename, so it must
     # be a bare filename -- never a path.
     if not name or "/" in name or "\\" in name or ".." in name:
