@@ -927,6 +927,14 @@ async def api_update_webui(req: web.Request) -> web.Response:
     The fetcher keeps them as separate atomic swaps, so one failing offline still
     leaves the other correctly updated -- which is why a partial success below is
     reported as a failure with the log attached rather than swallowed.
+
+    A FAILED RUN IS 200 {ok: false}, like the firmware and docs updates. It was
+    502 here alone. The launcher reads all three the same way -- its api() helper
+    returns the body and never looks at the status, and each button branches on
+    the body's ok and shows its error and what landed -- so the status carried
+    nothing the page used, and the 5xx only made the browser log a failed request
+    for an answer the page handled. The request worked; the fetch it ran did not,
+    and the body says so. 500 stays for the fetcher not running at all.
     """
     import subprocess
     tool = req.query.get("tool", "all")
@@ -957,17 +965,16 @@ async def api_update_webui(req: web.Request) -> web.Response:
         r = await asyncio.to_thread(run)
     except Exception as e:
         return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
-    if r.returncode != 0:
-        return web.json_response(
-            {"ok": False, "error": (r.stdout or r.stderr or "fetch failed").strip()[-300:],
-             # Report what DID land even on a failure. With two independent swaps,
-             # "the update failed" alone leaves you unable to tell whether either
-             # tool moved -- and one of them usually has.
-             "version": _bundled_dtg(), "wcbVersion": _wcb_bundled_ver()},
-            status=502)
-    return web.json_response({"ok": True, "version": _bundled_dtg(),
-                              "wcbVersion": _wcb_bundled_ver(),
-                              "log": (r.stdout or "").strip()[-600:]})
+    # Report what DID land even on a failure. With two independent swaps, "the
+    # update failed" alone leaves you unable to tell whether either tool moved --
+    # and one of them usually has.
+    return web.json_response({
+        "ok": r.returncode == 0,
+        "error": "" if r.returncode == 0 else (r.stdout or r.stderr or "fetch failed").strip()[-300:],
+        "version": _bundled_dtg(),
+        "wcbVersion": _wcb_bundled_ver(),
+        "log": (r.stdout or "").strip()[-600:],
+    })
 
 
 # ── Native flashing ─────────────────────────────────────────────────────────
