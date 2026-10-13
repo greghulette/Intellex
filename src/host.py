@@ -217,29 +217,34 @@ class Bridge:
             mine = self._gen
         self._drop()                  # takes the lock itself; no I/O held under it
         t.open()                      # raises TransportError; caller reports it
+        import time as _t
+        # ONE locked section for the publish AND the target. They were two, and a
+        # detach landing between them was undone: it cleared _spec and _want and
+        # closed the link just published, then this re-recorded the target and set
+        # _want, so the reconnect loop reattached the link the user had stopped
+        # (HIL intellex.bridge_attach_detach_window).
         with self._lock:
             superseded = mine != self._gen
             if not superseded:
                 self._transport, self.target_label = t, label
                 self.last_error = ""
+                # Start the idle clock NOW, not at 0. time.monotonic() is seconds
+                # since boot, so a default of 0.0 made a freshly attached link look
+                # idle for the machine's entire uptime — logged as "unreachable
+                # after 1212322s idle" (14 days) and, worse, it meant the liveness
+                # probe fired immediately on every new connection instead of after
+                # the intended quiet period. A link that has simply not spoken yet
+                # is not a dead link.
+                self.last_rx = _t.monotonic()
+                if spec is not None:
+                    self._spec = spec     # remember it so we can rebuild this link later
+                    self._want = True
         if superseded:
             # Another attach, or a detach, started while we were inside open().
             # They win: close what we opened instead of publishing over them.
             with contextlib.suppress(Exception):
                 t.close()
             raise TransportError("superseded by a newer attach")
-        # Start the idle clock NOW, not at 0. time.monotonic() is seconds since boot,
-        # so a default of 0.0 made a freshly attached link look idle for the machine's
-        # entire uptime — logged as "unreachable after 1212322s idle" (14 days) and,
-        # worse, it meant the liveness probe fired immediately on every new
-        # connection instead of after the intended quiet period. A link that has
-        # simply not spoken yet is not a dead link.
-        import time as _t
-        with self._lock:
-            self.last_rx = _t.monotonic()
-            if spec is not None:
-                self._spec = spec     # remember it so we can rebuild this link later
-                self._want = True
 
     def detach(self) -> None:
         """User asked to stop. Forget the target so nothing reconnects."""
