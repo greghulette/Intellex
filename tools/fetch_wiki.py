@@ -161,6 +161,21 @@ def _is_asset(link: str) -> bool:
     return bool(_EXT.fullmatch(suffix)) and suffix.lower() != ".md"
 
 
+def _asset_path(raw: str) -> str:
+    """An asset link as a path inside the wiki: leading './' segments and '/' dropped.
+
+    NOT raw.lstrip("./"), which it was. That strips CHARACTERS, not segments, so
+    '../x.png' -- a file one level ABOVE the wiki, which on GitHub is the main
+    repo and not the wiki at all -- was silently turned into the wiki's own
+    'x.png' and fetched as though the page had said that. A leading '../' is kept
+    here so fetch_one() can refuse it out loud.
+    """
+    rel = raw
+    while rel.startswith(("./", "/")):
+        rel = rel[2:] if rel.startswith("./") else rel[1:]
+    return rel
+
+
 def _targets(text: str) -> tuple[set[str], set[str]]:
     """(page names, asset paths) referenced by one page's markdown."""
     pages, assets = set(), set()
@@ -171,7 +186,7 @@ def _targets(text: str) -> tuple[set[str], set[str]]:
             return
         # A real extension means a file to copy; anything else is a page to visit.
         if _is_asset(raw):
-            assets.add(raw.lstrip("./"))
+            assets.add(_asset_path(raw))
         else:
             page = raw.strip("/").replace(" ", "-")
             pages.add(page[:-3] if page.lower().endswith(".md") else page)
@@ -244,6 +259,12 @@ def fetch_one(product: str, staged: pathlib.Path) -> tuple[int, int, list[str]]:
 
     got_assets, skipped_big = 0, 0
     for rel in sorted(assets):
+        # A link that starts by leaving the wiki points at something that is not in
+        # it. Refused and said, never quietly re-read as a path inside the wiki.
+        if rel == ".." or rel.startswith("../"):
+            problems.append(f"{rel}: refused (a leading ../ leaves the wiki)")
+            print(f"[{product}] refused asset {rel}: a leading ../ leaves the wiki")
+            continue
         # Never let a link walk out of the staging directory.
         dest = (staged / rel).resolve()
         # is_relative_to, not a string prefix: a prefix test also accepted a
