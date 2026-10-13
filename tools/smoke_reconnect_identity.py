@@ -96,6 +96,9 @@ class FakeBridge:
         self.last_rx, self.last_error, self.target_label = 0.0, "", ""
         self.reconnecting = False
         self.events = []
+        # host.Bridge's reconnect counts and the session that owns them. Nothing here
+        # attaches anew or detaches, so the session never moves.
+        self.session, self.retry_fails, self.bounce_fails = 0, 0, 0
 
     @property
     def attached(self):
@@ -121,6 +124,15 @@ class FakeBridge:
 
     def _drop(self):
         self._open = False
+
+    def note_failure(self, spec, why, count=False):
+        """As host.Bridge.note_failure: recorded (and counted) only for the target still wanted."""
+        if self._spec is not spec:
+            return False
+        self.last_error = why
+        if count:
+            self.retry_fails += 1
+        return True
 
 
 def run_loop(bridge, passes):
