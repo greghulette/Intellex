@@ -176,6 +176,18 @@ class Bridge:
         # by the time open() returns has been superseded, and must close what it
         # opened rather than publish it.
         self._gen: int = 0
+        # THE RECONNECT LOOP'S COUNTS, kept here because they belong to one attach:
+        # reattaches failed in a row (BOUNCE_AFTER_FAILS of them call for a bounce)
+        # and bounces failed in a row (BOUNCE_GIVE_UP of them stop the bouncing).
+        # They were the loop's own locals, and so outlived a detach and the next
+        # attach: a give-up reached against one droid's network denied the droid
+        # attached next any bounce at all, and failures counted while nothing could
+        # bounce (a serial link, --no-auto-bounce) bounced a new WiFi attach on its
+        # first failure. A new attach and a detach each start a SESSION, which
+        # zeroes both (_new_session); the loop's other notes follow the number.
+        self.session: int = 0
+        self.retry_fails: int = 0
+        self.bounce_fails: int = 0
 
     # -- page side ---------------------------------------------------------------
     def bind_page(self, ws: web.WebSocketResponse, loop: asyncio.AbstractEventLoop) -> None:
@@ -253,7 +265,38 @@ class Bridge:
             self._want = False
             self._spec = None
             self.reconnecting = False
+            self._new_session()
         self._drop()
+
+    def _new_session(self) -> None:
+        """A new attach or a detach: the reconnect counts start again from zero."""
+        with self._lock:              # an RLock: callers may already hold it
+            self.session += 1
+            self.retry_fails = 0
+            self.bounce_fails = 0
+
+    def note_failure(self, spec: Optional[dict], why: str, count: bool = False) -> bool:
+        """Record why an attach of `spec` failed -- only while `spec` is still the target.
+
+        Two attaches that race both answer: the newer one attaches, the older one is
+        superseded inside open() and fails with "superseded by a newer attach". Set
+        unconditionally, that loser's words landed in last_error AFTER the winner had
+        cleared it, so /_api/status reported an error beside a healthy link. A
+        failure is only news while the target it was for is the one still wanted:
+        once a newer attach (a new spec object) or a detach (None) has replaced it,
+        it says nothing about the link anyone wants. Returns whether it was recorded.
+
+        count: the reconnect loop's reattach, which also counts toward a bounce --
+        in the same locked section, so a new session cannot be handed a failure
+        that belonged to the target before it.
+        """
+        with self._lock:
+            if self._spec is not spec:
+                return False
+            self.last_error = why
+            if count:
+                self.retry_fails += 1
+            return True
 
     def _drop(self) -> None:
         """Tear the link down but KEEP the target — a drop is not a decision."""
@@ -295,15 +338,22 @@ class Bridge:
         with contextlib.suppress(Exception):
             loop.call_soon_threadsafe(lambda: asyncio.ensure_future(shut()))
 
-    def set_target(self, spec: dict) -> None:
+    def set_target(self, spec: dict, new_session: bool = False) -> None:
         """Want this link, whether or not it can be opened right now.
 
         Separate from attach() so a startup target survives the droid being down
         at launch -- the exact case that otherwise leaves the host serving with
         nothing attached and no intention to retry.
+
+        new_session: this is a NEW attach (POST /_api/attach), not the same target
+        re-recorded with more detail (its role, a move to another network, a flash
+        handing the port back), so the reconnect counts start again.
         """
-        self._spec = spec
-        self._want = True
+        with self._lock:
+            self._spec = spec
+            self._want = True
+            if new_session:
+                self._new_session()
 
     def rebuild(self) -> Transport:
         """Construct a fresh transport for the remembered target."""
@@ -1300,15 +1350,20 @@ async def api_attach(req: web.Request) -> web.Response:
 
     # Remember it FIRST: an attach that fails now should still be retried by the
     # reconnect loop rather than forgotten, which is the difference between a droid
-    # that is merely rebooting and one the user has to re-attach by hand.
-    bridge.set_target(spec)
+    # that is merely rebooting and one the user has to re-attach by hand. A new
+    # session too: the reconnect counts of whatever was attached before are not
+    # this target's (Bridge.session).
+    bridge.set_target(spec, new_session=True)
     try:
         # In a thread — open() blocks (pyserial open, WebSocket handshake), and doing
         # it inline wedges the event loop that is also serving the page.
         await asyncio.to_thread(lambda: bridge.attach(bridge.rebuild(),
                                                       _label_for(spec), spec))
     except TransportError as e:
-        bridge.last_error = str(e)
+        # Recorded only while this attach's target is still the one wanted: a loser
+        # superseded by a newer attach (or a detach) must not leave its "superseded"
+        # in /_api/status beside the winner's healthy link (Bridge.note_failure).
+        bridge.note_failure(spec, str(e))
         return web.json_response({"ok": False, "error": str(e)}, status=502)
 
     # Before answering: whoever attached opens the tools next, and they read the
@@ -1695,15 +1750,22 @@ async def reconnect_loop(_app: web.Application) -> None:
     open() every second for that long is free, and a slow reconnect is the
     difference between "it recovered" and "it hung".
     """
-    fails = 0
+    # The reattach and bounce counts live on the bridge (Bridge.retry_fails and
+    # bounce_fails), where a new attach and a detach zero them. What is kept here
+    # follows bridge.session the same way.
     last_bounce = -1e9
     probe_fails = 0
-    bounce_fails = 0
     held = None                  # the last "not reattaching" note, so it logs once
     failed_why = None            # the last reason a reattach failed, likewise
+    seen = bridge.session
     while True:
         try:
             await asyncio.sleep(1.0)
+            if bridge.session != seen:
+                # A new attach or a detach since the last pass: nothing noted about
+                # the old target is true of the next one.
+                seen = bridge.session
+                probe_fails, held, failed_why = 0, None, None
 
             # ── Route-based liveness ──────────────────────────────────────────
             # Do not wait for the socket to notice. When the droid's AP goes away
@@ -1795,27 +1857,32 @@ async def reconnect_loop(_app: web.Application) -> None:
                     # A new network is a fresh start for the self-heal. The give-up
                     # below was reached against the OLD network's name, and left set
                     # it would deny the new one any bounce at all.
-                    bounce_fails = 0
+                    bridge.bounce_fails = 0
                     print(move["note"])
 
                 await asyncio.to_thread(lambda: bridge.attach(bridge.rebuild(),
                                                               _label_for(spec), spec))
                 print(f"reconnected  {bridge.target_label}")
-                fails = 0
+                bridge.retry_fails = 0
                 held = None
                 failed_why = None
                 # A COM port that was not identified at its first attach (it was
                 # busy, or did not answer) is asked now. No-op once it has a role.
                 await asyncio.to_thread(_identify_attached_serial, spec)
             except TransportError as e:
-                fails += 1
                 # SAY WHY. A failed reattach used to be counted and nothing else, so
                 # /_api/status kept whatever the drop had said ("probe failed") for
                 # as long as the reattach kept failing, and the log could not say
                 # what was wrong. Kept in last_error, printed once per new reason --
                 # the loop retries every second.
+                #
+                # Only for the target still wanted. A new attach or a detach that
+                # landed while this reattach was opening has replaced it -- this
+                # failure is usually that attach's "superseded" -- and it is neither
+                # the new session's to count nor anything /_api/status should say.
                 why = str(e) or type(e).__name__
-                bridge.last_error = f"reconnect failed: {why}"
+                if not bridge.note_failure(spec, f"reconnect failed: {why}", count=True):
+                    continue
                 if why != failed_why:
                     failed_why = why
                     print(f"reconnect failed: {why}")
@@ -1834,7 +1901,7 @@ async def reconnect_loop(_app: web.Application) -> None:
                 # disconnect`.
                 spec = bridge._spec or {}
                 now = asyncio.get_running_loop().time()
-                if (auto_bounce and fails >= BOUNCE_AFTER_FAILS
+                if (auto_bounce and bridge.retry_fails >= BOUNCE_AFTER_FAILS
                         and spec.get("kind") == "ws"
                         and (now - last_bounce) > BOUNCE_COOLDOWN_S):
                     # Bounce only when the ROUTE is actually wrong -- i.e. the source
@@ -1850,8 +1917,9 @@ async def reconnect_loop(_app: web.Application) -> None:
                     host = spec.get("host", "192.168.4.1")
                     via = await asyncio.to_thread(discover.local_ip_for, host)
                     same_subnet = bool(via) and via.rsplit(".", 1)[0] == host.rsplit(".", 1)[0]
-                    if not same_subnet and bounce_fails < BOUNCE_GIVE_UP:
+                    if not same_subnet and bridge.bounce_fails < BOUNCE_GIVE_UP:
                         last_bounce = now
+                        session = bridge.session
                         # RE-ASK FIRST. Moving from one board's AP to another's
                         # keeps the address (every SoftAP is 192.168.4.1) but
                         # changes the network, so the name recorded at attach can
@@ -1872,15 +1940,19 @@ async def reconnect_loop(_app: web.Application) -> None:
                         # before proc.py), and burying every other line in the log.
                         #
                         # Reset on success, so a droid that genuinely comes and
-                        # goes still gets the retries this exists for.
-                        bounce_fails = 0 if ok else bounce_fails + 1
-                        if bounce_fails == BOUNCE_GIVE_UP:
+                        # goes still gets the retries this exists for. Not counted
+                        # at all when a new attach or a detach landed during the
+                        # bounce: it was for the target before, not this session's.
+                        if bridge.session != session:
+                            continue
+                        bridge.bounce_fails = 0 if ok else bridge.bounce_fails + 1
+                        if bridge.bounce_fails == BOUNCE_GIVE_UP:
                             print(f"giving up on re-associating {ssid} after "
                                   f"{BOUNCE_GIVE_UP} failed attempts — still "
                                   f"retrying the link itself, but leaving the "
                                   f"adapter alone. Rejoin {ssid} by hand, or pick "
                                   f"another connection.")
-                        fails = 0
+                        bridge.retry_fails = 0
         except asyncio.CancelledError:
             raise
         except Exception:

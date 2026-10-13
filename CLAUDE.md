@@ -447,7 +447,9 @@ line.
 so; the link itself keeps retrying passively. The counter resets on success, so a
 droid that genuinely comes and goes still gets the retries this exists for. It also
 resets when the reconnect loop sees the laptop join a different board's network (rule
-10): the give-up was reached against the old network's name.
+10): the give-up was reached against the old network's name. And a new attach or a
+detach resets it, with the failed-reattach count beside it (`Bridge.session`): both
+belong to one target, and as the loop's own locals they outlived it.
 
 ## Never bounce the user's WiFi from a test host
 
