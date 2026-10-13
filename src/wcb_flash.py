@@ -36,8 +36,8 @@ import certs
 import proc
 import fwcache
 import settings
-from flash import (FlashError, reachable, unreachable_reason,
-                   _esptool_argv, _get, write_progress)
+from flash import (FlashError, GitHubUnreachable, explained, reachable,
+                   unreachable_reason, _esptool_argv, _get, write_progress)
 
 # ── Firmware source ─────────────────────────────────────────────────────────
 # Mirrors flasher.js. If GITHUB_* there changes, these must too -- the whole point
@@ -93,13 +93,17 @@ def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dic
     # minutes before reaching a cache that was ready all along.
     try:
         if not reachable():
-            raise FlashError("GitHub is not reachable — " + (unreachable_reason() or "no reason recorded"))
+            raise GitHubUnreachable()
         raw = _get(url, log)
         fwcache.store_listing(fwcache.WCB, branch, raw)
-    except FlashError:
+    except FlashError as e:
         raw = fwcache.load_listing(fwcache.WCB, branch)
         if raw is None:
-            raise
+            # GitHub down, throttled or out of reach: say so (flash.explained).
+            err = explained(e, log)
+            if err is e:
+                raise
+            raise err from e
         log("  offline - using the cached firmware listing")
     try:
         files = json.loads(raw.decode("utf-8"))
@@ -168,12 +172,15 @@ def fetch_images(binary_type: str, flash_mb: Optional[int],
         log(f"Found: {name}")
         try:
             if not reachable():
-                raise FlashError("GitHub is not reachable — " + (unreachable_reason() or "no reason recorded"))
+                raise GitHubUnreachable()
             data = _get(entry["download_url"], log)
-        except FlashError:
+        except FlashError as e:
             cached = fwcache.load(fwcache.WCB, branch, name)
             if cached is None:
-                raise
+                err = explained(e, log)
+                if err is e:
+                    raise
+                raise err from e
             log(f"  offline - using the cached {branch} copy of {name}")
             return cached
         if not data:

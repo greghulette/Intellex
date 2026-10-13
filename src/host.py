@@ -865,11 +865,22 @@ async def api_gh_contents(req: web.Request) -> web.Response:
             q.get("path", ""), q.get("ref", "main"))
     except ghproxy.ProxyError as e:
         # 502, not 500: the page's own error path prints the status, and this is
-        # a failure to reach an upstream rather than a bug in the host.
-        return web.json_response({"message": str(e)}, status=502)
+        # a failure to reach an upstream rather than a bug in the host. `explain`
+        # is what the page shows its user (ghproxy.ProxyError).
+        return _gh_error(e)
     return web.Response(body=body, content_type="application/json",
                         headers={"Cache-Control": "no-store",
                                  "X-Intellex-Source": "cache" if cached else "github"})
+
+
+def _gh_error(e: "ghproxy.ProxyError") -> web.Response:
+    """A proxy failure as the page reads it: `message` the technical detail (as
+    GitHub's own error replies name it), `explain` the sentence for the user."""
+    body = {"message": str(e)}
+    if e.explain:
+        body["explain"] = e.explain
+    return web.json_response(body, status=e.status,
+                             headers={"Cache-Control": "no-store"})
 
 
 async def api_gh_raw(req: web.Request) -> web.Response:
@@ -880,7 +891,7 @@ async def api_gh_raw(req: web.Request) -> web.Response:
             ghproxy.raw, q.get("owner", ""), q.get("repo", ""),
             q.get("ref", "main"), q.get("name", ""))
     except ghproxy.ProxyError as e:
-        return web.json_response({"message": str(e)}, status=502)
+        return _gh_error(e)
     return web.Response(body=data, content_type="application/octet-stream",
                         headers={"Cache-Control": "no-store",
                                  "X-Intellex-Source": "cache" if cached else "github"})

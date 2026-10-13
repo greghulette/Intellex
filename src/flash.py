@@ -33,6 +33,7 @@ import urllib.error
 import urllib.request
 
 import certs
+import ghstatus
 import proc
 import fwcache
 import settings
@@ -219,6 +220,32 @@ class FlashError(Exception):
     """Anything that stopped the flash, phrased for someone holding a board."""
 
 
+class GitHubUnreachable(FlashError):
+    """reachable() said no, so nothing was sent. ghstatus reads `unreachable` to tell
+    this from a request GitHub answered (or did not)."""
+    unreachable = True
+
+    def __init__(self, host: str = "api.github.com"):
+        super().__init__("GitHub is not reachable — "
+                         + (unreachable_reason(host) or "no reason recorded"))
+
+
+def explained(e: FlashError, log=lambda _m: None) -> FlashError:
+    """What to raise when a GitHub fetch failed and the cache had no copy either.
+
+    When GitHub is the reason -- down, throttled, out of reach -- that is
+    ghstatus.explain()'s sentence, phrased for the user, and the technical detail
+    goes to the log. Anything else (a 404: the branch has no such image; a
+    certificate store) is `e` itself, unchanged. Raise the result `from e` unless it
+    IS e.
+    """
+    why = ghstatus.explain(e)
+    if not why:
+        return e
+    log(f"GitHub fetch failed: {e}")
+    return FlashError(f"{why} {ghstatus.NO_COPY}")
+
+
 # ── GitHub ──────────────────────────────────────────────────────────────────
 def _get(url: str, log, attempts: int = 4, timeout: float = 60.0) -> bytes:
     """Fetch, retrying the throttles GitHub actually uses.
@@ -239,6 +266,16 @@ def _get(url: str, log, attempts: int = 4, timeout: float = 60.0) -> bytes:
             last = e
             if e.code not in (403, 429) and e.code < 500:
                 break
+            if e.code in (403, 429):
+                # Kept for ghstatus.explain: GitHub names its rate limit in the body.
+                try:
+                    e.ix_body = e.read(4000)
+                except Exception:                       # noqa: BLE001
+                    e.ix_body = b""
+                # x-ratelimit-remaining: 0 is the HOURLY limit, spent: it resets on
+                # the hour, so seconds of backoff only delay saying so.
+                if (e.headers or {}).get("x-ratelimit-remaining") == "0":
+                    break
             wait = 0.0
             try:
                 wait = float(e.headers.get("Retry-After") or 0)
@@ -259,8 +296,8 @@ def _get(url: str, log, attempts: int = 4, timeout: float = 60.0) -> bytes:
                 time.sleep(1.5 * (i + 1))
                 continue
     if certs.is_cert_error(last):
-        raise FlashError(f"cannot reach GitHub -- {last}\n{certs.ADVICE}")
-    raise FlashError(f"cannot reach GitHub: {url} -- {last}")
+        raise FlashError(f"cannot reach GitHub -- {last}\n{certs.ADVICE}") from last
+    raise FlashError(f"cannot reach GitHub: {url} -- {last}") from last
 
 
 def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dict]:
@@ -274,13 +311,16 @@ def list_firmware(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dic
     # minutes before reaching a cache that was ready all along.
     try:
         if not reachable():
-            raise FlashError("GitHub is not reachable — " + (unreachable_reason() or "no reason recorded"))
+            raise GitHubUnreachable()
         raw = _get(url, log)
         fwcache.store_listing(fwcache.NAVICORE, branch, raw)
-    except FlashError:
+    except FlashError as e:
         raw = fwcache.load_listing(fwcache.NAVICORE, branch)
         if raw is None:
-            raise
+            err = explained(e, log)
+            if err is e:
+                raise
+            raise err from e
         log("  offline - using the cached firmware listing")
     try:
         files = json.loads(raw.decode("utf-8"))
@@ -331,12 +371,15 @@ def fetch_images(branch: str = BRANCH_DEFAULT, log=lambda _m: None) -> list[dict
         log(f"Found: {name}")
         try:
             if not reachable():
-                raise FlashError("GitHub is not reachable — " + (unreachable_reason() or "no reason recorded"))
+                raise GitHubUnreachable()
             data = _get(entry["download_url"], log)
-        except FlashError:
+        except FlashError as e:
             cached = fwcache.load(fwcache.NAVICORE, branch, name)
             if cached is None:
-                raise
+                err = explained(e, log)
+                if err is e:
+                    raise
+                raise err from e
             log(f"  offline - using the cached {branch} copy of {name}")
             return cached
         if not data:

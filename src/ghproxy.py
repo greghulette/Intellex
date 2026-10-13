@@ -32,6 +32,13 @@ too rather than at a raw.githubusercontent URL that cannot be reached.
 NOT AN OPEN PROXY. Only the two firmware repos are served; anything else is
 refused. This process can reach the internet and the page cannot, so forwarding
 arbitrary URLs on the page's behalf would hand it exactly the reach it is denied.
+
+A FAILURE SAYS WHOSE IT IS. When GitHub cannot serve a file and the cache has no
+copy, the reply carries `explain`: one sentence from ghstatus.explain() -- GitHub
+down, throttled, out of reach -- which both tools' flasher.js show as they are
+(their "gh-explain" block reads it off a same-origin reply). `message` stays the
+technical detail. A GitHub 404 is passed on AS a 404, with no explanation: that one
+is ours (the branch has no such image), and the page words it as it would online.
 """
 from __future__ import annotations
 
@@ -40,6 +47,7 @@ import urllib.parse
 
 import flash
 import fwcache
+import ghstatus
 import settings
 import wcb_flash
 
@@ -52,7 +60,26 @@ REPOS = {
 
 
 class ProxyError(Exception):
-    """Raised with a message meant for the page's own error display."""
+    """Raised with a message meant for the page's own error display.
+
+    status: the HTTP status the host answers with (502, or GitHub's own 404).
+    explain: the sentence the page shows its user. A refusal of ours is its own
+    explanation; a GitHub failure gets ghstatus's (see _upstream_failed).
+    """
+
+    def __init__(self, message: str, explain: "str | None" = "", status: int = 502):
+        super().__init__(message)
+        self.status = status
+        self.explain = message if explain == "" else explain
+
+
+def _upstream_failed(message: str, cause: BaseException) -> ProxyError:
+    """GitHub could not serve it and the cache has no copy: why, for the page."""
+    f = ghstatus.failure(cause)
+    if f and f.get("kind") == "http" and f.get("code") == 404:
+        return ProxyError(message, explain=None, status=404)
+    why = ghstatus.explain(cause)
+    return ProxyError(message, explain=f"{why} {ghstatus.NO_COPY}" if why else message)
 
 
 def product_for(owner: str, repo: str) -> str:
@@ -108,16 +135,15 @@ def contents(owner: str, repo: str, path: str, ref: str) -> tuple[bytes, bool]:
         # AP a request does not fail, it times out at ~40 s, and the page would
         # sit on a spinner for the whole of it before anything said why.
         if not flash.reachable():
-            raise flash.FlashError("GitHub is not reachable — "
-                                   + (flash.unreachable_reason() or "unknown"))
+            raise flash.GitHubUnreachable()
         raw = flash._get(url, lambda _m: None)
-    except Exception:                                # noqa: BLE001
+    except Exception as e:                           # noqa: BLE001
         raw = fwcache.load_listing(product, ref)
         if raw is None:
-            raise ProxyError(
+            raise _upstream_failed(
                 f"no cached firmware listing for {product} on '{ref}', and GitHub "
-                f"is not reachable. Press Download firmware while you have a "
-                f"network.") from None
+                f"did not serve it ({e}). Press Download firmware while you have a "
+                f"network.", e) from None
         cached = True
 
     try:
@@ -154,17 +180,16 @@ def raw(owner: str, repo: str, ref: str, name: str) -> tuple[bytes, bool]:
            f"{urllib.parse.quote(ref)}/{_bin_path(product)}/{urllib.parse.quote(name)}")
     try:
         if not flash.reachable():
-            raise flash.FlashError("GitHub is not reachable — "
-                                   + (flash.unreachable_reason() or "unknown"))
+            raise flash.GitHubUnreachable()
         data = flash._get(url, lambda _m: None)
         fwcache.store(product, ref, name, data)
         return data, False
-    except Exception:                                # noqa: BLE001
+    except Exception as e:                           # noqa: BLE001
         data = fwcache.load(product, ref, name)
         if data is None:
-            raise ProxyError(
-                f"{name} is not cached for '{ref}' and GitHub is not reachable"
-            ) from None
+            raise _upstream_failed(
+                f"{name} is not cached for '{ref}' and GitHub did not serve it ({e})",
+                e) from None
         return data, True
 
 
