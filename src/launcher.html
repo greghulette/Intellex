@@ -834,8 +834,11 @@ async function scan() {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({port: p.path}),
       }).then(res => {
-        if (res.attached) { sub.textContent = 'connected right now'; r.querySelector('.dot').classList.add('up'); return; }
-        if (res.ok && res.version) {
+        if (res.attached) {
+          // This app holds the port itself (host.py api_identify answers without probing).
+          sub.textContent = 'connected right now';
+          r.querySelector('.dot').classList.add('up');
+        } else if (res.ok && res.version) {
           sub.textContent = 'NaviCore ' + res.version;
           r.querySelector('.dot').classList.add('up');
         } else if (res.busy) {
@@ -851,7 +854,10 @@ async function scan() {
         // after the fact has to repaint it -- otherwise the panel keeps saying
         // "asking…" for a port that identified itself seconds ago.
         if (r === _sel) paintSelection();
-      }).catch(() => { sub.textContent = chipLabel(p); });
+      }).catch(() => {
+        sub.textContent = chipLabel(p);
+        if (r === _sel) paintSelection();     // the panel must not keep saying "asking…" either
+      });
     }
   } catch (e) { $('serial').innerHTML = '<div class="empty">could not list ports</div>'; }
   afterListChanged();
