@@ -48,10 +48,17 @@ def _file():
 
 
 def _load() -> dict:
+    """The settings as a dict -- {} for a file that is missing, unreadable, not
+    UTF-8, not JSON, or JSON of another shape. ValueError covers both JSONDecodeError
+    and UnicodeDecodeError, and a list, a string or null parses fine but is not a
+    settings object: each of those made branch() raise, so the shim, /_api/branches,
+    /_api/firmware and both flashers failed -- and Set could not repair it (HIL
+    intellex.settings_branch_fallback)."""
     try:
-        return json.loads(_file().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        d = json.loads(_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return {}
+    return d if isinstance(d, dict) else {}
 
 
 def _save(d: dict) -> bool:
@@ -86,7 +93,10 @@ def branch(product: str) -> str:
     corrupt settings file must not make the app unable to flash, and "main" is
     both the safe answer and the one that was in force before this existed.
     """
-    b = (_load().get("branch") or {}).get(product) or DEFAULT_BRANCH
+    stored = _load().get("branch")
+    b = stored.get(product) if isinstance(stored, dict) else None
+    if not isinstance(b, str) or not b:
+        return DEFAULT_BRANCH
     return b if valid_branch(b) else DEFAULT_BRANCH
 
 
@@ -100,7 +110,9 @@ def set_branch(product: str, b: str) -> Optional[str]:
                 "'.', '_', '-' and '/' only, and no '..', empty or "
                 "'.'-led path segment (git refuses those too)")
     d = _load()
-    d.setdefault("branch", {})[product] = b
+    if not isinstance(d.get("branch"), dict):
+        d["branch"] = {}               # a hand-edited or foreign shape: replace it, do not raise
+    d["branch"][product] = b
     return None if _save(d) else "could not write the settings file"
 
 
