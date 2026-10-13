@@ -363,7 +363,10 @@ function mline(id, bad, okText, badText, action) {
 function paintMaint() {
   const bad = Object.values(_maint).filter(Boolean);
 
-  mline('m-tools', _maint.tools, 'Tools up to date', _maint.tools || '', 'Update');
+  // 'Update' only when there is something to update. Offered beside "Tools up to
+  // date" it read as a contradiction -- and a click re-downloaded both tools for
+  // nothing. The panel's own Update tools button still forces a refresh.
+  mline('m-tools', _maint.tools, 'Tools up to date', _maint.tools || '', _maint.tools ? 'Update' : '');
   mline('m-fw',    _maint.fw,    'Firmware cached',  _maint.fw    || '', 'Download');
   // The third line carries whatever is left: the branch warning matters more than
   // the docs one, so it wins the line when both are set.
@@ -754,14 +757,25 @@ async function scanWifi() {
   } catch (e) {
     $('wifi').innerHTML = '<div class="empty">scan failed</div>';
   }
-  $('scanstate').textContent = comingUp ? 'watching…' : 'scan complete';
+  // 'watching…' only while the watch is on. What this pass found cannot say that
+  // alone: the last pass of a watch that has run out still sees the same routable
+  // host not answering, and the header went on saying 'watching…' for good after
+  // the page had stopped looking.
+  $('scanstate').textContent = comingUp && Date.now() < watchUntil ? 'watching…' : 'scan complete';
   afterListChanged();
   return comingUp;
 }
 
 function watchForDroid() {
   clearTimeout(watchTimer);
-  if (Date.now() >= watchUntil) { scanWifi(); return; }   // final pass, plain text
+  if (Date.now() >= watchUntil) {
+    // Final pass, plain text -- and the watch is over, so say what its other
+    // ending (the host going away, below) says: with both lists still empty, "No
+    // droid found" and the way past it. Running out of time said nothing, so the
+    // status line kept whatever it had said last over two empty lists.
+    scanWifi().then(offerOfflineIfEmpty);
+    return;
+  }
   watchTimer = setTimeout(async () => {
     if (await scanWifi()) watchForDroid();
     else offerOfflineIfEmpty();
