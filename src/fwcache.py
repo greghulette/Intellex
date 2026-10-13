@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import pathlib
 import time
+import urllib.parse
 from typing import Optional
 
 import paths
@@ -82,10 +83,19 @@ def _key(product: str, branch: str) -> str:
     """One cache directory per product AND branch.
 
     A branch name may legitimately contain '/' ("feature/x"), which is a path
-    separator -- so flatten it rather than silently creating a nested tree that
+    separator -- so it is encoded rather than allowed to make a nested tree that
     the summary walk would then miss.
+
+    PERCENT-ENCODED, every character but letters, digits and '_.-~' ("feature/x"
+    is feature%2Fx). It used to fold '/' to '__', and '_' is a legal branch
+    character too, so feature/x and feature__x shared ONE directory: each
+    branch's flash took the other's images, the exact cross-branch fallback this
+    cache is keyed by branch to prevent. Percent-encoding is one-to-one ('%'
+    itself is encoded), and a branch with no '/' -- main, WIFI -- keeps the name
+    it always had. A cache made under the old folded name is simply not found:
+    that branch's set is fetched again the next time it is wanted online.
     """
-    safe = (branch or "main").replace("/", "__").replace("\\", "__")
+    safe = urllib.parse.quote(branch or "main", safe="")
     return f"{product}/{safe}"
 
 
