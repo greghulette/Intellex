@@ -178,9 +178,21 @@ def identify_serial(port: str, timeout: float = 2.5) -> dict:
     # Deassert on the CLOSED port. Opening with either line asserted pulses the
     # ESP32 into reset, which is the whole reason SerialTransport.open() does the
     # same dance -- a probe that reboots the droid would be worse than no probe.
+    #
+    # AND THE SAME DANCE, per platform: macOS and Linux raise both lines at the
+    # open, and pyserial lowers DTR before RTS, so "both low before open" still
+    # left RTS alone asserted for a moment -- the S3 USB-Serial/JTAG's reset. Every
+    # chooser scan restarted a NaviCore on a Mac (the WCB repo's HIL
+    # intellex.identify_navicore_port, run 20261013-001422). So, as SerialTransport:
+    # RTS low at the open, DTR after it, and exclusive, so a port another program
+    # holds reads as busy instead of being shared.
     with contextlib.suppress(Exception):
-        s.dtr = False
-        s.rts = False
+        if os.name == "nt":
+            s.dtr = False
+            s.rts = False
+        else:
+            s.exclusive = True
+            s.rts = False
     try:
         s.open()
     except Exception as e:
