@@ -97,6 +97,23 @@ def serial_allowed(path: str) -> bool:
     return str(path).strip().upper() in allowed
 
 
+def ws_allowed(host: str) -> bool:
+    """May this process open a WebSocket to `host`, or probe it to re-identify it? (H5, CLAUDE.md "A test host
+    needs a leash".)
+
+    INTELLEX_WS_ALLOW is a comma list of hosts, compared case-insensitively, exactly as serial_allowed() reads its
+    ports: unset means no restriction -- the app as users run it; set means only those hosts, and set-but-empty means
+    none. A test bench needs it because every board's access point is 192.168.4.1 and the PC's second adapter is
+    joined to one of them for other tests: a host left free to attach (or to reattach to the default address with no
+    target at all) reaches whatever droid that adapter happens to be on. Checked before a socket is built or opened.
+    """
+    raw = os.environ.get("INTELLEX_WS_ALLOW")
+    if raw is None:
+        return True
+    allowed = {h.strip().lower() for h in raw.split(",") if h.strip()}
+    return str(host).strip().lower() in allowed
+
+
 def list_serial_ports() -> list[dict]:
     """Enumerate serial ports.
 

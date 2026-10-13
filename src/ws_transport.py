@@ -19,7 +19,7 @@ from __future__ import annotations
 import threading
 from typing import Optional
 
-from transport import Transport, TransportError, DataCallback, LostCallback
+from transport import Transport, TransportError, DataCallback, LostCallback, ws_allowed
 
 DEFAULT_PATH = "/ws"
 DEFAULT_PORT = 80
@@ -43,6 +43,7 @@ class WebSocketTransport(Transport):
                  port: int = DEFAULT_PORT, path: str = DEFAULT_PATH,
                  connect_timeout: float = 5.0):
         super().__init__(on_data, on_lost)
+        self._host = host
         self._url = f"ws://{host}:{port}{path}"
         self._connect_timeout = connect_timeout
         self._ws = None
@@ -54,6 +55,10 @@ class WebSocketTransport(Transport):
     def open(self) -> None:
         if self._ws is not None:
             return
+        # The leash first, before anything reaches the network -- the same place
+        # SerialTransport.open() checks INTELLEX_SERIAL_ALLOW.
+        if not ws_allowed(self._host):
+            raise TransportError(f"{self._host} is not in INTELLEX_WS_ALLOW")
         try:
             from websockets.sync.client import connect
         except ImportError as e:

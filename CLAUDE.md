@@ -479,15 +479,17 @@ because the board looks healthy and the link is simply gone.
 A host started by a test bench shares the PC with boards other tests are using. Left
 alone it reaches for all of them: the launcher PINGs **every** Espressif serial port it can
 see (an SBUS controller resets when its port opens; a NaviCore may be mid-run), discovery
-probes `192.168.4.1` over whatever adapter routes there, and every network feature waits on
-a GitHub probe. Four environment variables hold it to what the test wants. Unset, each
-changes nothing, so the app as users run it is untouched:
+probes `192.168.4.1` over whatever adapter routes there, an attach (or a reattach with no
+host recorded) reaches whichever board's access point the PC's spare adapter is on, and
+every network feature waits on a GitHub probe. Five environment variables hold it to what
+the test wants. Unset, each changes nothing, so the app as users run it is untouched:
 
 | Variable | Effect | Where |
 |---|---|---|
 | `INTELLEX_OFFLINE=1` | GitHub is unreachable, deterministically. Every network consumer asks one probe, so this reaches all of them, fetch subprocesses included. | `flash.reachable()` |
 | `INTELLEX_SERIAL_ALLOW=COM5,COM6` | Only these ports are listed, identified, opened or handed to esptool (case-insensitive; set-but-empty means none). | `transport.serial_allowed()`, used by `list_serial_ports`, `SerialTransport.open`, `discover.identify_serial`, `_claim_port_for_flash` |
 | `INTELLEX_DISCOVER_HOSTS=192.168.4.1` | The hosts discovery probes (set-but-empty means none); an explicit `?hosts=` still wins. | `discover.scan()` |
+| `INTELLEX_WS_ALLOW=192.168.4.1` | Only these hosts are attached to over WiFi or probed to re-identify a moved target (case-insensitive; set-but-empty means none). Includes `Bridge.rebuild()`'s fallback to `192.168.4.1`. | `transport.ws_allowed()`, used by `Bridge.rebuild`, `WebSocketTransport.open`, `_reidentify_if_moved` |
 | `INTELLEX_DATA_DIR=<dir>` | The per-user directory itself — settings, logs, bundles, the firmware cache — on every platform. | `paths.user_data_dir()` |
 
 `LOCALAPPDATA` alone isolates a host on Windows only: on macOS and Linux the directory hangs
@@ -556,8 +558,9 @@ node tools/smoke_ota_label.js
 node tools/smoke_wizard_reconnect.js
 
 # The test-host hooks (INTELLEX_OFFLINE, INTELLEX_SERIAL_ALLOW,
-# INTELLEX_DISCOVER_HOSTS), each against the real module, opening no port and
-# touching no network. Run after touching reachable(), the serial paths or scan().
+# INTELLEX_DISCOVER_HOSTS, INTELLEX_DATA_DIR, INTELLEX_WS_ALLOW), each against the
+# real module, opening no port and touching no network. Run after touching
+# reachable(), the serial paths, scan() or the WebSocket attach.
 python tools/smoke_test_hooks.py
 
 # The docs viewer, end to end: fetch nothing, render everything already on

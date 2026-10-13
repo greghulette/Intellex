@@ -90,7 +90,8 @@ except ImportError:                                      # pragma: no cover
         "  .venv\\Scripts\\python.exe src\\host.py --serial COM5\n\n"
     )
     raise SystemExit(1)
-from transport import Transport, TransportError, list_serial_ports, serial_allowed   # noqa: E402
+from transport import (Transport, TransportError, list_serial_ports, serial_allowed,   # noqa: E402
+                       ws_allowed)
 from serial_transport import SerialTransport             # noqa: E402
 from ws_transport import WebSocketTransport              # noqa: E402
 import discover                                          # noqa: E402
@@ -356,12 +357,22 @@ class Bridge:
                 self._new_session()
 
     def rebuild(self) -> Transport:
-        """Construct a fresh transport for the remembered target."""
+        """Construct a fresh transport for the remembered target.
+
+        A WebSocket target is checked against INTELLEX_WS_ALLOW HERE, before the
+        transport exists, and that includes the fallback: with no host recorded --
+        or no target at all, which a detach racing the reconnect loop can leave --
+        this builds ws://192.168.4.1, the address of EVERY board's access point, so
+        an unleashed fallback is a link to whichever droid the PC's adapter is on.
+        WebSocketTransport.open() checks again for a transport built elsewhere.
+        """
         spec = self._spec or {}
         if spec.get("kind") == "serial":
             return SerialTransport(spec["port"], self._on_transport_data, self._on_transport_lost)
-        return WebSocketTransport(spec.get("host", "192.168.4.1"),
-                                  self._on_transport_data, self._on_transport_lost)
+        host = spec.get("host", "192.168.4.1")
+        if not ws_allowed(host):
+            raise TransportError(f"{host} is not in INTELLEX_WS_ALLOW")
+        return WebSocketTransport(host, self._on_transport_data, self._on_transport_lost)
 
     @property
     def wants_link(self) -> bool:
@@ -1657,6 +1668,8 @@ def _reidentify_if_moved(spec: Optional[dict]) -> Optional[dict]:
         if not spec or spec.get("kind") != "ws":
             return None
         host = spec.get("host", "192.168.4.1")
+        if not ws_allowed(host):
+            return None                    # leashed (INTELLEX_WS_ALLOW): never probed either
         via = discover.local_ip_for(host)
         if not via or via.rsplit(".", 1)[0] != host.rsplit(".", 1)[0]:
             return None                    # no lease there; the attach fails regardless

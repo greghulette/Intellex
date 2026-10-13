@@ -14,16 +14,20 @@ set in this process's environment the way a test bench sets it for a host
     H3  INTELLEX_DISCOVER_HOSTS   discover.scan() probes only the named hosts; set-but-empty
                                   probes nothing; an explicit list still wins
     H4  INTELLEX_DATA_DIR         paths.user_data_dir() is the named directory, on every platform
+    H5  INTELLEX_WS_ALLOW         ws_allowed(), WebSocketTransport.open(), Bridge.rebuild() -- its
+                                  fallback to 192.168.4.1 included -- and the reconnect loop's
+                                  re-identify probe refuse a host outside the list, BEFORE
+                                  anything connects to it
 
 and, not a hook but the same fake makes it checkable: SerialTransport.open() opens quietly
 and alone -- on Windows DTR and RTS low before the open; on macOS/Linux RTS low and the port
 exclusive at the open, DTR low after it (the order that does not reset a board there).
 
 WHY IT CANNOT PASS WITHOUT THE HOOKS
-pyserial is replaced by a fake that records every open(), and discover.local_ip_for is
-replaced by one that records every host scan() asks about. H1 is timed and its reason is
-read back. So a missing hook shows up as a recorded open, a probed host, a slow answer or a
-missing reason -- never as a pass.
+pyserial is replaced by a fake that records every open(), websockets by one that records
+every connect(), and discover.local_ip_for by one that records every host scan() asks
+about. H1 is timed and its reason is read back. So a missing hook shows up as a recorded
+open, a connect, a probed host, a slow answer or a missing reason -- never as a pass.
 """
 from __future__ import annotations
 
@@ -93,7 +97,24 @@ fake_tools.list_ports = fake_list_ports
 fake_serial.tools = fake_tools
 sys.modules.update({"serial": fake_serial, "serial.tools": fake_tools, "serial.tools.list_ports": fake_list_ports})
 
-for var in ("INTELLEX_OFFLINE", "INTELLEX_SERIAL_ALLOW", "INTELLEX_DISCOVER_HOSTS", "INTELLEX_DATA_DIR"):
+# ── A websockets that connects to nothing and remembers what it was asked to reach ───────
+CONNECTS: list[str] = []
+
+
+def _fake_connect(url, **_k):
+    CONNECTS.append(url)
+    raise OSError("smoke: no network here")
+
+
+fake_ws = types.ModuleType("websockets")
+fake_ws_sync = types.ModuleType("websockets.sync")
+fake_ws_client = types.ModuleType("websockets.sync.client")
+fake_ws_client.connect = _fake_connect
+fake_ws.sync, fake_ws_sync.client = fake_ws_sync, fake_ws_client
+sys.modules.update({"websockets": fake_ws, "websockets.sync": fake_ws_sync, "websockets.sync.client": fake_ws_client})
+
+for var in ("INTELLEX_OFFLINE", "INTELLEX_SERIAL_ALLOW", "INTELLEX_DISCOVER_HOSTS", "INTELLEX_DATA_DIR",
+            "INTELLEX_WS_ALLOW"):
     os.environ.pop(var, None)
 
 import paths                                                   # noqa: E402
@@ -101,6 +122,7 @@ import flash                                                   # noqa: E402
 import transport                                               # noqa: E402
 import discover                                                # noqa: E402
 from serial_transport import SerialTransport                   # noqa: E402
+from ws_transport import WebSocketTransport                    # noqa: E402
 import host as hostmod                                         # noqa: E402
 
 # ── H1 ────────────────────────────────────────────────────────────────────────────────────
@@ -196,6 +218,70 @@ os.environ["INTELLEX_DATA_DIR"] = str(stage)
 check(paths.user_data_dir() == stage, f"user_data_dir() is the named directory ({paths.user_data_dir()})")
 check(not stage.exists(), "...and naming it creates nothing")
 os.environ.pop("INTELLEX_DATA_DIR")
+
+# ── H5 ────────────────────────────────────────────────────────────────────────────────────
+print("-- H5 INTELLEX_WS_ALLOW")
+check(transport.ws_allowed("192.168.4.1") and transport.ws_allowed("anything"), "unset: every host is allowed")
+os.environ["INTELLEX_WS_ALLOW"] = " 192.168.4.1 , Droid.Local"
+check(transport.ws_allowed("192.168.4.1") and transport.ws_allowed("droid.local"),
+      "the named hosts are allowed (any case)")
+check(not transport.ws_allowed("192.168.4.2"), "an unnamed host is not")
+
+CONNECTS.clear()
+try:
+    WebSocketTransport("192.168.4.2", on_data=lambda b: None).open()
+    check(False, "WebSocketTransport.open() refuses 192.168.4.2")
+except transport.TransportError as e:
+    check("INTELLEX_WS_ALLOW" in str(e), "WebSocketTransport.open() refuses 192.168.4.2, naming the variable")
+check(CONNECTS == [], f"...without connecting to it (connects: {CONNECTS})")
+try:
+    WebSocketTransport("192.168.4.1", on_data=lambda b: None).open()
+except transport.TransportError:
+    pass
+check(CONNECTS == ["ws://192.168.4.1:80/ws"], f"an allowed host is connected to as before (connects: {CONNECTS})")
+
+b = hostmod.Bridge()
+for spec, what in ((None, "no target at all"), ({"kind": "ws"}, "a ws target with no host")):
+    b._spec = spec
+    os.environ["INTELLEX_WS_ALLOW"] = "10.255.255.1"
+    try:
+        b.rebuild()
+        check(False, f"Bridge.rebuild() with {what} refuses its 192.168.4.1 fallback")
+    except transport.TransportError as e:
+        check("192.168.4.1" in str(e) and "INTELLEX_WS_ALLOW" in str(e),
+              f"Bridge.rebuild() with {what} refuses its 192.168.4.1 fallback, naming the variable")
+    os.environ["INTELLEX_WS_ALLOW"] = "192.168.4.1"
+    t = b.rebuild()
+    check(isinstance(t, WebSocketTransport) and t._host == "192.168.4.1" and not t.is_open,
+          f"...and builds it, unopened, once 192.168.4.1 is allowed ({what})")
+b._spec = {"kind": "ws", "host": "10.255.255.7", "role": "navicore"}
+try:
+    b.rebuild()
+    check(False, "Bridge.rebuild() refuses a recorded host outside the list")
+except transport.TransportError as e:
+    check("10.255.255.7 is not in INTELLEX_WS_ALLOW" in str(e),
+          "Bridge.rebuild() refuses a recorded host outside the list")
+check(CONNECTS == ["ws://192.168.4.1:80/ws"], f"...and nothing was connected to by any of it (connects: {CONNECTS})")
+
+asked = []
+real = (discover.local_ip_for, discover.probe, discover.ssid_for_host)
+discover.local_ip_for = lambda h: asked.append(("route", h)) or "10.255.255.100"
+discover.probe = lambda h, *a, **k: asked.append(("probe", h)) or {"kind": "wcb"}
+discover.ssid_for_host = lambda h: asked.append(("ssid", h)) or None
+try:
+    got = hostmod._reidentify_if_moved({"kind": "ws", "host": "10.255.255.7", "role": "navicore"})
+    check(got is None and asked == [],
+          f"the reconnect loop never probes a host outside the list ({got}, asked {asked})")
+    os.environ["INTELLEX_WS_ALLOW"] = "10.255.255.7"
+    got = hostmod._reidentify_if_moved({"kind": "ws", "host": "10.255.255.7", "role": "navicore"})
+    check(("probe", "10.255.255.7") in asked and (got or {}).get("spec", {}).get("role") == "wcb",
+          f"...and probes one inside it as before ({got}, asked {asked})")
+finally:
+    discover.local_ip_for, discover.probe, discover.ssid_for_host = real
+
+os.environ["INTELLEX_WS_ALLOW"] = ""
+check(not transport.ws_allowed("192.168.4.1"), "set but empty: no host at all")
+os.environ.pop("INTELLEX_WS_ALLOW")
 
 # ── The open itself ───────────────────────────────────────────────────────────────────────
 print("-- SerialTransport.open(): quiet and alone")
