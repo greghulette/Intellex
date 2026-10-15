@@ -56,11 +56,17 @@ jobs:
         with:
           python-version: "3.12"
       - name: Build (scripts\build-windows.bat - the same script as on a desk)
-        shell: cmd
+        shell: bash
         env:
           INTELLEX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INTELLEX_BUILD_STRICT: "1"
-        run: scripts\build-windows.bat
+        run: cmd //c 'scripts\build-windows.bat' 2>&1 | tee build.log
+      - name: Why the build failed (its last lines, as an annotation anyone can read)
+        if: failure()
+        shell: bash
+        run: |
+          msg=$(tail -n 40 build.log | tr -d '\r' | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
+          echo "::error title=Windows build log (last 40 lines)::$msg"
       - name: Name it
         shell: bash
         run: |
@@ -89,10 +95,17 @@ jobs:
         with:
           python-version: "3.12"
       - name: Build (scripts/build-macos.command - the same script as on a desk)
+        shell: bash
         env:
           INTELLEX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INTELLEX_BUILD_STRICT: "1"
-        run: bash scripts/build-macos.command
+        run: bash scripts/build-macos.command 2>&1 | tee build.log
+      - name: Why the build failed (its last lines, as an annotation anyone can read)
+        if: failure()
+        shell: bash
+        run: |
+          msg=$(tail -n 40 build.log | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
+          echo "::error title=macOS ${{ matrix.arch }} build log (last 40 lines)::$msg"
       - name: The app is the architecture it is named for
         run: |
           lipo -archs dist/Intellex.app/Contents/MacOS/Intellex

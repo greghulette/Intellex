@@ -31,9 +31,11 @@ echo === Fetching the bundled tools ===
 REM Not fatal: offline you can still build with whatever is already bundled.
 rem INTELLEX_BUILD_STRICT (set by .github/workflows/release.yml): a release ships the tools, docs
 rem and firmware as they are at build time, so there a failed fetch fails the build.
+rem INSIDE A ( ) BLOCK A ")" IN AN ECHO ENDS THE BLOCK: escaped as ^( ^) below, or the next line
+rem ran unconditionally and every strict build failed with its fetches fine (v0.2.0's first run).
 .venv\Scripts\python.exe tools\fetch_webui.py --tool all
 if errorlevel 1 (
-    echo   (fetch failed - building with the tools already present)
+    echo   ^(fetch failed - building with the tools already present^)
     if defined INTELLEX_BUILD_STRICT goto :fail
 )
 
@@ -50,7 +52,7 @@ echo === Downloading the wikis (so the docs work offline) ===
 REM Not fatal: the app still runs, it just opens the docs viewer with nothing in it.
 .venv\Scripts\python.exe tools\fetch_wiki.py --wiki all
 if errorlevel 1 (
-    echo   (docs fetch incomplete - see above)
+    echo   ^(docs fetch incomplete - see above^)
     if defined INTELLEX_BUILD_STRICT goto :fail
 )
 
@@ -59,7 +61,7 @@ echo === Caching firmware (so a fresh install can flash offline) ===
 REM Not fatal either: the app still works, it just has to download at flash time.
 .venv\Scripts\python.exe tools\fetch_firmware.py
 if errorlevel 1 (
-    echo   (firmware fetch incomplete - see above)
+    echo   ^(firmware fetch incomplete - see above^)
     if defined INTELLEX_BUILD_STRICT goto :fail
 )
 
