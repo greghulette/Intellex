@@ -84,6 +84,7 @@
   #tabs button { font-size:12.5px; padding:4px 12px; border:none; border-radius:6px;
                  background:transparent; color:var(--muted); }
   #tabs button[aria-pressed="true"] { background:var(--chip); color:var(--fg); }
+  #settings[aria-pressed="true"] { background:var(--chip); color:var(--fg); }
   #scanstate { font-size:11px; color:var(--muted); }
 
   #devices { flex:1; overflow:auto; padding:0 16px 16px; display:flex; flex-direction:column; gap:8px; }
@@ -208,7 +209,7 @@
   <div class="right">
     <div id="attn"><span class="dot"></span><span id="attntext"></span></div>
     <button class="btn" id="opendocs">Docs</button>
-    <button class="btn" id="showlog">Log</button>
+    <button class="btn" id="settings" aria-pressed="false" title="Updates, firmware, docs and the log">Settings</button>
     <button class="btn" id="theme" style="min-width:86px"></button>
     <span class="mono" id="appver"></span>
   </div>
@@ -277,7 +278,7 @@
 </div>
 
 <details id="maint">
-  <summary id="maint-sum">Updates, firmware, docs and logs</summary>
+  <summary id="maint-sum">Settings · updates, firmware, docs and logs</summary>
   <div id="maintbody">
     <div class="wide">
       <h2>INTELLEX ITSELF</h2>
@@ -338,11 +339,12 @@
         <button class="btn" id="updatewiki">Download docs</button>
       </div>
       <div class="note">The NaviCore, WCB and Intellex wikis, kept on this computer so
-        you can read them on a droid's WiFi with no route to GitHub. Photographs over
-        1&nbsp;MB are left online — the pages link out to them.</div>
+        you can read them on a droid's WiFi with no route to GitHub - every page and every
+        picture, the full-size assembly photographs included.</div>
       <div class="bar" style="margin-top:12px">
         <span class="grow mono" id="logpath" style="font-size:11px; color:var(--muted);
               overflow:hidden; text-overflow:ellipsis; white-space:nowrap">…</span>
+        <button class="btn" id="showlog">Show log</button>
       </div>
       <pre id="logtail"></pre>
     </div>
@@ -408,8 +410,8 @@ function paintMaint() {
   }
 
   $('maint-sum').textContent = bad.length
-    ? 'Updates, firmware, docs and logs · ' + bad.join(' · ')
-    : 'Updates, firmware, docs and logs · all current';
+    ? 'Settings · updates, firmware, docs and logs · ' + bad.join(' · ')
+    : 'Settings · updates, firmware, docs and logs · all current';
 }
 
 // The summary's own actions just drive the real controls below, so there is one
@@ -1268,14 +1270,24 @@ $('updatewiki').onclick = async () => {
   } catch (_) {}
 })();
 
+// The header's Settings button opens and closes this panel (it was a Log button that only showed the log tail - Greg,
+// 2026-10-15: "Show/Hide Log should be settings, not log"); the log has its own Show log button inside it.
+$('settings').onclick = () => {
+  const m = $('maint');
+  m.open = !m.open;
+  if (m.open) m.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+$('maint').addEventListener('toggle', () => {
+  $('settings').setAttribute('aria-pressed', String($('maint').open));
+});
+
 $('showlog').onclick = async () => {
-  $('maint').open = true;
   const pre = $('logtail');
   // COMPUTED STYLE, not pre.style: the hidden state lives in the stylesheet
   // (#logtail { display:none }), so the inline style starts out empty. Tested
   // against that, a hidden log read as shown -- the first click "hid" it, renamed
   // the button, and showed nothing.
-  if (getComputedStyle(pre).display !== 'none') { pre.style.display = 'none'; $('showlog').textContent = 'Log'; return; }
+  if (getComputedStyle(pre).display !== 'none') { pre.style.display = 'none'; $('showlog').textContent = 'Show log'; return; }
   try {
     const l = await api('/_api/log');
     pre.textContent = l.tail || '(empty)';

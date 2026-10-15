@@ -31,8 +31,12 @@ fi
 echo
 echo "=== Fetching the bundled tools ==="
 # Not fatal: offline, build with whatever is already bundled.
-.venv/bin/python tools/fetch_webui.py --tool all || \
-    echo "  (fetch failed - building with the tools already present)"
+# INTELLEX_BUILD_STRICT (set by .github/workflows/release.yml): a release must ship the tools,
+# docs and firmware as they are at build time, so there a failed fetch fails the build; on a
+# desk it carries on with what is already here.
+strict_fail() { if [ -n "$INTELLEX_BUILD_STRICT" ]; then echo "BUILD FAILED: $1 (INTELLEX_BUILD_STRICT)"; exit 1; fi; }
+.venv/bin/python tools/fetch_webui.py --tool all || {
+    echo "  (fetch failed - building with the tools already present)"; strict_fail "the tools could not be fetched"; }
 
 if [ ! -f "src/webui/index.html" ]; then
     echo
@@ -44,12 +48,14 @@ fi
 echo
 echo "=== Downloading the wikis (so the docs work offline) ==="
 # Not fatal: the app still runs, it just opens the docs viewer with nothing in it.
-.venv/bin/python tools/fetch_wiki.py --wiki all || echo "  (docs fetch incomplete - see above)"
+.venv/bin/python tools/fetch_wiki.py --wiki all || {
+    echo "  (docs fetch incomplete - see above)"; strict_fail "the docs could not be fetched"; }
 
 echo
 echo "=== Caching firmware (so a fresh install can flash offline) ==="
 # Not fatal: the app still works, it just has to download at flash time.
-.venv/bin/python tools/fetch_firmware.py || echo "  (firmware fetch incomplete - see above)"
+.venv/bin/python tools/fetch_firmware.py || {
+    echo "  (firmware fetch incomplete - see above)"; strict_fail "the firmware could not be fetched"; }
 
 # ── The Dock icon ───────────────────────────────────────────────────────────
 # iconutil is macOS-only, so the .icns is cut here rather than committed like the

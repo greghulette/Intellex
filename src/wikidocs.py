@@ -17,10 +17,10 @@ full of command examples. `[[...]]` is parsed by an INLINE RULE for the same
 reason: a regex over the markdown source rewrote it inside fences and backticks
 too, so an example showing the syntax came out as a different example.
 
-IMAGES THAT WERE TOO BIG TO DOWNLOAD become a link to the online copy, not a
-broken picture. tools/fetch_wiki.py leaves anything over 1 MB behind (the WCB
-wiki's assembly photographs are 6-7 MB each), so this is a normal state and not
-an error worth shouting about.
+AN IMAGE THAT IS NOT ON DISK becomes a link to the online copy, not a broken
+picture. Since 2026-10-15 tools/fetch_wiki.py downloads every image whatever its
+size (it used to leave anything over 1 MB behind), so this now only happens when
+one failed to download.
 """
 from __future__ import annotations
 

@@ -42,6 +42,11 @@ hiddenimports = ['fetch_webui', 'fetch_firmware', 'fetch_wiki', 'build_stamp']
 for _d in ('webui', 'webui_wcb', 'firmware', 'wiki'):
     if os.path.isdir(os.path.join('src', _d)):
         datas.append((os.path.join('src', _d), _d))
+# Which branch and version each bundled tool is (src/paths.py data_dir): written by the build's
+# own fetch, so a copy downloaded before this build never hides the tools it ships.
+for _f in ('webui.source.json', 'webui_wcb.source.json'):
+    if os.path.isfile(os.path.join('src', _f)):
+        datas.append((os.path.join('src', _f), '.'))
 
 # Served at runtime, so they must be real files in the bundle.
 for _f in ('launcher.html', 'shell.html', 'wiki.html', 'intellex_shim.js'):

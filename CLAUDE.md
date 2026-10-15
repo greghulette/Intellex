@@ -262,10 +262,16 @@ of use is broken by design.
   is no route to GitHub. There is **no API for wikis** and codeload 404s on
   them; what works is the `_pages` index for the list plus
   `raw.githubusercontent.com/wiki/<owner>/<repo>/<Page>.md` for content, with a
-  link-crawl as the fallback when the scrape breaks. **Images are capped at
-  1 MB**: fetched whole the WCB wiki alone is 123 MB of assembly photographs,
-  against 10.4 MB for all three wikis with the cap, and a skipped image renders
-  as a link to the online copy rather than a broken picture.
+  link-crawl as the fallback when the scrape breaks. **Every image is fetched
+  whole** since 2026-10-15 (Greg: "These should download everything, even if over
+  1MB") - the WCB wiki's assembly photographs make it about 123 MB, against 10.4 MB
+  under the old 1 MB cap, and an app that bundles the docs grows by the same; an
+  image that fails to download still renders as a link to the online copy.
+  **Which copy a frozen app serves** - its own build's tools and wikis or ones
+  downloaded since - is decided by what each copy is, not by "the download always
+  wins" (`paths._user_copy_wins`, `_user_wiki_wins`): every fetch writes
+  `<dir>.source.json` beside its copy (branch and version stamp for a tool, the
+  fetch time for a wiki), so a new Intellex never opens with month-old tools.
   **The docs share the control API's origin** and render raw HTML, so
   `host.py`'s `_WIKI_CSP` (nonce'd script only; `sandbox` on files served from a
   wiki's tree) is what stops a script in a wiki page -- or in a crafted `/wiki/`

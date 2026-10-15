@@ -478,12 +478,12 @@ def main() -> int:
         return 1
 
     if a.tool == "wcb":
-        base = a.base
+        base, note = a.base, ""
         if not base:
             base, note = resolve_base(WCB_SITE, "Wizard", settings.branch(settings.WCB))
             if note:
                 print(f"[wcb] {note}")
-        return fetch_wcb(base, a.check, a.force)
+        return _fetch_recorded("wcb", base, _source_branch(settings.WCB, note, a.base), a.check, a.force)
     if a.tool == "all":
         if a.base:
             # One --base cannot mean two different sites, and quietly applying it
@@ -496,19 +496,38 @@ def main() -> int:
                                 settings.branch(settings.NAVICORE))
         if note:
             print(f"[navicore] {note}")
-        rc_nc = _fetch_navicore(nb, a.check, a.force)
+        rc_nc = _fetch_recorded("navicore", nb, _source_branch(settings.NAVICORE, note, None), a.check, a.force)
         wb, note = resolve_base(WCB_SITE, "Wizard", settings.branch(settings.WCB))
         if note:
             print(f"[wcb] {note}")
-        rc_wcb = fetch_wcb(wb, a.check, a.force)
+        rc_wcb = _fetch_recorded("wcb", wb, _source_branch(settings.WCB, note, None), a.check, a.force)
         return rc_nc or rc_wcb
-    base = a.base
+    base, note = a.base, ""
     if not base:
         base, note = resolve_base(NAVICORE_SITE, "config_tool",
                                   settings.branch(settings.NAVICORE))
         if note:
             print(f"[navicore] {note}")
-    return _fetch_navicore(base, a.check, a.force)
+    return _fetch_recorded("navicore", base, _source_branch(settings.NAVICORE, note, a.base), a.check, a.force)
+
+
+def _source_branch(product: str, note: str, base) -> str:
+    """The branch a fetch's copy is really from: 'main' when the branch publishes no tool (resolve_base fell back),
+    'custom' for --base."""
+    if base:
+        return "custom"
+    b = settings.branch(product)
+    return "main" if (not b or b == "main" or "publishes no tool" in (note or "")) else b
+
+
+def _fetch_recorded(tool: str, base: str, branch: str, check: bool, force: bool) -> int:
+    """Fetch, then write <dir>.source.json beside a copy that is current (paths.record_tool_source): which branch and
+    version it is, so a frozen app can tell its own build's tools from a copy downloaded since (paths.data_dir)."""
+    rc = fetch_wcb(base, check, force) if tool == "wcb" else _fetch_navicore(base, check, force)
+    if rc == 0 and not check:
+        dest, stamp = (WEBUI_WCB, wcb_local_version()) if tool == "wcb" else (WEBUI, local_dtg())
+        paths.record_tool_source(dest, branch, stamp)
+    return rc
 
 
 def _fetch_navicore(base: str, check: bool, force: bool) -> int:

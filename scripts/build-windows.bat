@@ -29,8 +29,13 @@ if errorlevel 1 echo   (dependency install failed - continuing with what is inst
 echo.
 echo === Fetching the bundled tools ===
 REM Not fatal: offline you can still build with whatever is already bundled.
+rem INTELLEX_BUILD_STRICT (set by .github/workflows/release.yml): a release ships the tools, docs
+rem and firmware as they are at build time, so there a failed fetch fails the build.
 .venv\Scripts\python.exe tools\fetch_webui.py --tool all
-if errorlevel 1 echo   (fetch failed - building with the tools already present)
+if errorlevel 1 (
+    echo   (fetch failed - building with the tools already present)
+    if defined INTELLEX_BUILD_STRICT goto :fail
+)
 
 if not exist "src\webui\index.html" (
     echo.
@@ -44,13 +49,19 @@ echo.
 echo === Downloading the wikis (so the docs work offline) ===
 REM Not fatal: the app still runs, it just opens the docs viewer with nothing in it.
 .venv\Scripts\python.exe tools\fetch_wiki.py --wiki all
-if errorlevel 1 echo   (docs fetch incomplete - see above)
+if errorlevel 1 (
+    echo   (docs fetch incomplete - see above)
+    if defined INTELLEX_BUILD_STRICT goto :fail
+)
 
 echo.
 echo === Caching firmware (so a fresh install can flash offline) ===
 REM Not fatal either: the app still works, it just has to download at flash time.
 .venv\Scripts\python.exe tools\fetch_firmware.py
-if errorlevel 1 echo   (firmware fetch incomplete - see above)
+if errorlevel 1 (
+    echo   (firmware fetch incomplete - see above)
+    if defined INTELLEX_BUILD_STRICT goto :fail
+)
 
 REM Windows LOCKS a running executable, so PyInstaller's copy into dist\ fails with
 REM a bare "PermissionError: Access is denied" that reads like a rights problem

@@ -24,6 +24,9 @@ src/webui.prev/
 # repo is the single source of truth; fetched with tools/fetch_webui.py --tool wcb.
 src/webui_wcb/
 src/webui_wcb.prev/
+# Which branch and version each fetched tool is (src/paths.py record_tool_source): a fetch's artefact, like the tool.
+src/webui.source.json
+src/webui_wcb.source.json
 
 # Downloaded copies of the three wikis — fetched with tools/fetch_wiki.py, same
 # rule as the tool bundles above. The wikis are their own repos and are the

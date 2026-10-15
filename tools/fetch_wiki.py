@@ -77,17 +77,13 @@ RE_IMG_TAG = re.compile(r"<img[^>]+src=[\"']([^\"']+)[\"']", re.I)
 
 _UA = {"User-Agent": "Intellex"}
 
-# PER-IMAGE CEILING. The WCB wiki carries 21 assembly photographs at 6-7 MB each
-# and an 11.7 MB animation: fetched whole it is 123 MB, which is not a thing to
-# put inside an application. At 1 MB the same three wikis come to 10.4 MB and
-# keep every diagram, screenshot and schematic -- only the full-resolution
-# soldering photos are left behind, and those are for building a board at a
-# bench, not for the con floor this exists to serve.
-#
-# Checked with a HEAD first, so an oversized file is never transferred and then
-# thrown away. A page whose image was skipped renders a link to it online rather
-# than a broken picture (see wikidocs.render).
-MAX_ASSET_BYTES = 1 << 20
+# EVERY IMAGE, WHATEVER ITS SIZE. Until 2026-10-15 anything over 1 MB was left
+# online - the WCB wiki's 21 assembly photographs (6-7 MB each) and an 11.7 MB
+# animation, 123 MB in all against 10.4 MB without them. Greg: "These should
+# download everything, even if over 1MB": the docs are read where there is no
+# route to GitHub, and a board is sometimes built or repaired there too. The cost
+# is the size of the download and of an app that bundles the docs. An image that
+# fails to download still renders as a link to the online copy (wikidocs.render).
 
 
 # EVERY REQUEST BELOW GOES THROUGH certs.context(). The stock python.org macOS
@@ -102,15 +98,6 @@ def _get(url: str, timeout: float = 20.0) -> bytes:
     with urllib.request.urlopen(req, timeout=timeout,
                                 context=certs.context()) as r:
         return r.read()
-
-
-def _size_of(url: str, timeout: float = 15.0) -> int:
-    """Content-Length via HEAD. 0 when the server will not say, which lets the
-    download proceed -- an unknown size is not a reason to skip a small file."""
-    req = urllib.request.Request(url, headers=_UA, method="HEAD")
-    with urllib.request.urlopen(req, timeout=timeout,
-                                context=certs.context()) as r:
-        return int(r.headers.get("Content-Length") or 0)
 
 
 # Set by any fetch that died of certificate verification, so main() can print the
@@ -257,7 +244,7 @@ def fetch_one(product: str, staged: pathlib.Path) -> tuple[int, int, list[str]]:
             if n not in seen:
                 queue.append(n)
 
-    got_assets, skipped_big = 0, 0
+    got_assets = 0
     for rel in sorted(assets):
         # A link that starts by leaving the wiki points at something that is not in
         # it. Refused and said, never quietly re-read as a path inside the wiki.
@@ -274,19 +261,13 @@ def fetch_one(product: str, staged: pathlib.Path) -> tuple[int, int, list[str]]:
             continue
         url = f"{raw}/{urllib.parse.quote(rel)}"
         try:
-            if _size_of(url) > MAX_ASSET_BYTES:
-                skipped_big += 1
-                continue
-            blob = _get(url)
+            blob = _get(url, timeout=120.0)          # a 12 MB animation on a slow link
         except Exception:                                # noqa: BLE001
             continue                                     # a missing image is not a failure
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(blob)
         got_assets += 1
 
-    if skipped_big:
-        problems.append(f"{skipped_big} image(s) over "
-                        f"{MAX_ASSET_BYTES // 1024} KB left online")
     return pages, got_assets, problems
 
 
@@ -381,6 +362,7 @@ def main() -> int:
 
             try:
                 _swap_in(staged, DEST / product)
+                paths.record_wiki_source(DEST / product)
             except OSError as e:
                 # PER WIKI, like the fetch above. One directory that cannot be
                 # replaced -- a file held open, antivirus -- must not stop the other

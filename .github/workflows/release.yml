@@ -13,6 +13,10 @@
 #   Intellex-<v>-macos-<arch>.dmg   the same apps for a first install, drag to Applications
 #   SHA256SUMS.txt                  every file's SHA-256; the app refuses a download that does not match
 #
+# Every build fetches the tools, the docs (every image, whatever its size) and the firmware as
+# they are at that moment, and INTELLEX_BUILD_STRICT makes a failed fetch fail the build: an app
+# is never published without them, or with yesterday's.
+#
 # Unsigned on both platforms (no Developer ID / code-signing certificate): a first install still needs the
 # right-click > Open (macOS) or More info > Run anyway (Windows) step. An update installed by the app itself does
 # not - it downloads with no quarantine flag and replaces the copy already trusted.
@@ -55,6 +59,7 @@ jobs:
         shell: cmd
         env:
           INTELLEX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INTELLEX_BUILD_STRICT: "1"
         run: scripts\build-windows.bat
       - name: Name it
         shell: bash
@@ -86,6 +91,7 @@ jobs:
       - name: Build (scripts/build-macos.command - the same script as on a desk)
         env:
           INTELLEX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INTELLEX_BUILD_STRICT: "1"
         run: bash scripts/build-macos.command
       - name: The app is the architecture it is named for
         run: |
