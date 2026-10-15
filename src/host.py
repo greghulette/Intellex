@@ -98,7 +98,23 @@ import discover                                          # noqa: E402
 
 # Resolved, not hard-coded: a frozen app serves the UPDATED copy from the user
 # data dir when one exists, and the shipped copy otherwise. See src/paths.py.
+#
+# AND RESOLVED PER REQUEST (webui_dir()/wcb_dir()), not once at import. A frozen
+# app that has never been updated has no user copy, so at start this answered the
+# shipped one; the first Update then wrote the user copy and the host went on
+# serving -- and reporting the version of -- the shipped tool until the app was
+# restarted. "Update says it worked and nothing changed." WEBUI_DIR and
+# WEBUI_WCB_DIR stay as what was resolved at start: build_app() creates them.
 WEBUI_DIR = paths.data_dir("webui")
+
+
+def webui_dir() -> pathlib.Path:
+    return paths.data_dir("webui")
+
+
+def wcb_dir() -> pathlib.Path:
+    return paths.data_dir("webui_wcb")
+
 
 # The WCB Wizard, bundled the same way and for the same reasons as the NaviCore
 # tool: a copy, never a fork.
@@ -114,7 +130,6 @@ WEBUI_DIR = paths.data_dir("webui")
 # r2logo.png; a single flat /Images/ would have had one silently overwrite the
 # other depending on which update ran last.
 WEBUI_WCB_DIR = paths.data_dir("webui_wcb")
-WCB_INDEX = WEBUI_WCB_DIR / "Wizard" / "index.html"
 
 DEFAULT_PORT = 8765
 # Loopback only, always. This exposes an unauthenticated command channel to the
@@ -499,7 +514,7 @@ _DTG_RE = __import__("re").compile(r'id="footer-dtg"[^>]*>([^<]+)<')
 
 
 def _bundled_dtg() -> str:
-    f = WEBUI_DIR / "index.html"
+    f = webui_dir() / "index.html"
     if not f.is_file():
         return ""
     m = _DTG_RE.search(f.read_text(encoding="utf-8", errors="replace"))
@@ -552,7 +567,7 @@ _wcb_published_error = ""
 
 
 def _wcb_bundled_ver() -> str:
-    f = WEBUI_WCB_DIR / "Wizard" / "app.js"
+    f = wcb_dir() / "Wizard" / "app.js"
     if not f.is_file():
         return ""
     m = _WCB_VER_RE.search(f.read_text(encoding="utf-8", errors="replace"))
@@ -1029,10 +1044,16 @@ async def api_update_webui(req: web.Request) -> web.Response:
     else:
         script = pathlib.Path(__file__).resolve().parent.parent / "tools" / "fetch_webui.py"
         argv = [sys.executable, str(script), "--tool", tool]
+    # ?force=1: fetch even when the stamps match. The launcher sends it after a
+    # branch change, where "same stamp" does not mean "same tool": a Wizard commit
+    # does not always move UI_VERSION, so two branches can share one.
+    if req.query.get("force") == "1":
+        argv.append("--force")
 
     def run():
         return proc.run(argv, capture_output=True, text=True, timeout=600)
 
+    before = {p: _bundle_identity(p) for p in ("navicore", "wcb")}
     try:
         r = await asyncio.to_thread(run)
     except Exception as e:
@@ -1040,13 +1061,34 @@ async def api_update_webui(req: web.Request) -> web.Response:
     # Report what DID land even on a failure. With two independent swaps, "the
     # update failed" alone leaves you unable to tell whether either tool moved --
     # and one of them usually has.
+    #
+    # `changed`: the tools whose bundle was swapped in by this run, which is what
+    # the launcher tells any open tool page about (it offers a reload). From the
+    # directory itself, not the stamp, for the reason ?force exists. `notes`: the
+    # fetcher's branch lines ("[wcb] branch WIFI", "[navicore] branch x publishes
+    # no tool - using main's"), so the launcher can say which copy a branch got.
+    out = (r.stdout or "").splitlines()
     return web.json_response({
         "ok": r.returncode == 0,
         "error": "" if r.returncode == 0 else (r.stdout or r.stderr or "fetch failed").strip()[-300:],
         "version": _bundled_dtg(),
         "wcbVersion": _wcb_bundled_ver(),
+        "changed": [p for p in ("navicore", "wcb") if _bundle_identity(p) != before[p]],
+        "notes": [x.strip() for x in out if x.startswith(("[navicore] branch ", "[wcb] branch "))],
         "log": (r.stdout or "").strip()[-600:],
     })
+
+
+def _bundle_identity(product: str) -> tuple:
+    """Which copy of a tool is being served: its directory and that directory's inode and mtime. fetch_webui swaps a
+    whole new directory in by rename, so any update that landed changes this, whatever the stamp says; a frozen app's
+    first update moves it from the shipped copy to the user's (paths.data_dir)."""
+    d = webui_dir() if product == "navicore" else wcb_dir()
+    try:
+        st = d.stat()
+        return (str(d), st.st_ino, st.st_mtime_ns)
+    except OSError:
+        return (str(d), None, None)
 
 
 # ── Native flashing ─────────────────────────────────────────────────────────
@@ -1561,11 +1603,70 @@ def _inject_shim(html: str) -> str:
     return html[:at] + SHIM_TAG + "\n" + html[at:]
 
 
+# ── The tools' own files are never assumed fresh ────────────────────────────
+# index.html is served no-store, but the scripts and stylesheet it loads came from
+# a plain static mount with no Cache-Control, and WebKit then caches them on its
+# own heuristic: a file last changed weeks ago counts as fresh for days, and is
+# not even asked for. So after an update (or a branch switch) the page was the new
+# index.html running the OLD app.js -- the tool did not change and the update
+# looked like it had failed (2026-10-15, WIFI's Wizard on disk, main's on screen;
+# the webview's NetworkCache held app.js from before the update).
+#
+# Two parts. Every file of a tool is sent "no-cache" (_tool_files): kept, but
+# revalidated on every load, which over loopback is a 304 and costs nothing. And
+# the page's own <script src> / <link href> URLs carry ?v=<mtime>.<size> of the
+# file they name (_versioned), so a copy cached BEFORE this change -- which the
+# webview will not ask about again until its heuristic runs out -- is never the
+# one used. At serve time only, like the shim tag: the file on disk stays the
+# published one byte for byte.
+_LOCAL_REF = re.compile(r'(<(?:script|link)\b[^>]*?\b(?:src|href)=")([^"?#:]+)(")', re.I)
+
+
+def _versioned(html: str, page_dir: pathlib.Path) -> str:
+    """The page's own scripts, stylesheet and icon asked for at a URL that changes when the file does. Absolute paths
+    (the shim, /_assets/), anything with a scheme, query or fragment, and a file that is not there are left alone."""
+    def stamp(m: re.Match) -> str:
+        rel = m.group(2)
+        if rel.startswith("/"):
+            return m.group(0)
+        try:
+            st = (page_dir / rel).stat()
+        except (OSError, ValueError):
+            return m.group(0)
+        return f"{m.group(1)}{rel}?v={st.st_mtime_ns:x}.{st.st_size:x}{m.group(3)}"
+    return _LOCAL_REF.sub(stamp, html)
+
+
+def _tool_files(where):
+    """A handler serving one tool's files from wherever where() says that tool is NOW (webui_dir, wcb_dir), each sent
+    no-cache. It stands in for app.router.add_static, whose directory is fixed when the app is built, and answers as
+    it did: a path that leaves the directory (or is absolute) 404, a directory 403, a missing file 404."""
+    async def handler(req: web.Request) -> web.StreamResponse:
+        rel = req.match_info.get("tail", "")
+        if pathlib.Path(rel).is_absolute():
+            raise web.HTTPNotFound()
+        try:
+            root = where().resolve()
+            f = (root / rel).resolve()
+            f.relative_to(root)
+        except (ValueError, OSError, RuntimeError):
+            raise web.HTTPNotFound()
+        try:
+            if f.is_dir():
+                raise web.HTTPForbidden()
+        except PermissionError:
+            raise web.HTTPForbidden()
+        if not f.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(f, headers={"Cache-Control": "no-cache"})
+    return handler
+
+
 async def index(_req: web.Request) -> web.StreamResponse:
-    f = WEBUI_DIR / "index.html"
+    f = webui_dir() / "index.html"
     if f.is_file():
         return web.Response(
-            text=_inject_shim(f.read_text(encoding="utf-8", errors="replace")),
+            text=_versioned(_inject_shim(f.read_text(encoding="utf-8", errors="replace")), f.parent),
             content_type="text/html",
             # no-store, or a bundle refresh does nothing visible: the browser keeps
             # serving the page it already has and the user concludes the update
@@ -1598,15 +1699,16 @@ async def wcb_index(_req: web.Request) -> web.StreamResponse:
     scripts (parser, flasher, device-labels, serial-hub, app) all load at relative
     paths from /wcb/Wizard/, which the static mount below serves untouched.
     """
-    if WCB_INDEX.is_file():
+    f = wcb_dir() / "Wizard" / "index.html"
+    if f.is_file():
         return web.Response(
-            text=_inject_shim(WCB_INDEX.read_text(encoding="utf-8", errors="replace")),
+            text=_versioned(_inject_shim(f.read_text(encoding="utf-8", errors="replace")), f.parent),
             content_type="text/html",
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
     return web.Response(status=503, content_type="text/plain", text=(
         "No bundled WCB Wizard.\n\n"
-        f"Expected: {WCB_INDEX}\n\n"
+        f"Expected: {f}\n\n"
         "src/webui_wcb/ is gitignored for the same reason src/webui/ is — the public\n"
         "WCB repo is the single source of truth for the Wizard. Fetch it with:\n\n"
         "    python tools/fetch_webui.py --tool wcb\n\n"
@@ -2108,15 +2210,16 @@ def build_app() -> web.Application:
     WEBUI_DIR.mkdir(parents=True, exist_ok=True)
     WEBUI_WCB_DIR.mkdir(parents=True, exist_ok=True)
     # /wcb/ BEFORE /. aiohttp resolves resources in registration order and the "/"
-    # static mount matches every path, so registering it first would swallow
+    # catch-all matches every path, so registering it first would swallow
     # /wcb/Wizard/app.js and answer 404 from the NaviCore bundle instead.
-    app.router.add_static("/wcb/", WEBUI_WCB_DIR, show_index=False)
+    # Per-request handlers, not add_static: see _tool_files.
+    app.router.add_get("/wcb/{tail:.*}", _tool_files(wcb_dir))
     # Same ordering rule as /wcb/ above: "/" swallows everything, so the app's
     # own art has to be mounted ahead of it or the launcher's logo 404s out of
     # the NaviCore bundle. Underscore-prefixed like every other route that is
     # the host's rather than a tool's, so it cannot collide with either bundle.
     app.router.add_static("/_assets/", ASSETS_DIR, show_index=False)
-    app.router.add_static("/", WEBUI_DIR, show_index=False)
+    app.router.add_get("/{tail:.*}", _tool_files(webui_dir))
     return app
 
 

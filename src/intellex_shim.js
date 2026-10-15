@@ -1577,6 +1577,56 @@
     b.innerHTML = html;
   }
 
+  // ── "This tool changed underneath you" ──────────────────────────────────────
+  // The chooser runs while this page stays open — the shell's overlay sits over
+  // the panes, and a tool can live in its own window — and a branch Set or an
+  // Update there replaces this tool's files or the branch it flashes from. This
+  // page kept running what it loaded, so the change looked like it had not
+  // happened (2026-10-15: "it knew to change the binary, but not the gui"). The
+  // launcher now says so on a BroadcastChannel (launcher.html announceTools) and
+  // the page OFFERS the reload. It never takes one by itself: a reload throws
+  // away the configs it pulled and any edit not yet pushed. At the bottom, so it
+  // never covers the still-trying banner at the top.
+  const TOOL_KEY = IS_WCB ? 'wcb' : 'navicore';
+  function updateNotice(text) {
+    let n = document.getElementById('intellex-update');
+    if (!n) {
+      n = document.createElement('div');
+      n.id = 'intellex-update';
+      n.setAttribute('role', 'status');
+      n.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;'
+        + 'background:#1e3446;color:#d3ebff;border-top:1px solid #2f5b78;'
+        + 'padding:9px 14px;font:13px/1.45 system-ui,sans-serif;text-align:center';
+      const msg = document.createElement('span');
+      msg.className = 'intellex-update-msg';
+      const reload = document.createElement('button');
+      reload.id = 'intellex-update-reload';
+      reload.textContent = 'Reload';
+      reload.onclick = () => location.reload();
+      const later = document.createElement('button');
+      later.id = 'intellex-update-later';
+      later.textContent = 'Later';
+      later.onclick = () => n.remove();
+      for (const b of [reload, later]) {
+        b.style.cssText = 'margin-left:10px;font:inherit;padding:3px 12px;cursor:pointer;border-radius:6px;'
+          + 'border:1px solid #2f5b78;background:#2a4a63;color:#fff';
+      }
+      n.append(msg, reload, later);
+      document.body.appendChild(n);
+    }
+    // textContent: the text comes from the launcher, but nothing here needs markup.
+    n.querySelector('.intellex-update-msg').textContent =
+      text + ' Reload to use it — edits not yet pushed are lost.';
+  }
+  try {
+    const tools = new BroadcastChannel('intellex');
+    tools.onmessage = (ev) => {
+      const d = ev.data;
+      const text = d && d.type === 'tools-changed' && d.tools && d.tools[TOOL_KEY];
+      if (typeof text === 'string' && text) updateNotice(text);
+    };
+  } catch (_) { /* no BroadcastChannel in this webview: the page is simply not told */ }
+
   async function watchLink() {
     // Keep the Wizard link's slot current while it is up (see wcbLinkConn): the
     // number has to survive the Wizard deleting a relay's connection.

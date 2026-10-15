@@ -990,9 +990,13 @@ let _brListError = '';
 // so this can never collide with a real branch name.
 const OTHER = ':other:';
 
+// The branches as last read, so Set can tell which product it actually changed.
+let _brNow = {};
+
 async function checkBranches(force) {
   try {
     const b = await api('/_api/branches');
+    _brNow = b || {};
     await fillBranchOptions(b, force);
     const off = [];
     if ((b.navicore || 'main') !== 'main') off.push('NaviCore → ' + b.navicore);
@@ -1091,23 +1095,88 @@ $('br-refresh').onclick = async () => {
 
 $('br-save').onclick = async () => {
   $('br-save').disabled = true;
+  const was = { navicore: _brNow.navicore || 'main', wcb: _brNow.wcb || 'main' };
   try {
+    let now = null;
     for (const [product, id] of [['navicore', 'br-nc'], ['wcb', 'br-wcb']]) {
       const r = await api('/_api/branch', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ product, branch: branchValue(id) }),
       });
-      if (!r.ok) { setStatus(r.error || 'could not set the branch', true); break; }
+      // A refusal keeps its own message: it used to be overwritten at once by the
+      // "branch set" line below, so a bad name read as accepted.
+      if (!r.ok) { setStatus(r.error || 'could not set the branch', true); now = null; break; }
+      now = r.branches || {};
     }
-    // The cache still holds whatever was fetched before, and its filenames carry
-    // the old branch — so say the quiet part out loud rather than letting an
-    // offline flash quietly use the previous branch's images.
-    setStatus('branch set — press Download firmware to fetch that build');
+    if (now) {
+      const changed = ['navicore', 'wcb'].filter((p) => (now[p] || 'main') !== was[p]);
+      // The cache still holds whatever was fetched before, and its filenames carry
+      // the old branch — so say the quiet part out loud rather than letting an
+      // offline flash quietly use the previous branch's images.
+      if (changed.length) await fetchBranchTools(changed, now);
+      else setStatus('branch set — press Download firmware to fetch that build');
+    }
   } catch (e) { setStatus('could not set the branch: ' + e.message, true); }
   $('br-save').disabled = false;
   checkBranches();
   checkFw();
 };
+
+// ── A branch change takes the TOOL with it ─────────────────────────────────
+// The firmware follows the branch by itself: the flasher reads it at flash time.
+// The tool did not. Its files only changed on a separate Update press, and a tool
+// already open kept running the copy it loaded — so after switching WCB to WIFI
+// the Wizard flashed WIFI's binary from main's UI (2026-10-15: "it knew to change
+// the binary, but not the gui"). Now Set fetches the changed product's tool for
+// its new branch right away, FORCED (a stamp can be shared by two branches), and
+// tells every open tool page, which offers a reload rather than taking one: a
+// reload throws away a pulled config and any edit not yet pushed.
+const TOOL_NAME = { navicore: 'config tool', wcb: 'Wizard' };
+const PRODUCT = { navicore: 'NaviCore', wcb: 'WCB' };
+let _toolsChannel = null;
+try { _toolsChannel = new BroadcastChannel('intellex'); } catch (_) { /* old webview: pages just are not told */ }
+function announceTools(texts) {
+  if (!_toolsChannel || !Object.keys(texts).length) return;
+  try { _toolsChannel.postMessage({ type: 'tools-changed', tools: texts }); } catch (_) {}
+}
+
+async function fetchBranchTools(changed, now) {
+  const names = changed.map((p) => TOOL_NAME[p]).join(' and ');
+  setStatus(`branch set — fetching the ${names} for it…`);
+  let r;
+  try {
+    r = await api('/_api/update-webui?force=1&tool=' + (changed.length === 2 ? 'all' : changed[0]),
+                  { method: 'POST' });
+  } catch (e) { r = { ok: false, error: e.message }; }
+  // No `changed` is a host older than this page (one left running across an
+  // update): take its ok as the answer.
+  const landed = r.changed || (r.ok ? changed : []);
+  const ver = { navicore: r.version, wcb: r.wcbVersion };
+  // "[navicore] branch x publishes no tool - using main's": say which copy it got.
+  const mainCopy = (p) => (r.notes || []).some((n) => n.startsWith(`[${p}] `) && /publishes no tool/.test(n));
+  const got = changed.filter((p) => landed.includes(p)).map((p) => `${TOOL_NAME[p]} ${ver[p] || ''}`.trim()
+    + (mainCopy(p) ? ` (main's — ${now[p]} publishes no ${TOOL_NAME[p]})` : ` (${now[p]})`));
+  const missed = changed.filter((p) => !landed.includes(p));
+  if (r.ok && !missed.length) {
+    setStatus(`branch set — ${got.join(', ')}; press Download firmware to fetch that build`);
+  } else {
+    const why = (r.error || 'the fetch failed').split('\n').filter(Boolean).pop() || 'the fetch failed';
+    setStatus(`branch set, but the ${missed.map((p) => TOOL_NAME[p]).join(' and ')} could not be fetched (${why}) — `
+              + 'it is still the previous branch\'s; press Update tools when online'
+              + (got.length ? ` (now: ${got.join(', ')})` : ''), true);
+  }
+  // Every changed product's open page is told, fetched or not: even a tool whose
+  // files stayed put reads its branch at load, for "latest on GitHub" and Flash.
+  const texts = {};
+  for (const p of changed) {
+    texts[p] = !landed.includes(p) ? `${PRODUCT[p]} firmware now comes from ${now[p]}.`
+      : mainCopy(p) ? `${PRODUCT[p]} firmware now comes from ${now[p]}; the ${TOOL_NAME[p]} stays main's `
+                      + `(${ver[p] || 'refreshed'}), as ${now[p]} publishes none.`
+      : `The ${TOOL_NAME[p]} is now ${now[p]}'s (${ver[p] || 'new copy'}).`;
+  }
+  announceTools(texts);
+  checkUi();
+}
 
 // ── Documentation ─────────────────────────────────────────────────────────
 async function checkWiki() {
@@ -1205,6 +1274,14 @@ $('update').onclick = async () => {
                  r.wcbVersion && `Wizard ${r.wcbVersion}`].filter(Boolean).join(', ');
     setStatus(r.ok ? (got ? 'updated — ' + got : 'updated')
                    : ((r.error || 'update failed') + (got ? ` (now: ${got})` : '')), !r.ok);
+    // Only what was actually swapped in: an up-to-date tool's open page has
+    // nothing to reload for.
+    const texts = {};
+    for (const p of (r.changed || [])) {
+      const v = p === 'wcb' ? r.wcbVersion : r.version;
+      texts[p] = `The ${TOOL_NAME[p]} was updated${v ? ' to ' + v : ''}.`;
+    }
+    announceTools(texts);
   } catch (e) { setStatus('update failed: ' + e.message, true); }
   $('update').disabled = false;
   checkUi();

@@ -318,6 +318,25 @@ setting" rather than as anything version-shaped.
   the tools read that key during *init*: an async fetch resolves after they have already
   looked, and the page would report main's firmware while the host flashed the branch's.
 
+**Setting a branch fetches that tool, and open tools are told (2026-10-15).** The firmware
+followed the branch by itself (read at flash time); the tool did not, so WCB on WIFI flashed
+WIFI's binary from main's Wizard. Three things had to change, and each alone left the old UI
+on screen:
+
+- **Set fetches the changed product's tool at once**, forced (`/_api/update-webui?force=1`):
+  a Wizard commit does not always move `UI_VERSION`, so two branches can share a stamp.
+  `changed` in the reply is read from the bundle *directory* (the swap renames it), not the
+  stamp.
+- **An open tool page is never reloaded for you.** The chooser is an overlay over live panes,
+  and a reload throws away pulled configs and unpushed edits. The launcher announces on the
+  `intellex` BroadcastChannel and the shim shows Reload / Later in that tool's page.
+- **The tools' files are served `no-cache`, and each served page stamps its own
+  `<script src>`/`<link href>` with `?v=<mtime>.<size>`** (serve time only, like the shim
+  tag). Without it WebKit kept a weeks-old `app.js` "fresh" on its own heuristic and never
+  asked again: the new `index.html` ran the old scripts. The tool directories are resolved
+  per request (`webui_dir()`, `wcb_dir()`, `_tool_files`), not by `add_static` at startup,
+  or a frozen app's first Update is invisible until a restart.
+
 ## Firmware comes from a branch you choose
 
 `src/settings.py` holds a branch **per product** — a WCB feature branch alongside
