@@ -329,7 +329,7 @@ def main() -> int:
     # measure, so the worst case is the old behaviour.
     geom = winsize.fit(1280, 880, min_size=(900, 640))
     try:
-        webview.create_window("Intellex", url, text_select=True, **geom)
+        main_window = webview.create_window("Intellex", url, text_select=True, **geom)
     except Exception as e:
         print(f"could not create the window ({type(e).__name__}: {e}) "
               "-- falling back to the browser.")
@@ -355,16 +355,31 @@ def main() -> int:
     #
     # Registered only in window mode: under --browser or a bare host there is no
     # backend, and host.py answers 501 so the shell uses window.open() instead.
+    extra_windows: list = []         # what _open_window made: the docs, a tool in a window of its own
+
     def _open_window(title: str, path: str) -> None:
         # Measured per call rather than reusing `geom`: this one can be opened
         # long after startup, and the window it lands on may not be the one the
         # app started on -- a laptop docked to an external monitor mid-session is
         # the ordinary case, not a corner one.
-        webview.create_window(title, f"http://{hostmod.BIND_HOST}:{a.port}{path}",
-                              text_select=True,
-                              **winsize.fit(1280, 880, min_size=(900, 640)))
+        extra_windows.append(webview.create_window(title, f"http://{hostmod.BIND_HOST}:{a.port}{path}",
+                                                   text_select=True,
+                                                   **winsize.fit(1280, 880, min_size=(900, 640))))
 
     hostmod.open_window_hook = _open_window
+
+    # CLOSING THE MAIN WINDOW QUITS INTELLEX. pywebview runs until its LAST window
+    # closes, so with the docs or a tool open in a window of its own, closing the main
+    # one left the app running out of sight - holding port 8765, so the next launch
+    # said "already running" (Greg, 2026-10-15: the window closed, the process stayed).
+    # The other windows are views onto this one's host and go with it.
+    def _main_closed() -> None:
+        for w in list(extra_windows):
+            with contextlib.suppress(Exception):
+                w.destroy()
+
+    with contextlib.suppress(Exception):
+        main_window.events.closed += _main_closed
 
     def _window_up() -> None:
         # Runs on pywebview's worker thread once the GUI is up -- the first moment a
