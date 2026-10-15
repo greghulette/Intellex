@@ -30,7 +30,7 @@ import sys
 import proc
 
 # Bump deliberately. Nothing generates this.
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 
 def _from_stamp() -> tuple[str, str] | None:
