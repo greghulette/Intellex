@@ -93,12 +93,20 @@ def main() -> int:
             bad += not ok
             print(f"  {'PASS' if ok else 'FAIL'}  {label}: {name}")
 
-        app = next((f["name"] for f in files
-                    if f.get("name", "").startswith(prefix)
-                    and f["name"].endswith(".bin")), None)
-        if not app:
+        bins = [f["name"] for f in files
+                if f.get("name", "").startswith(prefix) and f["name"].endswith(".bin")]
+        if not bins:
             print(f"  FAIL  {label}: no {prefix}*.bin in the listing")
             bad += 1
+            continue
+        # An image that IS cached. A listing is cached by any "what is the latest build" check
+        # (the tools ask it on load), the images only by a download or a flash, so a listing
+        # with none of its images is the normal state after such a check on a new build - not
+        # the proxy failing. Its answer offline is "not cached", which is correct.
+        app = next((n for n in bins if fwcache.load(product, ref, n)), None)
+        if not app:
+            print(f"  SKIP  {label}: the listing is cached but none of its {len(bins)} image(s) - "
+                  "run tools/fetch_firmware.py to cache them")
             continue
         try:
             data, from_cache = ghproxy.raw("greghulette", repo, ref, app)

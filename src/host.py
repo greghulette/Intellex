@@ -66,6 +66,7 @@ import paths                                             # noqa: E402
 import proc                                              # noqa: E402
 import applog                                            # noqa: E402
 import version                                           # noqa: E402
+import selfupdate                                        # noqa: E402
 import branchlist
 import ghproxy
 import wikidocs
@@ -998,6 +999,39 @@ async def api_open_window(req: web.Request) -> web.Response:
     except Exception as e:                    # noqa: BLE001
         return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"},
                                  status=500)
+    return web.json_response({"ok": True})
+
+
+# ── Intellex itself ─────────────────────────────────────────────────────────
+# The third update, beside the tools and the firmware (src/selfupdate.py): GET says what is running and what the last
+# check found, check asks again, install starts the update on a thread - the launcher polls GET for its progress and
+# the host restarts into the new copy a moment after it is done.
+async def api_app_update(_req: web.Request) -> web.Response:
+    return web.json_response(selfupdate.status())
+
+
+async def api_app_update_check(_req: web.Request) -> web.Response:
+    return web.json_response(await asyncio.to_thread(selfupdate.check, True))
+
+
+def _app_update_busy() -> str:
+    """What an update must not cut off: a flash writing a board right now."""
+    with _flash_lock:
+        if _flash_state.get("running"):
+            return "a flash is running - update Intellex once it has finished"
+    return ""
+
+
+async def api_app_update_install(_req: web.Request) -> web.Response:
+    ok, why = selfupdate.start_install(_app_update_busy)
+    if not ok:
+        return web.json_response({"ok": False, "error": why}, status=409)
+    return web.json_response({"ok": True})
+
+
+async def api_app_update_seen(_req: web.Request) -> web.Response:
+    """The launcher has said 'updated from X' once: do not say it again."""
+    selfupdate.mark_update_shown()
     return web.json_response({"ok": True})
 
 
@@ -2105,6 +2139,9 @@ def _label_for(spec: Optional[dict]) -> str:
 
 async def _start_bg(app: web.Application) -> None:
     app["reconnect"] = asyncio.create_task(reconnect_loop(app))
+    # Is there a newer Intellex? Once, in the background: a window never waits on GitHub, and offline the check
+    # only records why it could not ask (selfupdate.check).
+    app["app_update_check"] = asyncio.ensure_future(asyncio.to_thread(selfupdate.check, False, False))
 
 
 async def _stop_bg(app: web.Application) -> None:
@@ -2158,6 +2195,10 @@ def build_app() -> web.Application:
         web.post("/_api/branch", api_set_branch),
         web.get("/_api/log", api_log),
         web.get("/_api/version", api_version),
+        web.get("/_api/app-update", api_app_update),
+        web.post("/_api/app-update/check", api_app_update_check),
+        web.post("/_api/app-update/install", api_app_update_install),
+        web.post("/_api/app-update/seen", api_app_update_seen),
         web.post("/_api/update-firmware", api_update_firmware),
         web.post("/_api/update-webui", api_update_webui),
         web.post("/_api/flash", api_flash),

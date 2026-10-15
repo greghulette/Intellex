@@ -141,6 +141,22 @@ It is diagnosed but not yet fixed — see
 [docs/MACOS_FIRST_RUN.md](docs/MACOS_FIRST_RUN.md). The app does not depend on it:
 the auto-bounce is a convenience, and it reports a clear error when it cannot run.
 
+## Updating Intellex, and releasing it
+
+**Update Intellex** (the launcher's maintenance panel) installs a newer Intellex: a packaged app
+downloads the release for its platform, checks it against the release's `SHA256SUMS.txt`, keeps
+the version it replaces and restarts; a git checkout fast-forwards to its branch's upstream,
+refreshes its Python packages and restarts. Intellex looks once at launch when it is online and
+says so in the panel; it never installs without the button.
+
+To release: bump `VERSION` in `src/version.py`, commit, push, then
+
+    git tag v0.2.0 && git push origin v0.2.0
+
+`.github/workflows/release.yml` builds Windows and both Macs (Intel, Apple silicon) and publishes
+the GitHub release the app updates from. The tag must match `VERSION` or the run stops. To test
+the build without releasing, use **Run workflow** on the repo's Actions page.
+
 ## After a code change — reload or restart?
 
 | Changed | What to do |

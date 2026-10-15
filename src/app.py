@@ -37,11 +37,35 @@ import applog                                             # noqa: E402
 import paths                                              # noqa: E402
 import appicon                                            # noqa: E402
 import host as hostmod                                    # noqa: E402
+import selfupdate                                         # noqa: E402
 import winsize                                            # noqa: E402
 from transport import TransportError                      # noqa: E402
 
 
 _serve_error: list = []
+
+
+def _bind_after_update(port: int, wait_s: float = 45.0):
+    """_bind for the copy the self-update just started (selfupdate.AFTER_UPDATE): the one it replaces may still be
+    ending, and its closed connections keep the port in TIME_WAIT for a while (30 s on macOS). Retried until free.
+    SO_REUSEADDR off Windows only: there it never lets a second LIVE listener in, it only skips TIME_WAIT; on Windows
+    it would let one steal the port, which is what _bind refuses."""
+    import socket
+    end = time.monotonic() + wait_s
+    while True:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if sys.platform != "win32":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((hostmod.BIND_HOST, port))
+            s.listen(128)
+            return s, None
+        except OSError as e:
+            with contextlib.suppress(Exception):
+                s.close()
+            if time.monotonic() >= end:
+                return None, e
+            time.sleep(0.5)
 
 
 def _bind(port: int):
@@ -192,7 +216,9 @@ def main() -> int:
                          "freeze can be profiled from outside while it is happening")
     ap.add_argument("--browser", action="store_true",
                     help="open the default browser instead of an app window")
+    ap.add_argument(selfupdate.AFTER_UPDATE, action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    selfupdate.cleanup_after_update()
 
     hostmod.auto_bounce = not a.no_auto_bounce
 
@@ -216,7 +242,7 @@ def main() -> int:
     # command-line attach below runs first -- would also grab the serial port the
     # live instance is trying to use, which it then retries forever with
     # "Access is denied".
-    sock, bind_err = _bind(a.port)
+    sock, bind_err = _bind_after_update(a.port) if a.after_update else _bind(a.port)
     if sock is None:
         msg = (f"Intellex is already running on {hostmod.BIND_HOST}:{a.port}.\n\n"
                "Close the existing Intellex window, then start this one again.")

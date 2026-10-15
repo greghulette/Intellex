@@ -354,6 +354,45 @@ both flashers and the offline cache read it.
   branch build should only ever happen on purpose, and a setting that persists silently
   is how you flash one months later having forgotten.
 
+## Intellex updates itself; a release is a tag
+
+Three things update: the tools (Update tools), the firmware cache (Download firmware) and,
+since 2026-10-15, **the app itself** (`src/selfupdate.py`, the launcher's **Update Intellex**).
+
+**A release is a tag that matches `src/version.py` VERSION.** Bump VERSION, commit, push,
+then `git tag vX.Y.Z && git push origin vX.Y.Z`. `.github/workflows/release.yml` builds on
+GitHub's machines - Windows, Intel Mac (`macos-15-intel`) and Apple-silicon Mac (`macos-15`),
+each with the same `scripts/build-*` a desk uses - and publishes a release carrying
+`Intellex-<v>-windows.exe`, `Intellex-<v>-macos-<x86_64|arm64>.zip` (`ditto`, for the updater)
+and `.dmg` (first installs), and `SHA256SUMS.txt`. A tag that does not match VERSION fails the
+run: the app compares its VERSION against the tag, so a mismatch would offer everybody an
+"update" to what they already have. *Run workflow* on the Actions page builds without
+releasing - the way to test a change to the workflow or the build scripts. The build caches
+firmware through the API with `INTELLEX_GITHUB_TOKEN` (the run's own token; `flash._gh_headers`
+sends it to api.github.com only) - a shared runner has no unauthenticated quota left.
+
+**How each copy updates** (selfupdate.mode()):
+- *windows* - the verified .exe takes the running one's name; the running one is **renamed**
+  to `Intellex.old.exe` (Windows renames a running .exe, it will not overwrite one) and the
+  next start deletes it.
+- *macos* - the zip is unpacked with `ditto` (an .app holds symlinks), the running bundle
+  moves to `<data dir>/updates/Intellex.prev.app` (the rollback copy), the new one takes its
+  place, `open -n` starts it. Refused from App Translocation or a folder this account cannot
+  write - both say what to do instead.
+- *source* - follows its branch's upstream, not the releases: `git merge --ff-only @{u}` (never
+  over uncommitted changes, never a merge commit), `pip install -r requirements.txt`, then
+  `os.execv` in place so the launching Terminal stays its parent.
+
+**Nothing is replaced until the download is whole and its SHA-256 matches the release's
+SHA256SUMS.txt**; a release without one is not offered. The new process is started with
+`--after-update`: app.py then retries the port while the old one ends (TIME_WAIT included)
+and the launcher says "updated from X" once. The check runs once at launch in the background
+(cached an hour - the API allows 60 unauthenticated calls an hour), never when offline, and
+never installs: only the button does, after an in-page confirm, and not while a flash runs.
+
+`version.info()` reads `build_stamp.py` **only in a frozen app**: the build scripts leave one in
+`src/`, and a checkout that had ever been built reported itself as that build forever after.
+
 ## Frozen builds write somewhere else
 
 `src/paths.py` resolves every updatable directory (`webui`, `webui_wcb`, `firmware`) to

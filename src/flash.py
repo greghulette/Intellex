@@ -247,6 +247,17 @@ def explained(e: FlashError, log=lambda _m: None) -> FlashError:
 
 
 # ── GitHub ──────────────────────────────────────────────────────────────────
+def _gh_headers(url: str) -> dict:
+    """INTELLEX_GITHUB_TOKEN, when set, goes to the API host and nowhere else: the release build
+    (.github/workflows/release.yml) caches every firmware image on a shared runner, where the
+    unauthenticated 60-an-hour limit is spent before it starts. Nobody sets it on a desktop."""
+    h = {"User-Agent": "Intellex"}
+    tok = os.environ.get("INTELLEX_GITHUB_TOKEN", "").strip()
+    if tok and url.startswith("https://api.github.com/"):
+        h["Authorization"] = f"Bearer {tok}"
+    return h
+
+
 def _get(url: str, log, attempts: int = 4, timeout: float = 60.0) -> bytes:
     """Fetch, retrying the throttles GitHub actually uses.
 
@@ -258,7 +269,7 @@ def _get(url: str, log, attempts: int = 4, timeout: float = 60.0) -> bytes:
     last: BaseException = FlashError("no attempt made")
     for i in range(attempts):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Intellex"})
+            req = urllib.request.Request(url, headers=_gh_headers(url))
             with urllib.request.urlopen(req, timeout=timeout,
                                         context=certs.context()) as r:
                 return r.read()

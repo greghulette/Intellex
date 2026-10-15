@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import datetime
 import pathlib
+import re
 import subprocess
+import sys
 import proc
 
 # Bump deliberately. Nothing generates this.
@@ -63,8 +65,23 @@ def _from_git() -> tuple[str, str] | None:
 
 
 def info() -> dict:
-    got = _from_stamp() or _from_git() or ("", "")
+    # The stamp only in a built app. The build scripts write src/build_stamp.py into the
+    # checkout and PyInstaller bundles it, so a checkout that has ever been built kept
+    # one: run from source it then claimed to be that build - "v0.1.0 (bd9b442,
+    # 2026-09-09)" a month and many commits later - which is the very confusion this
+    # module exists to end, and the self-update compares against it.
+    # And git only from a checkout: a frozen app has none to ask, and asking ran two git
+    # processes against whatever directory it was started in.
+    got = (_from_stamp() if getattr(sys, "frozen", False) else _from_git()) or ("", "")
     return {"version": VERSION, "commit": got[0], "built": got[1]}
+
+
+def parse(v: str) -> tuple | None:
+    """'0.2.0' or 'v0.2.0' -> (0, 2, 0); a pre-release ('0.2.0-rc1') sorts before its release. None if not one."""
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$", (v or "").strip())
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), 0 if m.group(4) else 1, m.group(4) or "")
 
 
 def describe() -> str:

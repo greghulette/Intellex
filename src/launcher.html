@@ -170,6 +170,11 @@
   #maintbody h2 { font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:10px;
                   letter-spacing:.16em; color:var(--dim); margin:0 0 8px; font-weight:400; }
   .bar { display:flex; gap:8px; align-items:center; }
+  /* The app's own line spans the panel, so the sections below keep the columns they had. And a bar
+     whose controls outgrow their column wraps inside it: the branch picker's two selects and two
+     buttons ran under the next column's section, which then took their clicks. */
+  #maintbody > .wide { grid-column:1 / -1; }
+  #maintbody .bar.wrap { flex-wrap:wrap; }
   .bar .grow { flex:1; min-width:0; }
   .note { color:var(--muted); font-size:12px; line-height:1.5; margin:6px 0 0; }
   .note b { color:var(--strong); font-weight:600; }
@@ -262,6 +267,7 @@
 
       <div id="maintsum">
         <div class="lbl">MAINTENANCE</div>
+        <div class="mrow ok" id="m-app"><span class="dot"></span><span class="t">checking…</span><a id="m-app-a">Update</a></div>
         <div class="mrow ok" id="m-tools"><span class="dot"></span><span class="t">checking…</span><a id="m-tools-a">Update</a></div>
         <div class="mrow ok" id="m-fw"><span class="dot"></span><span class="t">checking…</span><a id="m-fw-a">Download</a></div>
         <div class="mrow ok" id="m-more"><span class="dot"></span><span class="t">checking…</span><a id="m-more-a">More…</a></div>
@@ -273,6 +279,23 @@
 <details id="maint">
   <summary id="maint-sum">Updates, firmware, docs and logs</summary>
   <div id="maintbody">
+    <div class="wide">
+      <h2>INTELLEX ITSELF</h2>
+      <div class="bar">
+        <span class="grow" id="appupd-line">checking…</span>
+        <button class="btn" id="appupd-check" title="Ask GitHub again now">Check</button>
+        <button class="btn" id="appupd" disabled>Update Intellex</button>
+      </div>
+      <div class="bar" id="appupd-confirm" style="display:none">
+        <span class="grow" id="appupd-ask"></span>
+        <button class="btn primary" id="appupd-go">Update and restart</button>
+        <button class="btn" id="appupd-cancel">Cancel</button>
+      </div>
+      <div class="note" id="appupd-note">The app itself. A new version is checked against its
+        release's published checksum before anything is replaced, the version you have is kept,
+        and Intellex restarts - a droid link drops for a few seconds and comes back.</div>
+    </div>
+
     <div>
       <h2>THE TOOLS YOU ARE USING</h2>
       <div class="bar">
@@ -297,7 +320,7 @@
 
     <div>
       <h2>WHICH FIRMWARE BUILD</h2>
-      <div class="bar">
+      <div class="bar wrap">
         <label style="font-size:12.5px">NaviCore <select id="br-nc"></select></label>
         <input id="br-nc-txt" size="12" spellcheck="false" placeholder="branch name" style="display:none">
         <label style="font-size:12.5px">WCB <select id="br-wcb"></select></label>
@@ -345,7 +368,8 @@ const setStatus = (t, err) => { const s=$('status'); s.textContent=t; s.classNam
 // behind it. Each check reports its state here; anything wrong turns the line
 // orange AND opens the section, so a stale tool, an uncached firmware set or a
 // non-main branch can never be missed by having collapsed it.
-const _maint = { tools: '', fw: '', branch: '', docs: '' };
+const _maint = { app: '', tools: '', fw: '', branch: '', docs: '' };
+let _appOk = 'Intellex up to date';
 
 // One line each in the side panel, plus a count in the header. Folding the full
 // panel away is only acceptable if nothing needing attention hides behind it, so
@@ -366,6 +390,7 @@ function paintMaint() {
   // 'Update' only when there is something to update. Offered beside "Tools up to
   // date" it read as a contradiction -- and a click re-downloaded both tools for
   // nothing. The panel's own Update tools button still forces a refresh.
+  mline('m-app',   _maint.app,   _appOk,             _maint.app   || '', _maint.app ? 'Update' : '');
   mline('m-tools', _maint.tools, 'Tools up to date', _maint.tools || '', _maint.tools ? 'Update' : '');
   mline('m-fw',    _maint.fw,    'Firmware cached',  _maint.fw    || '', 'Download');
   // The third line carries whatever is left: the branch warning matters more than
@@ -389,6 +414,7 @@ function paintMaint() {
 
 // The summary's own actions just drive the real controls below, so there is one
 // implementation of each and no second copy to keep in step.
+$('m-app-a').onclick   = () => { $('maint').open = true; $('appupd').click(); };
 $('m-tools-a').onclick = () => { $('maint').open = true; $('update').click(); };
 $('m-fw-a').onclick    = () => { $('maint').open = true; $('updatefw').click(); };
 $('m-more-a').onclick  = () => {
@@ -1285,6 +1311,111 @@ $('update').onclick = async () => {
   } catch (e) { setStatus('update failed: ' + e.message, true); }
   $('update').disabled = false;
   checkUi();
+};
+
+// ── Intellex itself ──────────────────────────────────────────────────────────
+// The third update (src/selfupdate.py). The host checks once at launch, in the background; this shows what it found
+// and drives the install: a confirm in the page (the window shows no confirm() dialog), then the host's progress until
+// it restarts into the new copy - whose own window then replaces this one. Everything the host says is shown as text.
+let _app = null;
+let _appPoll = null;
+
+function appText(a) {
+  const cur = `Intellex ${a.current}` + (a.commit ? ` (${a.commit})` : '');
+  const ins = a.install || {};
+  if (ins.restarting) return [cur, 'restarting into the new version…', false];
+  if (ins.running) return [cur, `updating: ${ins.step}${ins.percent ? ` ${ins.percent}%` : ''}`, false];
+  if (ins.error) return [cur, `the update failed: ${ins.error}`, true];
+  if (a.available) {
+    return [cur, a.mode === 'source' ? `${a.behind} new commit${a.behind === 1 ? '' : 's'} on ${a.branch}`
+                                     : `${a.latest} available`, true];
+  }
+  if (a.updatedFrom) return [cur, `updated from ${a.updatedFrom}`, false];
+  if (a.checking || !a.checked) return [cur, 'checking for a newer version…', false];
+  return [cur, a.reason || a.error || 'up to date', false];
+}
+
+function paintApp() {
+  const a = _app;
+  if (!a) return;
+  const [cur, what, warn] = appText(a);
+  const line = $('appupd-line');
+  line.textContent = cur + ' — ';
+  const w = document.createElement('span');
+  w.textContent = what;
+  if (warn) w.className = 'stale';
+  line.appendChild(w);
+  const ins = a.install || {};
+  $('appupd').disabled = !a.available || !!ins.running || !!ins.restarting;
+  $('appupd-check').disabled = !!a.checking || !!ins.running || !!ins.restarting;
+  _appOk = `Intellex ${a.current} · ` + (a.checked && !a.available && (a.reason || '') !== 'up to date' && a.reason
+    ? a.reason.split(' (')[0] : 'up to date');
+  _maint.app = a.available ? (a.mode === 'source' ? `Intellex: ${a.behind} new commit${a.behind === 1 ? '' : 's'}`
+                                                  : `Intellex ${a.latest} available`) : '';
+  if (a.mode === 'source') {
+    $('appupd-note').textContent = 'Running from a git checkout: Update pulls its branch\'s new commits (fast-forward only, '
+      + 'never over changes of your own), refreshes its Python packages and restarts.';
+  }
+  paintMaint();
+}
+
+async function checkApp(force) {
+  try {
+    _app = await api(force ? '/_api/app-update/check' : '/_api/app-update', force ? { method: 'POST' } : undefined);
+  } catch (e) {
+    $('appupd-line').textContent = 'could not ask the host about Intellex updates';
+    return;
+  }
+  paintApp();
+  if (_app.updatedFrom) {
+    setStatus(`Intellex updated from ${_app.updatedFrom} to ${_app.current}`);
+    api('/_api/app-update/seen', { method: 'POST' }).catch(() => {});
+  }
+  if (_app.checking && !force) setTimeout(() => checkApp(false), 2000);   // the launch check is still asking
+}
+checkApp(false);
+
+$('appupd-check').onclick = async () => {
+  $('appupd-check').disabled = true;
+  setStatus('asking GitHub for a newer Intellex…');
+  await checkApp(true);
+  setStatus(_app && _app.available ? `Intellex ${_app.mode === 'source' ? 'has new commits' : _app.latest + ' is available'}`
+                                   : `Intellex: ${(_app && (_app.reason || _app.error)) || 'up to date'}`);
+};
+
+$('appupd').onclick = () => {
+  const a = _app;
+  if (!a || !a.available) return;
+  $('appupd-ask').textContent = a.mode === 'source'
+    ? `Pull ${a.behind} new commit${a.behind === 1 ? '' : 's'} into this checkout (${a.branch}), refresh its Python `
+      + 'packages and restart?'
+    : `Install Intellex ${a.latest} (${a.asset})? It is checked against the release's checksum, this version is kept, `
+      + 'and Intellex restarts.';
+  $('appupd-confirm').style.display = '';
+};
+$('appupd-cancel').onclick = () => { $('appupd-confirm').style.display = 'none'; };
+
+$('appupd-go').onclick = async () => {
+  $('appupd-confirm').style.display = 'none';
+  let r;
+  try {
+    r = await api('/_api/app-update/install', { method: 'POST' });
+  } catch (e) { setStatus('could not start the update: ' + e.message, true); return; }
+  if (!r.ok) { setStatus('the update did not start: ' + (r.error || 'no reason given'), true); return; }
+  setStatus('updating Intellex…');
+  clearInterval(_appPoll);
+  _appPoll = setInterval(async () => {
+    try { _app = await api('/_api/app-update'); } catch (_) {
+      // The host has gone: this process is ending, and the new one opens its own window.
+      clearInterval(_appPoll);
+      setStatus('restarting Intellex…');
+      return;
+    }
+    paintApp();
+    const ins = _app.install || {};
+    if (ins.restarting) setStatus('restarting into the new Intellex…');
+    else if (ins.error) { clearInterval(_appPoll); setStatus('the update failed: ' + ins.error, true); }
+  }, 700);
 };
 
 // If something is already attached, this is a "change connection" visit rather
