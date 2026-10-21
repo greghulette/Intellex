@@ -250,11 +250,14 @@ def local_dtg() -> str:
 
 
 # cmdlib is per-VENDOR, each with its own manifest -- verified against the real
-# tree, not assumed: cmdlib/droidnet/manifest.json + boards/*.json, and
-# cmdlib/navicore/manifest.json + navicore.json. index.html hard-codes
-# NC_DROIDNET_LOCAL_MANIFEST = 'cmdlib/droidnet/manifest.json', so the vendor
-# directories are a real contract, not an implementation detail.
-CMDLIB_VENDORS = ["droidnet", "navicore"]
+# tree, not assumed: cmdlib/droidnet/manifest.json + boards/*.json,
+# cmdlib/wcb/manifest.json + wcb-builder.json (the WCB's own boards, shared with
+# the WCB Wizard), and cmdlib/navicore/manifest.json + navicore.json. index.html
+# hard-codes NC_DROIDNET_LOCAL_MANIFEST / NC_WCB_LOCAL_MANIFEST /
+# NC_NAVICORE_LOCAL_MANIFEST, so the vendor directories are a real contract, not
+# an implementation detail. A vendor the published tool does not have yet is
+# skipped (cmdlib_names), so listing one ahead of its NaviCore push is harmless.
+CMDLIB_VENDORS = ["droidnet", "wcb", "navicore"]
 # Provenance files the tool does not load but which must travel with the data.
 CMDLIB_EXTRA = ["LICENSE", "NOTICE.md"]
 
