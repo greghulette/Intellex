@@ -57,6 +57,7 @@ import re
 import secrets
 import sys
 import threading
+import time
 from typing import Optional
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -74,6 +75,7 @@ import settings                                          # noqa: E402
 import flash                                             # noqa: E402
 import fwcache                                           # noqa: E402
 import wcb_flash                                         # noqa: E402
+import webfiles                                          # noqa: E402
 
 try:
     from aiohttp import web, WSMsgType                   # noqa: E402
@@ -617,20 +619,39 @@ async def api_webui_version(_req: web.Request) -> web.Response:
     )
     bundled = _bundled_dtg()
     wcb_bundled = _wcb_bundled_ver()
+    # `missing`: what the copy's own page loads and the copy lacks (_tool_missing). Such a copy is stale whatever its
+    # stamp says - the stamp alone called a Wizard without its sequence builder "up to date" (2026-10-21).
+    # `repaired`: what _repair_incomplete_tools fetched again since start, for the launcher to tell open pages.
+    missing, wcb_missing = _tool_missing("navicore"), _tool_missing("wcb")
     return web.json_response({
         "bundled": bundled,
         "published": published,
-        "stale": bool(bundled and published and bundled != published),
+        "stale": bool(bundled and published and bundled != published) or bool(bundled and missing),
         "checked": bool(published),
         "reason": "" if published else _published_error,
+        "missing": missing,
+        "repaired": _tools_repaired.get("navicore"),
         "wcb": {
             "bundled": wcb_bundled,
             "published": wcb_published,
-            "stale": bool(wcb_bundled and wcb_published and wcb_bundled != wcb_published),
+            "stale": (bool(wcb_bundled and wcb_published and wcb_bundled != wcb_published)
+                      or bool(wcb_bundled and wcb_missing)),
             "checked": bool(wcb_published),
             "reason": "" if wcb_published else _wcb_published_error,
+            "missing": wcb_missing,
+            "repaired": _tools_repaired.get("wcb"),
         },
     })
+
+
+def _tool_missing(product: str) -> list[str]:
+    """What the copy of a tool being served loads and does not have (webfiles.missing_from): [] when it is whole, or
+    when there is no copy at all, which the launcher already says on its own."""
+    d = webui_dir() if product == "navicore" else wcb_dir() / "Wizard"
+    try:
+        return webfiles.missing_from(d)
+    except OSError:
+        return []
 
 
 async def api_version(_req: web.Request) -> web.Response:
@@ -1057,39 +1078,22 @@ async def api_update_webui(req: web.Request) -> web.Response:
     for an answer the page handled. The request worked; the fetch it ran did not,
     and the body says so. 500 stays for the fetcher not running at all.
     """
-    import subprocess
     tool = req.query.get("tool", "all")
     if tool not in ("navicore", "wcb", "all"):
         return web.json_response({"ok": False, "error": "tool must be navicore|wcb|all"},
                                  status=400)
-
-    # HOW TO INVOKE THE FETCHER, frozen or not. Run from source it is a script and
-    # sys.executable is python. Frozen there is no python and no tools/ directory:
-    # sys.executable IS this app. So re-invoke ourselves with a sentinel that
-    # app.py intercepts before anything starts -- the same trick flash.py uses for
-    # esptool (--run-esptool), and for the same reason.
-    #
-    # Still a subprocess either way rather than an in-process import: the fetcher
-    # writes to stdout and returns an exit code, and capturing a module's prints
-    # from a worker thread means redirecting stdout process-wide, which would
-    # swallow output from everything else running at the time.
-    if getattr(sys, "frozen", False):
-        argv = [sys.executable, "--run-fetch-webui", "--tool", tool]
-    else:
-        script = pathlib.Path(__file__).resolve().parent.parent / "tools" / "fetch_webui.py"
-        argv = [sys.executable, str(script), "--tool", tool]
     # ?force=1: fetch even when the stamps match. The launcher sends it after a
     # branch change, where "same stamp" does not mean "same tool": a Wizard commit
     # does not always move UI_VERSION, so two branches can share one.
-    if req.query.get("force") == "1":
-        argv.append("--force")
+    argv = _fetcher_argv(tool, force=req.query.get("force") == "1")
 
     def run():
         return proc.run(argv, capture_output=True, text=True, timeout=600)
 
     before = {p: _bundle_identity(p) for p in ("navicore", "wcb")}
     try:
-        r = await asyncio.to_thread(run)
+        async with _fetch_lock:          # never two fetchers swapping the same directory (_repair_incomplete_tools)
+            r = await asyncio.to_thread(run)
     except Exception as e:
         return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
     # Report what DID land even on a failure. With two independent swaps, "the
@@ -1111,6 +1115,64 @@ async def api_update_webui(req: web.Request) -> web.Response:
         "notes": [x.strip() for x in out if x.startswith(("[navicore] branch ", "[wcb] branch "))],
         "log": (r.stdout or "").strip()[-600:],
     })
+
+
+def _fetcher_argv(tool: str, force: bool = False) -> list[str]:
+    """How to run tools/fetch_webui.py for `tool` (navicore | wcb | all), frozen or not."""
+    # HOW TO INVOKE THE FETCHER, frozen or not. Run from source it is a script and
+    # sys.executable is python. Frozen there is no python and no tools/ directory:
+    # sys.executable IS this app. So re-invoke ourselves with a sentinel that
+    # app.py intercepts before anything starts -- the same trick flash.py uses for
+    # esptool (--run-esptool), and for the same reason.
+    #
+    # Still a subprocess either way rather than an in-process import: the fetcher
+    # writes to stdout and returns an exit code, and capturing a module's prints
+    # from a worker thread means redirecting stdout process-wide, which would
+    # swallow output from everything else running at the time.
+    if getattr(sys, "frozen", False):
+        argv = [sys.executable, "--run-fetch-webui", "--tool", tool]
+    else:
+        script = pathlib.Path(__file__).resolve().parent.parent / "tools" / "fetch_webui.py"
+        argv = [sys.executable, str(script), "--tool", tool]
+    return argv + (["--force"] if force else [])
+
+
+# One fetcher at a time: Update tools and the startup repair each swap whole directories in by rename.
+_fetch_lock = asyncio.Lock()
+# What _repair_incomplete_tools fetched again since start: {product: {"version", "missing", "at"}}.
+_tools_repaired: dict = {}
+
+
+async def _repair_incomplete_tools() -> None:
+    """At start, fetch again any tool copy that lacks a file its own page loads - in the background, one tool at a time.
+
+    Such a copy carries the published stamp, so nothing else would ever fetch it: Intellex 0.2.1 bundled the
+    seq-builder Wizard without seq-builder.js, seq-builder.css and cmdlib/, the launcher called it up to date, and
+    updating Intellex left that copy in place (2026-10-21). Only the incomplete tool is fetched, never the other one,
+    which this has no reason to update, and the fetcher's own missing_from check makes it fetch the copy whole even
+    at the same stamp. Offline (or leashed by INTELLEX_OFFLINE) the fetcher refuses at once, and the launcher goes on
+    saying "incomplete"."""
+    for product in ("navicore", "wcb"):
+        missing = _tool_missing(product)
+        if not missing:
+            continue
+        print(f"tools     the {product} tool lacks {', '.join(missing)} - fetching it again")
+        before = _bundle_identity(product)
+        try:
+            async with _fetch_lock:
+                r = await asyncio.to_thread(proc.run, _fetcher_argv(product), capture_output=True, text=True,
+                                            timeout=600)
+        except Exception as e:                       # noqa: BLE001 - a repair that cannot run is reported, not fatal
+            print(f"tools     could not run the fetcher: {type(e).__name__}: {e}")
+            continue
+        still = _tool_missing(product)
+        if _bundle_identity(product) != before and not still:
+            ver = _wcb_bundled_ver() if product == "wcb" else _bundled_dtg()
+            _tools_repaired[product] = {"version": ver, "missing": missing, "at": time.time()}
+            print(f"tools     the {product} tool is whole again ({ver})")
+        else:
+            last = ((r.stdout or r.stderr or "").strip().splitlines() or ["no output"])[-1]
+            print(f"tools     the {product} tool is still incomplete ({', '.join(still) or 'unchanged'}): {last}")
 
 
 def _bundle_identity(product: str) -> tuple:
@@ -2142,6 +2204,8 @@ async def _start_bg(app: web.Application) -> None:
     # Is there a newer Intellex? Once, in the background: a window never waits on GitHub, and offline the check
     # only records why it could not ask (selfupdate.check).
     app["app_update_check"] = asyncio.ensure_future(asyncio.to_thread(selfupdate.check, False, False))
+    # A tool copy missing a file its page loads is fetched again, also in the background (_repair_incomplete_tools).
+    app["tools_repair"] = asyncio.ensure_future(_repair_incomplete_tools())
 
 
 async def _stop_bg(app: web.Application) -> None:

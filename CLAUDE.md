@@ -172,6 +172,15 @@ and this is the only way to configure the droid. The two tools update as **separ
 swaps (`tools/fetch_webui.py --tool navicore|wcb|all`) — different repos, different cadences, so
 one failing offline must not roll back the other.
 
+**A tool copy is current only if it is whole, not just at the published stamp.** What a copy must
+hold is what its own `index.html` loads, plus `cmdlib/` when its code names one. That rule lives in
+`src/webfiles.py`, shared by the fetcher and the host; don't grow a fixed file list again. A copy
+that lacks one of those files carries the right stamp and is still broken: 0.2.1 dropped the
+sequence builder that way, twice. So `/_api/webui-version` reports `missing` and calls such a copy
+stale, the launcher says "incomplete", and the host fetches it again at start
+(`_repair_incomplete_tools`, only that tool, under `_fetch_lock` with Update tools) and records it
+as `repaired` for the launcher to tell open pages.
+
 ## Rules that are easy to break
 
 1. **Deliver RAW BYTES to the page, never strings and never pre-split lines.** The tool keeps one
@@ -636,9 +645,11 @@ python tools/smoke_test_hooks.py
 
 # The two updates, against fakes: Update tools bundles what each page loads
 # (a branch's new script, its cmdlib/ vendors) and refetches a same-stamp copy
-# that lacks one; Update Intellex starts the new copy in a fresh environment, and
-# app.py relaunches one that an older Intellex started the bad way. Run after
-# touching fetch_webui.py, selfupdate.restart_now, proc.fresh_app_env or app.py's top.
+# that lacks one; the host calls such a copy incomplete and repairs it at start;
+# Update Intellex starts the new copy in a fresh environment, and app.py
+# relaunches one that an older Intellex started the bad way. Run after touching
+# fetch_webui.py, webfiles.py, the host's webui-version or tools repair,
+# selfupdate.restart_now, proc.fresh_app_env or app.py's top.
 python tools/smoke_updates.py
 
 # The docs viewer, end to end: fetch nothing, render everything already on

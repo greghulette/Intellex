@@ -16,6 +16,9 @@ No network, no window. Checked against the REAL modules:
     U4  app.py at import   (Windows) a frozen --after-update start WITHOUT the fresh marker - what 0.2.1 and older
                            start - relaunches itself fresh before importing anything; with the marker, or without
                            --after-update, it goes straight on and the marker is gone from its environment
+    U5  host.py            /_api/webui-version calls a copy missing a file its page loads incomplete and stale at
+                           the published stamp; the startup repair fetches that tool alone, whole, records it for the
+                           launcher to tell open pages, and leaves a copy it could not fetch saying incomplete
 
 WHY THESE (2026-10-20)
 U2: with WCB on seq-builder, Update tools bundled that Wizard from a fixed list, without seq-builder.js,
@@ -232,6 +235,85 @@ if sys.platform == "win32":
     check(plain.get("reached") and plain.get("popen") is None, f"U4 an ordinary start goes straight on: {plain}")
 else:
     print("skip  U4 (the one-file restart is Windows-only)")
+
+# ── U5 ─────────────────────────────────────────────────────────────────────
+# 2026-10-21: an Update tools pressed on 0.2.1 left a Wizard without seq-builder.js at the published stamp; 0.2.2's
+# launcher called it up to date and nothing fetched it again.
+import asyncio  # noqa: E402
+
+import host     # noqa: E402
+
+tmp5 = pathlib.Path(tempfile.mkdtemp(prefix="intellex-smoke-host-"))
+NC, WZ = tmp5 / "webui", tmp5 / "webui_wcb"
+(NC / "cmdlib" / "droidnet").mkdir(parents=True)
+(NC / "index.html").write_bytes(b'<script src="flasher.js"></script><span id="footer-dtg">NC-1</span>'
+                                b"<script>const M='cmdlib/droidnet/manifest.json'</script>")
+(NC / "flasher.js").write_bytes(b"//")
+(NC / "cmdlib" / "droidnet" / "manifest.json").write_bytes(b"{}")
+(WZ / "Wizard").mkdir(parents=True)
+(WZ / "Wizard" / "index.html").write_bytes(b'<script src="app.js"></script><script src="seq-builder.js"></script>')
+(WZ / "Wizard" / "app.js").write_bytes(b"const UI_VERSION = 'WZ-1';")
+
+saved = {k: getattr(host, k) for k in ("webui_dir", "wcb_dir", "_published_dtg", "_wcb_published_ver")}
+real_run = proc.run
+fetched: list = []
+
+
+def fake_fetch_whole(argv, **kw):
+    """The fetcher, as far as the host can see: a new Wizard directory swapped in by rename, seq-builder.js in it."""
+    fetched.append(argv)
+    new = WZ.with_name("webui_wcb.new")
+    shutil.copytree(WZ, new)
+    (new / "Wizard" / "seq-builder.js").write_bytes(b"window.SeqBuilder = {};")
+    WZ.rename(WZ.with_name("webui_wcb.prev"))
+    new.rename(WZ)
+    return subprocess.CompletedProcess(argv, 0, "[wcb] updated to WZ-1  (3 files)\n", "")
+
+
+def offline_fetch(argv, **kw):
+    fetched.append(argv)
+    return subprocess.CompletedProcess(argv, 1, "github.io is not reachable - the bundled tools are unchanged.\n", "")
+
+
+def status() -> dict:
+    return json.loads(asyncio.run(host.api_webui_version(None)).body)
+
+
+try:
+    host.webui_dir, host.wcb_dir = (lambda: NC), (lambda: WZ)
+    host._published_dtg, host._wcb_published_ver = (lambda: "NC-1"), (lambda: "WZ-1")
+    s = status()
+    check(s["wcb"]["missing"] == ["seq-builder.js"] and s["wcb"]["stale"] and s["wcb"]["bundled"] == "WZ-1"
+          and s["missing"] == [] and not s["stale"],
+          f"U5 webui-version: the Wizard without seq-builder.js is incomplete and stale at the published stamp; the "
+          f"whole config tool is neither: {s}")
+
+    proc.run = offline_fetch
+    host._tools_repaired.clear()
+    asyncio.run(host._repair_incomplete_tools())
+    check(len(fetched) == 1 and not host._tools_repaired and status()["wcb"]["missing"] == ["seq-builder.js"],
+          "U5 offline, the repair changes nothing and the copy still says incomplete")
+
+    fetched.clear()
+    proc.run = fake_fetch_whole
+    asyncio.run(host._repair_incomplete_tools())
+    argv = fetched[0] if fetched else []
+    check(len(fetched) == 1 and argv[argv.index("--tool") + 1] == "wcb" and "--force" not in argv,
+          f"U5 the startup repair fetches the incomplete tool alone (not --tool all, not --force): {fetched}")
+    rep = host._tools_repaired.get("wcb") or {}
+    s = status()
+    check(rep.get("missing") == ["seq-builder.js"] and rep.get("version") == "WZ-1" and not s["wcb"]["missing"]
+          and not s["wcb"]["stale"] and s["wcb"]["repaired"] == rep and s["repaired"] is None,
+          f"U5 ...records the repair for the launcher, and the copy is whole and current: {s['wcb']}")
+    fetched.clear()
+    asyncio.run(host._repair_incomplete_tools())
+    check(not fetched, "U5 a whole copy is not fetched again")
+finally:
+    proc.run = real_run
+    for k, v in saved.items():
+        setattr(host, k, v)
+    host._tools_repaired.clear()
+    shutil.rmtree(tmp5, ignore_errors=True)
 
 print()
 print("PASSED" if not failures else f"FAILED: {len(failures)} check(s)")

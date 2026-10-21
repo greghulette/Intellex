@@ -51,6 +51,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import certs                                                        # noqa: E402
 import paths                                                        # noqa: E402
 import settings                                                     # noqa: E402
+import webfiles                                                     # noqa: E402
 from flash import no_network, reachable, unreachable_reason        # noqa: E402
 
 # ── Per-branch tool previews ────────────────────────────────────────────────
@@ -167,31 +168,12 @@ def image_refs(*sources: bytes) -> list[str]:
     return sorted({m.decode("ascii") for s in sources for m in _IMG_REF_RE.findall(s)})
 
 
-# A file the page loads from beside itself: a <script src> or a <link href> (stylesheet, icon, manifest). Absolute
-# URLs (the fonts, a CDN) and data: URIs are not ours to bundle, and ../Images is fetched on its own above.
-_PAGE_REF_RE = re.compile(rb"""<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*["']([^"'#?]+)""", re.I)
-
-
-def page_refs(index_bytes: bytes) -> list[str]:
-    """Every file index.html loads from beside itself, in page order.
-
-    WCB_FILES and ROOT_FILES are what each page loaded when they were written. A branch that adds a file was
-    bundled without it: the seq-builder Wizard's seq-builder.js and .css (and its cmdlib/, cmdlib_needed) never
-    arrived, so its new screen silently failed to load in the app while it worked on the published site. Read
-    the page's own tags, and the next file a page starts loading comes with it."""
-    out: list[str] = []
-    for m in _PAGE_REF_RE.findall(index_bytes):
-        name = m.decode("utf-8", "replace").strip()
-        if ":" in name or not _safe_relname(name) or name in out:
-            continue
-        out.append(name)
-    return out
-
-
-def cmdlib_needed(*sources: bytes) -> bool:
-    """Does the page's code load a command library from cmdlib/ beside it? The NaviCore tool always does; the
-    Wizard does from the sequence builder on. Its file names come from the manifests (cmdlib_names)."""
-    return any(b"cmdlib/" in s for s in sources)
+# What a page loads beyond the lists below, and whether a copy has all of it: src/webfiles.py, shared with the host,
+# whose launcher status calls a copy that lacks one incomplete rather than up to date. The seq-builder Wizard's
+# seq-builder.js, .css and cmdlib/ never arrived from a fixed list, so its new screen silently failed to load in
+# the app while it worked on the published site.
+page_refs, cmdlib_needed = webfiles.page_refs, webfiles.cmdlib_needed
+_safe_relname, _page_sources, _missing_from = webfiles.safe_relname, webfiles.page_sources, webfiles.missing_from
 
 # The Wizard has no footer-dtg. Its stamp is a JS constant in app.js, written by
 # the WCB repo's pre-commit hook and by Wizard/watch-version.js -- the same role
@@ -290,9 +272,6 @@ def local_dtg() -> str:
 CMDLIB_VENDORS = ["droidnet", "wcb", "navicore"]
 # Provenance files the tool does not load but which must travel with the data.
 CMDLIB_EXTRA = ["LICENSE", "NOTICE.md"]
-# A vendor the page's code names by its manifest ('cmdlib/<vendor>/manifest.json', as both tools write it). Added to
-# CMDLIB_VENDORS, so a vendor a tool starts loading comes with it instead of being skipped as one that does not exist.
-_CMDLIB_MANIFEST_RE = re.compile(rb"""cmdlib/([A-Za-z0-9_-]+)/manifest\.json""")
 
 
 def cmdlib_names(base: str, sources=()) -> list[str]:
@@ -301,10 +280,11 @@ def cmdlib_names(base: str, sources=()) -> list[str]:
     Pages serves no directory index, so the alternative is a hard-coded file list
     that rots the first time a board is added. Each manifest names its own boards;
     read them and take exactly the set the tool would load. The vendors are
-    CMDLIB_VENDORS plus any the page's code (`sources`) names by its manifest.
+    CMDLIB_VENDORS plus any the page's code (`sources`) names by its manifest
+    (webfiles.named_vendors), so a vendor a tool starts loading comes with it.
     """
     import json
-    named = sorted({m.decode("ascii") for s in sources for m in _CMDLIB_MANIFEST_RE.findall(s)})
+    named = webfiles.named_vendors(*sources)
     out: list[str] = []
     for vendor in CMDLIB_VENDORS + [v for v in named if v not in CMDLIB_VENDORS]:
         man = f"{vendor}/manifest.json"
@@ -353,29 +333,6 @@ def cmdlib_names(base: str, sources=()) -> list[str]:
     return uniq
 
 
-def _safe_relname(name: str) -> bool:
-    """Is this manifest entry safe to use as a path under the staging directory?
-
-    These names come from a manifest fetched over the network and are then joined
-    onto a real directory and written. lstrip("./") only neutralises LEADING
-    traversal, so "vendor/../../../evil.json" survived it intact.
-
-    The source is greghulette.github.io, so this is defence in depth rather than a
-    live hole -- but it is the one place in the app where remote data decides where
-    bytes land on disk, which is worth being strict about.
-    """
-    import ntpath
-    import posixpath
-    if not name or name.startswith(("/", "\\")):
-        return False
-    if ntpath.splitdrive(name)[0]:            # C:, \\server\share
-        return False
-    parts = name.replace("\\", "/").split("/")
-    if any(p in ("", ".", "..") for p in parts):
-        return False
-    return not posixpath.isabs(name)
-
-
 def _stage_cmdlib(base: str, page_dir: pathlib.Path, sources=()) -> int | None:
     """Fetch the page's cmdlib/ into page_dir/cmdlib. The number of files, or None when no manifest could be read -
     the caller refuses the update then, rather than ship a UI with a stale library or none beside it."""
@@ -396,25 +353,6 @@ def _stage_cmdlib(base: str, page_dir: pathlib.Path, sources=()) -> int | None:
         dest.write_bytes(get(f"{base}/cmdlib/{n}"))
         got += 1
     return got
-
-
-def _page_sources(page_dir: pathlib.Path, names) -> list[bytes]:
-    """The page's own html/js/css among `names`, as bytes: what image_refs and cmdlib_needed read."""
-    return [(page_dir / n).read_bytes() for n in names
-            if n.endswith((".html", ".js", ".css")) and (page_dir / n).is_file()]
-
-
-def _missing_from(page_dir: pathlib.Path) -> list[str]:
-    """What a bundled page loads and does not have: a copy fetched before page_refs/cmdlib_needed existed carries
-    the right version stamp and is still incomplete, so the stamp alone would call it up to date forever."""
-    index = page_dir / "index.html"
-    if not index.is_file():
-        return []
-    refs = page_refs(index.read_bytes())
-    missing = [n for n in refs if not (page_dir / n).is_file()]
-    if cmdlib_needed(*_page_sources(page_dir, ["index.html"] + refs)) and not (page_dir / "cmdlib").is_dir():
-        missing.append("cmdlib/")
-    return missing
 
 
 def _swap_in(staged: pathlib.Path, dest: pathlib.Path) -> bool:

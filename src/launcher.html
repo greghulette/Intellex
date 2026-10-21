@@ -918,6 +918,13 @@ async function scan() {
 // whichever one happens to be current behind whichever one is not.
 function uiLine(name, v) {
   if (!v || !v.bundled) return `no ${name} bundled`;
+  // Before the stamp: a copy missing a file its own page loads is broken at ANY stamp, offline included. The stamp
+  // alone called a Wizard without its sequence builder "up to date" (2026-10-21). The host fetches it again at
+  // start (host.py _repair_incomplete_tools); this line says so until it has. The names come from a fetched page.
+  if (v.missing && v.missing.length) {
+    const what = v.missing.join(', ').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    return `${name} <b>${v.bundled}</b> — <span class="stale">incomplete (missing ${what}); Update fetches it whole</span>`;
+  }
   if (!v.checked) {
     // "offline" was the only story this told, and on a stock macOS Python it was
     // the wrong one — the box was online and simply could not verify a
@@ -928,6 +935,10 @@ function uiLine(name, v) {
   if (v.stale) return `${name} <b>${v.bundled}</b> — <span class="stale">update available (${v.published})</span>`;
   return `${name} ${v.bundled} — up to date`;
 }
+
+// The host's startup repairs already told to open tool pages, and how many more times to look for one in progress.
+const _repairsAnnounced = new Set();
+let _repairLooks = 0;
 
 async function checkUi() {
   try {
@@ -940,8 +951,25 @@ async function checkUi() {
                          + '<br>' + uiLine('WCB Wizard', w);
     $('uiver').title = [v.reason, w && w.reason].filter(Boolean).join('\n\n');
     const stale = [v.stale && 'config tool', w && w.stale && 'Wizard'].filter(Boolean);
-    _maint.tools = stale.length ? stale.join(' + ') + ' update available' : '';
+    const broken = [v.missing && v.missing.length && 'config tool',
+                    w && w.missing && w.missing.length && 'Wizard'].filter(Boolean);
+    _maint.tools = broken.length ? broken.join(' + ') + ' incomplete'
+                 : stale.length ? stale.join(' + ') + ' update available' : '';
     paintMaint();
+    // The host fetches an incomplete copy again at start, in the background. Tell a tool page opened before that
+    // landed (the same Reload/Later offer as Update), once per repair, and keep looking for a while if one is
+    // still running - it finishes in seconds online, and offline it ends with the copy still incomplete.
+    const texts = {};
+    for (const [p, x] of [['navicore', v], ['wcb', w]]) {
+      const r = x && x.repaired;
+      if (r && r.at && !_repairsAnnounced.has(`${p}@${r.at}`)) {
+        _repairsAnnounced.add(`${p}@${r.at}`);
+        texts[p] = `The ${TOOL_NAME[p]} was missing ${(r.missing || []).join(', ')} and was fetched again`
+                 + `${r.version ? ' (' + r.version + ')' : ''}.`;
+      }
+    }
+    announceTools(texts);
+    if (broken.length && _repairLooks++ < 24) setTimeout(checkUi, 5000);
   } catch (e) {
     $('uiver').textContent = 'could not check the tool versions';
     _maint.tools = ''; paintMaint();
