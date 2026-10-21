@@ -13,7 +13,9 @@ the results, plus a SHA256SUMS.txt, to a release:
 THREE WAYS IT RUNS, THREE WAYS IT UPDATES (mode())
 - windows: a frozen .exe. Windows will not overwrite a running .exe but WILL rename one,
   so the running file becomes Intellex.old.exe, the verified download takes its name, the
-  new one is started and this process ends. The next start deletes the .old.
+  new one is started and this process ends. The next start deletes the .old. The new one is
+  started in proc.fresh_app_env(), or it would run from this one's unpacked folder, which is
+  deleted as this one exits (proc.fresh_app_env says how that failed).
 - macos: a frozen Intellex.app. The verified zip is unpacked with ditto (an .app holds
   symlinks a plain unzip flattens), the running bundle is moved into the user data dir as
   the rollback copy, the new one takes its place, and `open -n` starts it.
@@ -460,7 +462,8 @@ def restart_now() -> None:
         # non-inheritable), so the new image binds the port the moment this one is gone.
         os.execv(sys.executable, [sys.executable, sys.argv[0]] + _relaunch_args())
     if m == "windows":
-        proc.popen([sys.executable] + _relaunch_args(), close_fds=True,
+        # A copy of its own, not a helper sharing this one's folder - which is deleted as this one exits.
+        proc.popen([sys.executable] + _relaunch_args(), close_fds=True, env=proc.fresh_app_env(),
                    creationflags=0x00000008 | 0x00000200)          # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     elif m == "macos":
         proc.popen(["open", "-n", str(_bundle()), "--args"] + _relaunch_args(), close_fds=True)

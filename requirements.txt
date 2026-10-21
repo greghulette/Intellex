@@ -25,7 +25,8 @@ esptool>=5.0
 certifi>=2024.2.2
 
 # Packaging (dev only)
-pyinstaller>=6.0
+# 6.9 for PYINSTALLER_RESET_ENVIRONMENT: the restart after an update (src/proc.py fresh_app_env)
+pyinstaller>=6.9
 
 # Desktop window. Optional: without it the app opens the default browser
 # instead, which works identically — the UI is served over http either way.

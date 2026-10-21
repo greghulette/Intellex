@@ -380,7 +380,14 @@ sends it to api.github.com only) - a shared runner has no unauthenticated quota 
 **How each copy updates** (selfupdate.mode()):
 - *windows* - the verified .exe takes the running one's name; the running one is **renamed**
   to `Intellex.old.exe` (Windows renames a running .exe, it will not overwrite one) and the
-  next start deletes it.
+  next start deletes it. **The new copy must start in `proc.fresh_app_env()`** (and anything
+  else that outlives this process must too). Started with the inherited environment, the one-file
+  bootloader treats it as a helper and runs it from the old copy's `%TEMP%\_MEIxxxxx` folder,
+  which is deleted as the old copy exits. The result was a browser instead of the window and a
+  404 on `/_launcher`, or, if the old copy had already gone, a "Security validation failure"
+  dialog. app.py restarts a copy that arrives that way (from 0.2.1 or older) before importing
+  anything. The helpers (`--run-esptool`, the fetchers) keep the inherited environment on
+  purpose: they share the folder and end first.
 - *macos* - the zip is unpacked with `ditto` (an .app holds symlinks), the running bundle
   moves to `<data dir>/updates/Intellex.prev.app` (the rollback copy), the new one takes its
   place, `open -n` starts it. Refused from App Translocation or a folder this account cannot
@@ -626,6 +633,13 @@ node tools/smoke_wizard_reconnect.js
 # real module, opening no port and touching no network. Run after touching
 # reachable(), the serial paths, scan() or the WebSocket attach.
 python tools/smoke_test_hooks.py
+
+# The two updates, against fakes: Update tools bundles what each page loads
+# (a branch's new script, its cmdlib/ vendors) and refetches a same-stamp copy
+# that lacks one; Update Intellex starts the new copy in a fresh environment, and
+# app.py relaunches one that an older Intellex started the bad way. Run after
+# touching fetch_webui.py, selfupdate.restart_now, proc.fresh_app_env or app.py's top.
+python tools/smoke_updates.py
 
 # The docs viewer, end to end: fetch nothing, render everything already on
 # disk, and prove no page is left pointing at a relative image or an

@@ -33,6 +33,21 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import proc                                               # noqa: E402
+
+# An update started by Intellex 0.2.1 or older lands here running from the OLD copy's unpacked
+# folder, which that copy's bootloader deletes as it exits (proc.fresh_app_env says how). So
+# start again as a copy of our own and end this one, BEFORE the imports below load a single DLL
+# from a folder that is going away. A restart from this version on arrives with FRESH_START set
+# and goes straight through, as does every start without --after-update. Popped, so the helpers
+# this copy starts (--run-esptool, the fetchers) never see it.
+_fresh_start = os.environ.pop(proc.FRESH_START, "")
+if (not _fresh_start and "--after-update" in sys.argv[1:]
+        and getattr(sys, "frozen", False) and sys.platform == "win32"):
+    proc.popen([sys.executable] + sys.argv[1:], close_fds=True, env=proc.fresh_app_env("healed"),
+               creationflags=0x00000008 | 0x00000200)     # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    os._exit(0)
+
 import applog                                             # noqa: E402
 import paths                                              # noqa: E402
 import appicon                                            # noqa: E402
@@ -219,6 +234,8 @@ def main() -> int:
     ap.add_argument(selfupdate.AFTER_UPDATE, action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     selfupdate.cleanup_after_update()
+    if _fresh_start == "healed":
+        print("self-update  restarted again in a folder of its own: the old copy started it in one being deleted")
 
     hostmod.auto_bounce = not a.no_auto_bounce
 

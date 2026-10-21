@@ -353,6 +353,9 @@ src/webui_wcb/
   Wizard/          index.html app.js parser.js flasher.js device-labels.js
                    serial-hub.js styles.css favicon.png manifest.json
                    vendor/crypto-js/…  vendor/esptool-js/…
+                   + whatever else index.html loads (seq-builder.js/.css on a
+                     branch with the sequence builder) and cmdlib/<vendor>/…
+                     when the Wizard's code loads a command library
   Images/          r2logo.png navicore-icon.png kyberLogo.png qr-code.png
                    LabelOnly.jpg PololuLogo.png
 ```
@@ -372,6 +375,23 @@ image here while the published site looks fine. So the fetcher also scans the Wi
 just downloaded for `../Images/<file>` references (`image_refs()`) and fetches any the list
 lacks, saying so. `WCB_IMAGES` stays a literal list: the WCB repo's HIL harness reads it to stage
 the same bundle.
+
+**The file list is the page's own, not only `WCB_FILES`.** A branch adds files: the sequence
+builder brought `seq-builder.js`, `seq-builder.css` and a vendored `cmdlib/`. A fixed list
+bundled that Wizard without them, so its new screen failed to load in the app while it worked
+on Pages. So the fetcher also takes every relative `<script src>` / `<link href>` in the fetched
+`index.html` (`page_refs()`). When the Wizard's code names `cmdlib/` (`cmdlib_needed()`), it
+fetches the library through the same per-vendor manifests as the NaviCore tool
+(`cmdlib_names()`). The vendors are `CMDLIB_VENDORS` plus every `cmdlib/<vendor>/manifest.json`
+the code names. If those manifests can't be read, it refuses the update. The same goes for the
+NaviCore tool's page. A bundled copy whose stamp matches but which lacks a file its own page
+loads (`_missing_from()`) counts as out of date, because a Wizard commit does not always move
+`UI_VERSION`. `WCB_VENDOR` is still a list, since `flasher.js` builds those paths at runtime.
+A file on it that the site lacks is reported and skipped, not fatal: Intellex flashes natively
+and never loads them, so an esptool-js bump must not hold back the whole Wizard. The WCB
+repo's `tests/wizard/unit/intellex_bundle.test.js` holds the Wizard to this (a file its code
+loads is a relative tag in `index.html`, or under `cmdlib/` or `vendor/`).
+`tools/smoke_updates.py` covers the fetcher.
 
 Firmware binaries are **not** bundled: `flasher.js` pulls them from the GitHub Contents API at
 flash time, and so does `src/wcb_flash.py`. The bundle is ~1.2 MB, 18 files.
@@ -596,6 +616,7 @@ text against fakes.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-10-20 | _(uncommitted)_ | **A branch's new Wizard files were never bundled.** With WCB set to `seq-builder`, Update tools fetched that branch's Wizard (right stamp) from the fixed `WCB_FILES` list, without `seq-builder.js`, `seq-builder.css` or `cmdlib/`, so the sequence builder could not load in the app. The fetcher now adds what `index.html` loads (`page_refs()`) and the manifest-listed `cmdlib/` when the code names it (`cmdlib_needed()`, `_stage_cmdlib()`, shared with the NaviCore path). It re-fetches a same-stamp copy that lacks any of them (`_missing_from()`). The vendors include every `cmdlib/<vendor>/manifest.json` the code names, and a missing `WCB_VENDOR` file is no longer fatal. Run against the published seq-builder and main Wizards and the NaviCore tool: complete, byte-identical to Pages, and "up to date" on the second run. Covered by `tools/smoke_updates.py`. |
 | 2026-10-04 | _(this commit)_ | **The NaviCore tool reached through a WCB on USB could come up "direct".** Only a WiFi attach ever carried a role (from discovery), so a serial attach reported `role: ""` and the shim never forced Via WCB; through W1 the tool's PING draws NaviCore's PONG back whenever W1's 20 s relay window is open, so a reload or reconnect inside it left *Update over USB (OTA)* enabled and pointed at the WCB — rule 10's hazard, over USB. `api_attach` (and the reconnect loop, and a `--serial` start) now identifies a serial target through the open port with `discover.classify()`, split out of `probe()` so both read answers one way, and records `role`/`relayId` before answering. WCB HIL `intellex.nc_via_usb_doorway` (INTELLEX.md finding 4; bench). |
 | 2026-10-04 | _(this commit)_ | **Mesh boards the shim routed through a WCB doorway were filed under a string relay slot.** `routeMeshThroughBoard()` passed `_wdpMeshConn().slot` — a key of `Object.entries(boardConnections)`, so `"1"` — to `setRemoteConnected` and `remoteBoardPull`, while the Wizard files relay slots as numbers and tests them with `===` (`app.js` `[TERM:n]` demux, the re-arm after a relay drop, `clearRemoteBoardsForRelay`), so a routed board was neither cleared nor re-armed when W1's link dropped. It passes the number now. `tools/smoke_mesh_route.js` expected the string; it now requires the number (and fails 7 checks on the old shim), and it normalises CRLF before extracting, since on a CRLF checkout (`core.autocrlf=true`) its end mark never matched. WCB HIL `intellex.wizard_mesh_relay_slot_number` (INTELLEX.md finding 17; bench). |
 | 2026-10-04 | _(this commit)_ | **The Wizard's guided setup showed broken pictures.** `app.js` names `../Images/LabelOnly.jpg` (the hardware-version step) and `../Images/PololuLogo.png` (the Maestro step), and `WCB_IMAGES` listed neither, so neither was bundled. Both are listed now, and `fetch_wcb()` also fetches any `../Images/<file>` the downloaded `index.html`, `app.js` or `styles.css` names that the list lacks, printing it, so the next new picture is bundled before anyone edits the list. An existing install gets them with its next Wizard update (a run with `--force` fetches them now). WCB HIL `intellex.ui_wizard_setup_images` (INTELLEX.md finding 2). |

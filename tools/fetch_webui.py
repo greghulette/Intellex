@@ -138,7 +138,10 @@ WCB_FILES = [
 # copy, and a deliberately incomplete one is a fork with extra steps. They also
 # cost 227 KB and make the bundle work unchanged if it is ever opened directly.
 # esptool-js's bundle is self-contained (vendor/README.md) -- no chunk files to
-# chase.
+# chase. Still a list, because flasher.js builds these paths at runtime, so there is
+# nothing to discover them from. A file the site lacks is reported and skipped
+# (fetch_wcb), not fatal: Intellex never loads them, and an esptool-js bump on a
+# branch would otherwise hold back that branch's whole Wizard.
 WCB_VENDOR = [
     "vendor/README.md",
     "vendor/crypto-js/crypto-js-4.2.0.min.js",
@@ -162,6 +165,33 @@ _IMG_REF_RE = re.compile(
 def image_refs(*sources: bytes) -> list[str]:
     """Every ../Images file these sources name, sorted."""
     return sorted({m.decode("ascii") for s in sources for m in _IMG_REF_RE.findall(s)})
+
+
+# A file the page loads from beside itself: a <script src> or a <link href> (stylesheet, icon, manifest). Absolute
+# URLs (the fonts, a CDN) and data: URIs are not ours to bundle, and ../Images is fetched on its own above.
+_PAGE_REF_RE = re.compile(rb"""<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*["']([^"'#?]+)""", re.I)
+
+
+def page_refs(index_bytes: bytes) -> list[str]:
+    """Every file index.html loads from beside itself, in page order.
+
+    WCB_FILES and ROOT_FILES are what each page loaded when they were written. A branch that adds a file was
+    bundled without it: the seq-builder Wizard's seq-builder.js and .css (and its cmdlib/, cmdlib_needed) never
+    arrived, so its new screen silently failed to load in the app while it worked on the published site. Read
+    the page's own tags, and the next file a page starts loading comes with it."""
+    out: list[str] = []
+    for m in _PAGE_REF_RE.findall(index_bytes):
+        name = m.decode("utf-8", "replace").strip()
+        if ":" in name or not _safe_relname(name) or name in out:
+            continue
+        out.append(name)
+    return out
+
+
+def cmdlib_needed(*sources: bytes) -> bool:
+    """Does the page's code load a command library from cmdlib/ beside it? The NaviCore tool always does; the
+    Wizard does from the sequence builder on. Its file names come from the manifests (cmdlib_names)."""
+    return any(b"cmdlib/" in s for s in sources)
 
 # The Wizard has no footer-dtg. Its stamp is a JS constant in app.js, written by
 # the WCB repo's pre-commit hook and by Wizard/watch-version.js -- the same role
@@ -260,18 +290,23 @@ def local_dtg() -> str:
 CMDLIB_VENDORS = ["droidnet", "wcb", "navicore"]
 # Provenance files the tool does not load but which must travel with the data.
 CMDLIB_EXTRA = ["LICENSE", "NOTICE.md"]
+# A vendor the page's code names by its manifest ('cmdlib/<vendor>/manifest.json', as both tools write it). Added to
+# CMDLIB_VENDORS, so a vendor a tool starts loading comes with it instead of being skipped as one that does not exist.
+_CMDLIB_MANIFEST_RE = re.compile(rb"""cmdlib/([A-Za-z0-9_-]+)/manifest\.json""")
 
 
-def cmdlib_names(base: str) -> list[str]:
+def cmdlib_names(base: str, sources=()) -> list[str]:
     """List every cmdlib file to fetch, discovered from each vendor's manifest.
 
     Pages serves no directory index, so the alternative is a hard-coded file list
     that rots the first time a board is added. Each manifest names its own boards;
-    read them and take exactly the set the tool would load.
+    read them and take exactly the set the tool would load. The vendors are
+    CMDLIB_VENDORS plus any the page's code (`sources`) names by its manifest.
     """
     import json
+    named = sorted({m.decode("ascii") for s in sources for m in _CMDLIB_MANIFEST_RE.findall(s)})
     out: list[str] = []
-    for vendor in CMDLIB_VENDORS:
+    for vendor in CMDLIB_VENDORS + [v for v in named if v not in CMDLIB_VENDORS]:
         man = f"{vendor}/manifest.json"
         try:
             raw = get(f"{base}/cmdlib/{man}").decode("utf-8")
@@ -341,6 +376,47 @@ def _safe_relname(name: str) -> bool:
     return not posixpath.isabs(name)
 
 
+def _stage_cmdlib(base: str, page_dir: pathlib.Path, sources=()) -> int | None:
+    """Fetch the page's cmdlib/ into page_dir/cmdlib. The number of files, or None when no manifest could be read -
+    the caller refuses the update then, rather than ship a UI with a stale library or none beside it."""
+    names = cmdlib_names(base, sources)
+    if not names:
+        return None
+    root = page_dir / "cmdlib"
+    root.mkdir()
+    got = 0
+    for n in names:
+        dest = root / n
+        # Belt and braces: even with _safe_relname above, assert the resolved
+        # path really is inside the staging tree before creating anything.
+        if not str(dest.resolve()).startswith(str(root.resolve())):
+            print(f"  refusing to write outside the bundle: {n!r}")
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(get(f"{base}/cmdlib/{n}"))
+        got += 1
+    return got
+
+
+def _page_sources(page_dir: pathlib.Path, names) -> list[bytes]:
+    """The page's own html/js/css among `names`, as bytes: what image_refs and cmdlib_needed read."""
+    return [(page_dir / n).read_bytes() for n in names
+            if n.endswith((".html", ".js", ".css")) and (page_dir / n).is_file()]
+
+
+def _missing_from(page_dir: pathlib.Path) -> list[str]:
+    """What a bundled page loads and does not have: a copy fetched before page_refs/cmdlib_needed existed carries
+    the right version stamp and is still incomplete, so the stamp alone would call it up to date forever."""
+    index = page_dir / "index.html"
+    if not index.is_file():
+        return []
+    refs = page_refs(index.read_bytes())
+    missing = [n for n in refs if not (page_dir / n).is_file()]
+    if cmdlib_needed(*_page_sources(page_dir, ["index.html"] + refs)) and not (page_dir / "cmdlib").is_dir():
+        missing.append("cmdlib/")
+    return missing
+
+
 def _swap_in(staged: pathlib.Path, dest: pathlib.Path) -> bool:
     """Move staged over dest, keeping the old one as <dest>.prev.
 
@@ -392,9 +468,12 @@ def fetch_wcb(base: str, check: bool, force: bool) -> int:
     # "unknown" on either side is not a match to act on: a stamp we could not read
     # says nothing about whether the copies differ, and treating two unknowns as
     # equal would wedge the bundle at whatever it happens to be. --force still works.
-    if remote == have and remote != "unknown" and not force:
+    missing = _missing_from(WEBUI_WCB / WCB_SUBDIR) if remote == have else []
+    if remote == have and remote != "unknown" and not force and not missing:
         print("[wcb] up to date")
         return 0
+    if missing:
+        print(f"[wcb] the bundled copy lacks {', '.join(missing)} - fetching it whole again")
     if check:
         print("[wcb] update available (run without --check to apply)")
         return 0
@@ -417,8 +496,32 @@ def fetch_wcb(base: str, check: bool, force: bool) -> int:
         for rel in WCB_VENDOR:
             dest = wiz / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(get(f"{base}/{rel}"))
+            try:
+                dest.write_bytes(get(f"{base}/{rel}"))
+                got += 1
+            except FetchError as e:
+                # Not fatal: Intellex flashes natively and never loads these. A Wizard that bumps esptool-js names a
+                # file this list does not, and failing on it would hold back the whole Wizard until Intellex shipped.
+                print(f"  could not fetch {rel}: {type(e.cause).__name__} -- the Wizard's flasher library, which "
+                      f"Intellex does not use; WCB_VENDOR may need its new name")
+
+        # Whatever else index.html loads (page_refs): a branch's new script or stylesheet.
+        extra_files = [n for n in page_refs((wiz / "index.html").read_bytes())
+                       if n not in WCB_FILES and n not in WCB_VENDOR]
+        for name in extra_files:
+            dest = wiz / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(get(f"{base}/{name}"))
             got += 1
+            print(f"  {name}: loaded by this Wizard's index.html")
+        sources = _page_sources(wiz, WCB_FILES + extra_files)
+
+        if cmdlib_needed(*sources):
+            n = _stage_cmdlib(base, wiz, sources)
+            if n is None:
+                print("[wcb] this Wizard loads cmdlib/ and its manifest could not be read -- refusing a partial update")
+                return 1
+            got += n
 
         # ".../Wizard" -> ".../Images", the sibling the page reaches with "..".
         img_base = base.rsplit("/", 1)[0] + "/Images"
@@ -426,8 +529,7 @@ def fetch_wcb(base: str, check: bool, force: bool) -> int:
         # The list, plus anything the fetched Wizard names that the list lacks:
         # a picture missing from the bundle is a broken image in the app while the
         # published site looks fine, which is how two went unnoticed.
-        named = image_refs(*((wiz / n).read_bytes() for n in WCB_FILES
-                             if n.endswith((".html", ".js", ".css"))))
+        named = image_refs(*sources)
         extra = [n for n in named if n not in WCB_IMAGES]
         for name in extra:
             print(f"  Images/{name}: the Wizard uses it and WCB_IMAGES does not list "
@@ -556,9 +658,12 @@ def _fetch_navicore(base: str, check: bool, force: bool) -> int:
     remote = dtg_of(index_html)
     print(f"published: {remote}")
 
-    if remote == have and not force:
+    missing = _missing_from(WEBUI) if remote == have else []
+    if remote == have and not force and not missing:
         print("up to date")
         return 0
+    if missing:
+        print(f"the bundled copy lacks {', '.join(missing)} - fetching it whole again")
     if check:
         print("update available (run without --check to apply)")
         return 0
@@ -567,8 +672,12 @@ def _fetch_navicore(base: str, check: bool, force: bool) -> int:
     try:
         (staged / "index.html").write_bytes(index_bytes)   # bytes, never text
         got = 1
-        for name in ROOT_FILES[1:]:
-            (staged / name).write_bytes(get(f"{base}/{name}"))
+        # ROOT_FILES, plus whatever else index.html loads (page_refs).
+        names = ROOT_FILES[1:] + [n for n in page_refs(index_bytes) if n not in ROOT_FILES]
+        for name in names:
+            dest = staged / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(get(f"{base}/{name}"))
             got += 1
 
         # ".../config_tool" -> ".../Images"
@@ -584,23 +693,12 @@ def _fetch_navicore(base: str, check: bool, force: bool) -> int:
                 # first place.
                 print(f"  could not fetch Images/{name}: {type(e).__name__}")
 
-        names = cmdlib_names(base)
-        if not names:
+        n = _stage_cmdlib(base, staged, _page_sources(staged, ["index.html"] + names))
+        if n is None:
             # Refuse rather than ship a UI with a stale library beside it.
             print("could not read the cmdlib manifest -- refusing a partial update")
             return 1
-        (staged / "cmdlib").mkdir()
-        for n in names:
-            dest = staged / "cmdlib" / n
-            # Belt and braces: even with _safe_relname above, assert the resolved
-            # path really is inside the staging tree before creating anything.
-            root = (staged / "cmdlib").resolve()
-            if not str(dest.resolve()).startswith(str(root)):
-                print(f"  refusing to write outside the bundle: {n!r}")
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(get(f"{base}/cmdlib/{n}"))
-            got += 1
+        got += n
 
         # Swap only now that everything arrived.
         backup = WEBUI.with_suffix(".prev")
