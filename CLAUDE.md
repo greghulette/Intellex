@@ -409,8 +409,23 @@ sends it to api.github.com only) - a shared runner has no unauthenticated quota 
 SHA256SUMS.txt**; a release without one is not offered. The new process is started with
 `--after-update`: app.py then retries the port while the old one ends (TIME_WAIT included)
 and the launcher says "updated from X" once. The check runs once at launch in the background
-(cached an hour - the API allows 60 unauthenticated calls an hour), never when offline, and
-never installs: only the button does, after an in-page confirm, and not while a flash runs.
+(cached an hour), never when offline, and never installs: only the button does, after an
+in-page confirm, and not while a flash runs.
+
+**The update check, the update and the branch list never use the REST API (api.github.com).**
+The API allows 60 unauthenticated calls an hour per *public address*. On a phone hotspot that
+address belongs to the carrier, and through its NAT64 gateway it can be shared with other
+subscribers. On Greg's Google Fi hotspot every check failed "403 rate limit exceeded"
+(2026-10-21). So:
+- `selfupdate` reads the latest tag from where `github.com/<repo>/releases/latest` redirects
+  (`_latest_tag`, not followed).
+- It takes this computer's build from the release's `SHA256SUMS.txt`, and downloads from
+  `github.com/<repo>/releases/download/<tag>/<file>`.
+- `branchlist` reads git's ref advertisement (`<repo>.git/info/refs?service=git-upload-pack`,
+  what `git ls-remote` uses).
+
+None of these count against that limit. A new GitHub caller should do the same where it can.
+Listing a branch's firmware files still needs the API (`flash.py`, `wcb_flash.py`, `ghproxy.py`).
 
 `version.info()` reads `build_stamp.py` **only in a frozen app**: the build scripts leave one in
 `src/`, and a checkout that had ever been built reported itself as that build forever after.
@@ -647,9 +662,11 @@ python tools/smoke_test_hooks.py
 # (a branch's new script, its cmdlib/ vendors) and refetches a same-stamp copy
 # that lacks one; the host calls such a copy incomplete and repairs it at start;
 # Update Intellex starts the new copy in a fresh environment, and app.py
-# relaunches one that an older Intellex started the bad way. Run after touching
-# fetch_webui.py, webfiles.py, the host's webui-version or tools repair,
-# selfupdate.restart_now, proc.fresh_app_env or app.py's top.
+# relaunches one that an older Intellex started the bad way; the release check
+# and the branch list read github.com's own links, never api.github.com. Run
+# after touching fetch_webui.py, webfiles.py, the host's webui-version or tools
+# repair, selfupdate (check, install, restart_now), branchlist, proc.fresh_app_env
+# or app.py's top.
 python tools/smoke_updates.py
 
 # The docs viewer, end to end: fetch nothing, render everything already on

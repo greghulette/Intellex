@@ -19,6 +19,10 @@ No network, no window. Checked against the REAL modules:
     U5  host.py            /_api/webui-version calls a copy missing a file its page loads incomplete and stale at
                            the published stamp; the startup repair fetches that tool alone, whole, records it for the
                            launcher to tell open pages, and leaves a copy it could not fetch saying incomplete
+    U6  no REST API        the release check and the branch list read github.com's own links (a local stand-in
+                           here): the latest tag from where /releases/latest redirects, this computer's build from
+                           the release's SHA256SUMS.txt, the branches from git's ref advertisement - and never ask
+                           api.github.com, whose 60 calls an hour a phone hotspot shares with strangers
 
 WHY THESE (2026-10-20)
 U2: with WCB on seq-builder, Update tools bundled that Wizard from a fixed list, without seq-builder.js,
@@ -314,6 +318,98 @@ finally:
         setattr(host, k, v)
     host._tools_repaired.clear()
     shutil.rmtree(tmp5, ignore_errors=True)
+
+# ── U6 ─────────────────────────────────────────────────────────────────────
+# 2026-10-21, on a Google Fi hotspot: "Intellex 0.2.3 - HTTPError: HTTP Error 403: rate limit exceeded" on every check.
+import http.server  # noqa: E402
+import threading    # noqa: E402
+
+import branchlist   # noqa: E402
+import version      # noqa: E402
+
+
+def pkt(s: bytes) -> bytes:
+    return b"%04x" % (len(s) + 4) + s
+
+
+adv = (pkt(b"# service=git-upload-pack\n") + b"0000" + pkt(b"a" * 40 + b" HEAD\0multi_ack symref=HEAD:refs/heads/main\n")
+       + pkt(b"b" * 40 + b" refs/heads/main\n") + pkt(b"c" * 40 + b" refs/heads/seq-builder\n")
+       + pkt(b"d" * 40 + b" refs/pull/7/head\n") + pkt(b"e" * 40 + b" refs/tags/v7.0.0\n") + b"0000")
+check(branchlist._heads(adv) == ["main", "seq-builder"], f"U6 branches from a ref advertisement: {branchlist._heads(adv)}")
+
+asked: list = []
+site = {"latest": None, "sums": b""}
+
+
+class GH(http.server.BaseHTTPRequestHandler):
+    def _go(self, body_too):
+        asked.append(self.path)
+        body, code, where = b"", 404, None
+        if self.path == "/greghulette/Intellex/releases/latest":
+            code = 302
+            where = f"/greghulette/Intellex/releases/tag/{site['latest']}" if site["latest"] else "/greghulette/Intellex/releases"
+        elif self.path.endswith("/SHA256SUMS.txt") and site["sums"]:
+            body, code = site["sums"], 200
+        self.send_response(code)
+        if where:
+            self.send_header("Location", where)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body_too:
+            self.wfile.write(body)
+
+    def do_GET(self):
+        self._go(True)
+
+    def do_HEAD(self):
+        self._go(False)
+
+    def log_message(self, *a):
+        pass
+
+
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), GH)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+tmp6 = pathlib.Path(tempfile.mkdtemp(prefix="intellex-smoke-rel-"))
+saved6 = (selfupdate.WEB, selfupdate.mode, selfupdate._cache_file, version.VERSION, os.environ.get("INTELLEX_OFFLINE"))
+try:
+    selfupdate.WEB = f"http://127.0.0.1:{srv.server_address[1]}"
+    selfupdate.mode = lambda: "windows"
+    selfupdate._cache_file = lambda: tmp6 / "app_update.json"
+    os.environ["INTELLEX_OFFLINE"] = ""
+    version.VERSION = "0.2.3"
+    r = selfupdate._check_release(True)
+    check(r.get("reason") == "no Intellex release has been published yet", f"U6 no release: {r}")
+    site.update(latest="v0.2.4", sums=b"0" * 64 + b"  Intellex-0.2.4-windows.exe\n" + b"1" * 64 + b"  Intellex-0.2.4-macos-arm64.zip\n")
+    r = selfupdate._check_release(True)
+    check(r.get("available") and r.get("asset") == "Intellex-0.2.4-windows.exe" and r.get("latest") == "0.2.4",
+          f"U6 the newer release found from the redirect, its build for this computer from SHA256SUMS.txt: {r}")
+    check(selfupdate._release_files("0.2.4", r.get("asset", "")) == {
+        "Intellex-0.2.4-windows.exe": f"{selfupdate.WEB}/greghulette/Intellex/releases/download/v0.2.4/Intellex-0.2.4-windows.exe",
+        "SHA256SUMS.txt": f"{selfupdate.WEB}/greghulette/Intellex/releases/download/v0.2.4/SHA256SUMS.txt"},
+          "U6 the install downloads from github.com's release links")
+    site["sums"] = b"0" * 64 + b"  Intellex-0.2.4-macos-arm64.zip\n"
+    r = selfupdate._check_release(True)
+    check(not r.get("available") and "no build for this computer" in r.get("reason", ""), f"U6 no build for it: {r}")
+    site["sums"] = b""
+    r = selfupdate._check_release(True)
+    check(not r.get("available") and "SHA256SUMS.txt" in r.get("reason", ""), f"U6 no checksums: {r}")
+    version.VERSION = "0.2.4"
+    site["sums"] = b"0" * 64 + b"  Intellex-0.2.4-windows.exe\n"
+    r = selfupdate._check_release(True)
+    check(r.get("reason") == "up to date" and not r.get("available"), f"U6 the same version: {r}")
+    import inspect  # noqa: E402
+    srcs = inspect.getsource(selfupdate) + inspect.getsource(branchlist)
+    check("api.github.com" not in srcs.replace("not the REST API", ""),
+          "U6 neither selfupdate.py nor branchlist.py names api.github.com")
+finally:
+    selfupdate.WEB, selfupdate.mode, selfupdate._cache_file, version.VERSION, off6 = saved6
+    if off6 is None:
+        os.environ.pop("INTELLEX_OFFLINE", None)
+    else:
+        os.environ["INTELLEX_OFFLINE"] = off6
+    srv.shutdown()
+    shutil.rmtree(tmp6, ignore_errors=True)
 
 print()
 print("PASSED" if not failures else f"FAILED: {len(failures)} check(s)")

@@ -34,10 +34,6 @@ import paths
 import settings
 import wcb_flash
 
-# GitHub pages at 30 by default; branch counts here are far below that, and one
-# request per product is the point.
-_PER_PAGE = 100
-
 # Long, because this list changes rarely and the cost of being wrong is small --
 # a branch created minutes ago is missing until the next refresh, and "Other..."
 # still reaches it. Being aggressive here would mean a network round trip every
@@ -81,15 +77,34 @@ def _write_cache(data: dict) -> None:
 
 
 def _fetch(owner: str, repo: str, timeout: float = 8.0) -> list[str]:
-    url = f"https://api.github.com/repos/{owner}/{repo}/branches?per_page={_PER_PAGE}"
-    req = urllib.request.Request(url, headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "Intellex",
-    })
+    """The repo's branches, from git's own ref advertisement - what `git ls-remote --heads` reads - NOT the REST API.
+
+    The API allows 60 unauthenticated calls an hour per public address, and on a phone hotspot that address is the
+    carrier's, shared with its other subscribers: on Greg's (Google Fi) the list came back "HTTPError" for both repos
+    (2026-10-21). github.com serves git's smart-HTTP endpoint outside that limit, in one request per repo however
+    many branches it has."""
+    url = f"https://github.com/{owner}/{repo}.git/info/refs?service=git-upload-pack"
+    req = urllib.request.Request(url, headers={"User-Agent": "git/2 (Intellex)"})
     # Same empty-CA-store trap as every other HTTPS caller here; see src/certs.py.
     with urllib.request.urlopen(req, timeout=timeout,
                                 context=certs.context()) as r:
-        return [b["name"] for b in json.loads(r.read().decode("utf-8"))]
+        return _heads(r.read())
+
+
+def _heads(data: bytes) -> list[str]:
+    """The branch names in a git-upload-pack ref advertisement: pkt-lines of "<4 hex length><sha> <ref>[\\0caps]\\n",
+    with "0000" flushes between sections. refs/heads/<name> only - tags and pull refs are not branches."""
+    out, i = [], 0
+    while i + 4 <= len(data):
+        n = int(data[i:i + 4], 16)
+        if n < 4:                                # a flush (0000) or a delimiter: no payload
+            i += 4
+            continue
+        sha_ref = data[i + 4:i + n].split(b"\0", 1)[0].rstrip(b"\n").split(b" ", 1)
+        i += n
+        if len(sha_ref) == 2 and sha_ref[1].startswith(b"refs/heads/"):
+            out.append(sha_ref[1][len(b"refs/heads/"):].decode("utf-8", "replace"))
+    return out
 
 
 def branches(force: bool = False) -> dict:

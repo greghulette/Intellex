@@ -26,9 +26,11 @@ THREE WAYS IT RUNS, THREE WAYS IT UPDATES (mode())
 
 THE CHECK runs once at launch, in the background (host.py _start_bg), and only when GitHub
 is reachable: offline it records why and says nothing more. It never installs anything; the
-launcher's Update Intellex button does that, with its own confirm. A result is reused for
-CHECK_TTL_S so launching three times in a row does not spend three of the hourly 60
-unauthenticated API calls.
+launcher's Update Intellex button does that, with its own confirm. It reads github.com's own
+release links, not the REST API (WEB, _latest_tag): the API's 60 unauthenticated calls an hour
+are per public address, and on a phone hotspot that address is the carrier's, shared with
+strangers (2026-10-21, Google Fi: "403 rate limit exceeded" on every check). A result is still
+reused for CHECK_TTL_S, so launching three times in a row asks once.
 
 NOTHING IS REPLACED UNTIL THE NEW COPY IS WHOLE AND VERIFIED. The download goes to a
 .part file, its SHA-256 must match the release's SHA256SUMS.txt (a release without one is
@@ -46,12 +48,14 @@ import json
 import os
 import pathlib
 import platform
+import re
 import shutil
 import sys
 import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Callable, Optional
 
@@ -61,7 +65,12 @@ import proc
 import version
 
 REPO = "greghulette/Intellex"
-API = "https://api.github.com"
+# Releases are found and fetched through github.com's own links, NOT the REST API: <WEB>/<REPO>/releases/latest
+# redirects to the newest release's tag, and <WEB>/<REPO>/releases/download/<tag>/<file> serves its files. The API
+# allows 60 unauthenticated calls an hour per public address, and a phone hotspot's address is the carrier's, shared
+# with its other subscribers: on Greg's (Google Fi) the check answered "HTTP Error 403: rate limit exceeded" again and
+# again (2026-10-21). These links are not counted against that.
+WEB = "https://github.com"
 CHECK_TTL_S = 3600
 AFTER_UPDATE = "--after-update"
 SUMS = "SHA256SUMS.txt"
@@ -185,28 +194,34 @@ def _check_release(force: bool) -> dict:
         except (OSError, ValueError, KeyError):
             pass
     try:
-        rel = _get_json(f"{API}/repos/{REPO}/releases/latest")
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return {"reason": "no Intellex release has been published yet"}
-        raise
+        tag = _latest_tag()
     except (urllib.error.URLError, OSError) as e:
+        if isinstance(e, urllib.error.HTTPError):
+            raise
         return {"reason": f"GitHub is not reachable ({getattr(e, 'reason', e)})"}
-    tag = str(rel.get("tag_name") or "")
+    if not tag:
+        return {"reason": "no Intellex release has been published yet"}
     latest = tag[1:] if tag.startswith("v") else tag
     cur, new = version.parse(version.VERSION), version.parse(latest)
-    out = {"latest": latest, "notes_url": rel.get("html_url", ""), "available": False}
+    out = {"latest": latest, "notes_url": f"{WEB}/{REPO}/releases/tag/{urllib.parse.quote(tag)}", "available": False}
     if not new:
         out["reason"] = f"the latest release's tag {tag!r} is not a version"
     elif not cur or new <= cur:
         out["reason"] = "up to date"
     else:
-        names = {a.get("name"): a for a in rel.get("assets") or []}
+        # The release's SHA256SUMS.txt names every file it carries (release.yml writes it from them), and the
+        # download is checked against it anyway: what it does not list cannot be installed.
         want = asset_name(latest, m)
-        if want not in names:
-            out["reason"] = f"release {latest} has no build for this computer ({want})"
-        elif SUMS not in names:
+        try:
+            listed = _sums_names(_get_bytes(_release_url(tag, SUMS), timeout=20))
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+            listed = None
+        if listed is None:
             out["reason"] = f"release {latest} has no {SUMS} to check a download against"
+        elif want not in listed:
+            out["reason"] = f"release {latest} has no build for this computer ({want})"
         else:
             out.update(available=True, asset=want)
     try:
@@ -217,10 +232,49 @@ def _check_release(force: bool) -> dict:
     return out
 
 
-def _get_json(url: str):
-    req = urllib.request.Request(url, headers={"User-Agent": "Intellex", "Accept": "application/vnd.github+json"})
-    with urlopen(req, timeout=20, context=certs.context()) as r:
-        return json.loads(r.read().decode("utf-8"))
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Hand a redirect back as an HTTPError carrying its Location, instead of following it."""
+
+    def redirect_request(self, *_a, **_k):
+        return None
+
+
+def _latest_tag() -> str:
+    """The newest release's tag ("v0.2.3"), read from where <WEB>/<REPO>/releases/latest redirects (.../tag/<tag>).
+    '' when there is no release: GitHub then redirects to the releases list, or answers 404."""
+    opener = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=certs.context()))
+    req = urllib.request.Request(f"{WEB}/{REPO}/releases/latest", method="HEAD", headers={"User-Agent": "Intellex"})
+    try:
+        with opener.open(req, timeout=20) as r:
+            where = r.geturl()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return ""
+        if e.code not in (301, 302, 303, 307, 308):
+            raise
+        where = e.headers.get("Location", "")
+    m = re.search(r"/releases/tag/([^/?#]+)", where or "")
+    return urllib.parse.unquote(m.group(1)) if m else ""
+
+
+def _release_url(tag: str, name: str) -> str:
+    return f"{WEB}/{REPO}/releases/download/{urllib.parse.quote(tag)}/{urllib.parse.quote(name)}"
+
+
+def _get_bytes(url: str, timeout: float = 60.0) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "Intellex", "Accept": "application/octet-stream"})
+    with urlopen(req, timeout=timeout, context=certs.context()) as r:
+        return r.read()
+
+
+def _sums_names(text: bytes) -> set:
+    """The file names a SHA256SUMS.txt lists ("<sha256>  [*]<name>" per line)."""
+    out = set()
+    for line in text.decode("utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            out.add(parts[1].lstrip("*"))
+    return out
 
 
 def _git(*args, timeout: float = 60.0):
@@ -308,9 +362,11 @@ def _record_update() -> None:
         pass
 
 
-def _release_files(ver: str) -> dict:
-    rel = _get_json(f"{API}/repos/{REPO}/releases/tags/v{ver}")
-    return {a.get("name"): a.get("browser_download_url") for a in rel.get("assets") or []}
+def _release_files(ver: str, name: str) -> dict:
+    """{name: url} for the two files an install needs: this computer's build (`name`, which the check chose) and
+    SHA256SUMS.txt - github.com links, not the API (see WEB). A build the release lacks is caught by the check (it
+    reads SHA256SUMS.txt) and again by _download_verified, which refuses one SHA256SUMS.txt does not list."""
+    return {n: _release_url(f"v{ver}", n) for n in (name, SUMS) if n}
 
 
 def _download(url: str, dest: pathlib.Path, label: str) -> None:
@@ -343,7 +399,7 @@ def _download_verified() -> pathlib.Path:
     if offline():
         raise UpdateError("offline mode (INTELLEX_OFFLINE): nothing downloaded")
     _step(f"asking GitHub for release {ver}", 0)
-    files = _release_files(ver)
+    files = _release_files(ver, name)
     if name not in files or SUMS not in files:
         raise UpdateError(f"release {ver} has no {name if name not in files else SUMS}")
     d = _updates_dir()
