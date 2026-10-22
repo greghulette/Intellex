@@ -38,6 +38,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sys
 import socket
 from typing import Optional
@@ -313,8 +314,15 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
     Asking the DOORWAY what it is, rather than bouncing a ping off a droid behind
     it, also means it is identified when no droid is powered at all.
 
+    A BOARD WITH AN ACCESS TOKEN answers all three with [AUTH:REQUIRED] and runs
+    none of them, so the probe logs in exactly as an attach does (wsauth.exchange,
+    the token saved for that board) and asks again. With no token to send, or one
+    the board refused, it is reported as kind "locked" with what the launcher needs
+    to ask for one ("auth": wsauth.AuthNeeded.as_dict()) -- present, but unable to
+    say what it is: "not a droid" would be the wrong thing to tell the user.
+
     Returns {"kind", "version", "relayId", "alias", "peers"}, where kind is
-    navicore | relay | wcb | unknown.
+    navicore | relay | wcb | locked | unknown, plus "auth" for locked.
     """
     try:
         from websockets.sync.client import connect
@@ -335,11 +343,45 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
             #
             # TRAILING NEWLINE IS REQUIRED: both firmwares frame on it, so a bare
             # message is buffered forever waiting for a terminator.
+            #
+            # Sent before knowing whether the board wants a token, rather than after
+            # waiting for a prompt that a board without one never sends: a board
+            # with one drops all three unexecuted, which costs nothing, and
+            # _logged_in_lines() asks again once logged in.
             for q in PROBE_LINES:
                 ws.send(q)
-            return classify(_read_lines(ws, timeout * 2))
+            gate: dict = {}
+            info = classify(_logged_in_lines(ws, host, timeout * 2, gate))
+            if gate.get("need"):
+                return dict(_unknown(), kind="locked", auth=gate["need"])
+            return info
     except Exception:
         return _unknown()
+
+
+def _logged_in_lines(ws, host: str, seconds: float, gate: dict):
+    """_read_lines(), but a board that prompts for its access token is logged in to
+    first and the probe asked again. Records an unanswerable prompt in gate["need"]
+    and ends, which classify() reads as nothing identified.
+
+    The prompt arrives ahead of anything else (the board mirrors nothing before a
+    login), and its answers to the three lines it dropped come before [AUTH:OK], so
+    exchange() reads past them and nothing of theirs reaches classify().
+    """
+    import wsauth
+    for line in _read_lines(ws, seconds):
+        if line != wsauth.AUTH_REQUIRED:
+            yield line
+            continue
+        try:
+            wsauth.exchange(ws, host, wsauth.AuthLines())
+        except wsauth.AuthNeeded as e:
+            gate["need"] = e.as_dict()
+            return
+        for q in PROBE_LINES:
+            ws.send(q)
+        yield from _read_lines(ws, seconds)
+        return
 
 
 # The three questions, each newline-terminated -- both firmwares frame on it, so a
@@ -479,7 +521,7 @@ def scan(candidates: Optional[list[str]] = None) -> list[dict]:
             "via": via,                     # our source address = which adapter
             "routable": via is not None,
             "reachable": reachable,         # TCP 80 answered
-            "kind": info["kind"],           # navicore | relay | wcb | unknown
+            "kind": info["kind"],           # navicore | relay | wcb | locked | unknown
             "isNaviCore": info["kind"] == "navicore",
             "isRelay": info["kind"] == "relay",
             "isWcb": info["kind"] == "wcb",
@@ -487,6 +529,11 @@ def scan(candidates: Optional[list[str]] = None) -> list[dict]:
             # launcher cares about "can I manage boards through this" far more
             # often than about which box is doing it.
             "isMesh": info["kind"] in ("relay", "wcb"),
+            # A board that wants its access token: there, but it cannot say what it
+            # is until it has one. "auth" is what the launcher sends back with the
+            # token the user types (wsauth.AuthNeeded.as_dict(); never a token).
+            "isLocked": info["kind"] == "locked",
+            "auth": info.get("auth"),
             "version": info["version"],
             "relayId": info["relayId"],
             "alias": info["alias"],
@@ -572,6 +619,111 @@ def ssid_for_host(host: str) -> Optional[str]:
             on_subnet = iface
 
     return wlan.get(on_subnet) if on_subnet else None
+
+
+# ── Which BOARD answers at an address ───────────────────────────────────────
+# One MAC in the forms the three ARP reports print it: Windows 24-0a-c4-12-34-56,
+# macOS 24:a:c4:12:34:56 (leading zeros dropped), Linux 24:0a:c4:12:34:56.
+_MAC_RE = re.compile(r"[0-9A-Fa-f]{1,2}(?:[:-][0-9A-Fa-f]{1,2}){5}")
+_NOT_A_BOARD = {"00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"}
+
+
+def _norm_mac(s: str) -> Optional[str]:
+    if not _MAC_RE.fullmatch(s or ""):
+        return None
+    mac = ":".join(p.zfill(2) for p in re.split("[:-]", s.lower()))
+    return None if mac in _NOT_A_BOARD else mac
+
+
+def _one(macs) -> Optional[str]:
+    """The MAC when the report names exactly one; None when it names none or
+    several, which an attach cannot choose between."""
+    found = {m for m in macs if m}
+    return found.pop() if len(found) == 1 else None
+
+
+def _mac_from_arp_windows(text: str, host: str, via: Optional[str]) -> Optional[str]:
+    """`arp -a <host>` on Windows: one section per interface, headed by that
+    interface's address and ` --- 0x<index>` (the word before it is translated,
+    the rest is not). With two adapters on two boards' access points -- the bench
+    has exactly that -- both sections list 192.168.4.1, so the section of the
+    interface that routes to `host` (`via`) is the one that counts."""
+    sections: dict = {}
+    cur = None
+    for line in (text or "").splitlines():
+        m = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+-{3}\s+0x", line)
+        if m:
+            cur = m.group(1)
+            sections.setdefault(cur, [])
+            continue
+        parts = line.split()
+        if cur is not None and len(parts) >= 2 and parts[0] == host:
+            sections[cur].append(_norm_mac(parts[1]))
+    if via and via in sections:
+        return _one(sections[via])
+    return _one(m for macs in sections.values() for m in macs)
+
+
+def _mac_from_arp_bsd(text: str, host: str) -> Optional[str]:
+    """`arp -n <host>` on macOS: `? (192.168.4.1) at 24:a:c4:12:34:56 on en6
+    ifscope [ethernet]`, or `(incomplete)` / `-- no entry`."""
+    pat = re.compile(r"\(" + re.escape(host) + r"\)\s+at\s+(\S+)")
+    return _one(_norm_mac(m.group(1)) for m in pat.finditer(text or ""))
+
+
+def _mac_from_proc_arp(text: str, host: str) -> Optional[str]:
+    """/proc/net/arp on Linux: IP, HW type, flags, HW address, mask, device;
+    flags 0x0 is an entry still resolving."""
+    macs = []
+    for line in (text or "").splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == host and parts[2] != "0x0":
+            macs.append(_norm_mac(parts[3]))
+    return _one(macs)
+
+
+def mac_for_host(host: str) -> Optional[str]:
+    """The hardware address of the board at `host`, from this computer's ARP cache.
+
+    WHY: an ACCESS TOKEN BELONGS TO A BOARD, and nothing else here names one before
+    it has logged in. Every access point is 192.168.4.1, so the address is shared by
+    every droid; the network name is shared by every board that has joined the same
+    router (the case the token exists for), and macOS will not say it at all
+    (ssid_for_host). The MAC is the board's own, on every platform. wsauth.droid_key
+    has the rest of the reasoning.
+
+    Asked while a connection to `host` is open, so the entry is there and is the one
+    that connection uses -- the OS cannot reach a host on its own subnet without it.
+    Only for a host on a subnet this computer has an address on (the /24 test used
+    throughout this module): beyond a router the cache would name the ROUTER, and
+    every board behind it would share one key.
+
+    None when it cannot tell: not IPv4, loopback, not on a local subnet, no entry,
+    more than one entry, or the command failed. The caller falls back to a weaker key.
+    """
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if ip.version != 4 or ip.is_loopback:
+        return None
+    via = local_ip_for(host)
+    if not via or via.rsplit(".", 1)[0] != host.rsplit(".", 1)[0]:
+        return None
+    import subprocess
+    import proc
+    try:
+        if sys.platform == "win32":
+            r = proc.run(["arp", "-a", host], capture_output=True, text=True, timeout=5, check=False)
+            return _mac_from_arp_windows(r.stdout, host, via)
+        if sys.platform == "darwin":
+            r = proc.run(["arp", "-n", host], capture_output=True, text=True, timeout=5, check=False)
+            return _mac_from_arp_bsd(r.stdout, host)
+        with open("/proc/net/arp", encoding="ascii", errors="replace") as f:
+            return _mac_from_proc_arp(f.read(), host)
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def wifi_bounce(ssid: str = "NaviCore") -> tuple[bool, str]:
@@ -802,6 +954,8 @@ def _hint(via: Optional[str], reachable: bool, info: dict) -> str:
         if kind == "wcb" and "wcb" in who.lower():
             tag = f" (#{rid})" if rid else ""
         return f"{who}{tag}{behind}"
+    if kind == "locked":
+        return (info.get("auth") or {}).get("message") or "this droid needs its access token"
     if reachable:
         return ("something answers on port 80, but it is not a NaviCore, "
                 "a WCB or a management relay")

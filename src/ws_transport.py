@@ -12,13 +12,21 @@ output arrives as several frames that do not align to line boundaries. Since the
 consumer wants a byte stream (contract 1), frames are simply concatenated in
 arrival order and handed up as-is -- the same reassembly the serial path gets for
 free from the wire.
+
+The other thing a socket has that a cable does not: an ACCESS TOKEN. A board with
+one set runs nothing a session sends until it logs in, so open() logs in before it
+returns -- the link is not attached until the board has accepted the token -- and
+the [AUTH:...] lines that takes never reach the page. src/wsauth.py has the
+protocol and the rules (answered, never volunteered; one try per token).
 """
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from typing import Optional
 
+import wsauth
 from transport import Transport, TransportError, DataCallback, LostCallback, ws_allowed
 
 DEFAULT_PATH = "/ws"
@@ -50,6 +58,10 @@ class WebSocketTransport(Transport):
         self._reader: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._send_lock = threading.Lock()
+        # The [AUTH:...] lines come out of the stream here, for the life of the link
+        # (wsauth.AuthLines), and whether this session logged in.
+        self._auth_lines = wsauth.AuthLines()
+        self._logged_in = False
 
     # -- lifecycle ---------------------------------------------------------------
     def open(self) -> None:
@@ -95,6 +107,29 @@ class WebSocketTransport(Transport):
                                close_timeout=_CLOSE_TIMEOUT_S)
         except Exception as e:
             raise TransportError(f"cannot connect {self._url}: {type(e).__name__}: {e}") from e
+
+        # LOG IN BEFORE ANYTHING IS PUBLISHED. open() returning is what makes the
+        # host report "attached", and the tools handshake the moment it does: a PING
+        # sent before the login is dropped by a board with a token and answered with
+        # a prompt, and the NaviCore tool takes a handshake with no PONG for a bridge
+        # (rule 10). So the board's first word is waited for here, on the reader's
+        # behalf -- no reader is running yet to compete for it.
+        self._auth_lines = wsauth.AuthLines()
+        try:
+            first, self._logged_in = wsauth.login(self._ws, self._host, self._auth_lines)
+        except TransportError:
+            # AuthNeeded included: no token to send, or the board refused it (and
+            # is closing the session itself). Nothing is attached either way.
+            ws, self._ws = self._ws, None
+            with contextlib.suppress(Exception):
+                ws.close()
+            raise
+        if first:
+            # What a board with no token said while we waited for a prompt -- the
+            # start of its console mirror -- goes up first, in order, before the
+            # reader delivers what follows it.
+            with contextlib.suppress(Exception):
+                self._on_data(first)
 
         self._stop.clear()
         self._reader = threading.Thread(target=self._read_loop,
@@ -166,6 +201,22 @@ class WebSocketTransport(Transport):
             # consumer's streaming decoder and line assembler handle both transports
             # identically, which is the entire point.
             chunk = msg.encode("utf-8") if isinstance(msg, str) else bytes(msg)
+            # Whole [AUTH:...] lines out, every other byte through untouched -- the
+            # filter cuts only at newlines, so contract 1 still holds (wsauth.AuthLines).
+            chunk, found = self._auth_lines.feed(chunk)
+            if wsauth.AUTH_REQUIRED in found and not self._logged_in:
+                # A LATE PROMPT: the board asked after open() stopped waiting, so the
+                # host has already reported the link attached and the page may have
+                # sent its handshake into a board that dropped it. Logging in now
+                # would leave the tool with that lost handshake, so drop the link: the
+                # page re-handshakes after the reconnect, as after any reboot, and the
+                # next open() waits longer for this host (wsauth.note_slow).
+                wsauth.note_slow(self._host)
+                if not self._stop.is_set():
+                    self.close()
+                    self._fire_lost(f"{self._host} asked for its access token after the link was up "
+                                    "- reconnecting to log in")
+                return
             if not chunk:
                 continue
             try:

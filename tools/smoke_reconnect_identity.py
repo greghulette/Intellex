@@ -22,6 +22,11 @@ the host reports attached, so a correction applied after the attach races it.
 
 Also covers wifi_bounce()'s failure message, which advised saving a profile that
 was already saved while the adapter sat on a different board's network.
+
+And a board that wants its ACCESS TOKEN (src/wsauth.py): moved onto one, the loop
+holds and asks for that board's token rather than attaching or guessing; while it
+holds it asks the OS nothing and opens nothing, until a token is saved or
+AUTH_RECHECK_S has passed. The login itself is tools/smoke_ws_auth.py's.
 """
 from __future__ import annotations
 
@@ -45,6 +50,7 @@ if hasattr(sys.stdout, "reconfigure"):
 import discover                                            # noqa: E402
 import host as hostmod                                     # noqa: E402
 import proc                                                # noqa: E402
+import wsauth                                              # noqa: E402
 
 REAL_WIFI_BOUNCE = discover.wifi_bounce
 HOST = "192.168.4.1"
@@ -55,9 +61,9 @@ class FakeOS:
     """The route, the SSID and the probe, answering whatever a case sets up."""
 
     def __init__(self, via=ON_SUBNET, ssid="WCB1", kind="unknown", relay_id=None,
-                 alias=None, on_probe=None, ssid_raises=False):
+                 alias=None, on_probe=None, ssid_raises=False, auth=None):
         self.via, self.ssid, self.kind = via, ssid, kind
-        self.relay_id, self.alias = relay_id, alias
+        self.relay_id, self.alias, self.auth = relay_id, alias, auth
         self.on_probe, self.ssid_raises = on_probe, ssid_raises
         self.calls = []
         discover.local_ip_for = self._route
@@ -80,8 +86,11 @@ class FakeOS:
         self.calls.append("probe")
         if self.on_probe:
             self.on_probe()
-        return {"kind": self.kind, "version": None, "relayId": self.relay_id,
+        info = {"kind": self.kind, "version": None, "relayId": self.relay_id,
                 "alias": self.alias, "peers": []}
+        if self.auth is not None:
+            info["auth"] = self.auth          # discover.probe() of a locked board
+        return info
 
     def _bounce(self, _ssid="NaviCore"):
         self.calls.append("bounce")
@@ -99,6 +108,9 @@ class FakeBridge:
         # host.Bridge's reconnect counts and the session that owns them. Nothing here
         # attaches anew or detaches, so the session never moves.
         self.session, self.retry_fails, self.bounce_fails = 0, 0, 0
+        # host.Bridge's access-token hold (Bridge.note_auth): None, or what the board
+        # asked for, which the loop reads before anything else on every pass.
+        self.auth_needed = None
 
     @property
     def attached(self):
@@ -124,6 +136,15 @@ class FakeBridge:
 
     def _drop(self):
         self._open = False
+
+    def note_auth(self, spec, need, why=""):
+        """As host.Bridge.note_auth: recorded only for the target still wanted."""
+        if self._spec is not spec:
+            return False
+        self.events.append(("auth", need.get("key")))
+        self.auth_needed = dict(need, at=time.monotonic(), seq=1)
+        self.last_error = why or need.get("message", "")
+        return True
 
     def note_failure(self, spec, why, count=False):
         """As host.Bridge.note_failure: recorded (and counted) only for the target still wanted."""
@@ -333,6 +354,74 @@ def loop_a_failing_check_still_reconnects():
     run_loop(b, passes=2)
     want = [("attach", "wcb", hostmod._label_for(wcb1()))]
     return b.events == want, f"events {b.events}"
+
+
+# -- A board that wants its access token ---------------------------------------
+LOCKED = {"key": "mac:24:0a:c4:00:00:02", "label": '"WCB2" (192.168.4.1)', "host": HOST,
+          "why": "missing", "message": '"WCB2" (192.168.4.1) needs its access token'}
+
+
+@case
+def moved_to_a_locked_board_holds_and_asks_for_its_token():
+    FakeOS(ssid="WCB2", kind="locked", auth=dict(LOCKED))
+    got = hostmod._reidentify_if_moved(wcb1()) or {}
+    ok = ("hold" in got and "spec" not in got and (got.get("auth") or {}).get("key") == LOCKED["key"]
+          and "access token" in got["hold"])
+    return ok, f"got {got!r}"
+
+
+@case
+def loop_locked_board_on_a_new_network_asks_never_attaches():
+    FakeOS(ssid="WCB2", kind="locked", auth=dict(LOCKED))
+    b = FakeBridge(wcb1())
+    run_loop(b, passes=3)
+    ok = (b.events == [("auth", LOCKED["key"])] and (b.auth_needed or {}).get("key") == LOCKED["key"]
+          and "access token" in b.last_error)
+    return ok, f"events {b.events}, auth_needed {b.auth_needed!r}, last_error {b.last_error!r}"
+
+
+def _with_can_try(answer, fn):
+    real = wsauth.can_try
+    wsauth.can_try = lambda _key: answer
+    try:
+        return fn()
+    finally:
+        wsauth.can_try = real
+
+
+@case
+def loop_holds_while_there_is_no_token_to_send():
+    # Ahead of the move check: not even the route or the SSID is asked, so a Mac
+    # (which probes on every reattach) opens no session on the board either.
+    def run():
+        os_ = FakeOS(ssid="WCB1", kind="wcb", relay_id=1)
+        b = FakeBridge(wcb1())
+        b.auth_needed = dict(LOCKED, at=time.monotonic(), seq=1)
+        run_loop(b, passes=3)
+        return b.events == [] and os_.calls == [], f"events {b.events}, calls {os_.calls}"
+    return _with_can_try(False, run)
+
+
+@case
+def loop_a_saved_token_ends_the_hold_at_once():
+    def run():
+        FakeOS(ssid="WCB1", kind="wcb", relay_id=1)
+        b = FakeBridge(wcb1())
+        b.auth_needed = dict(LOCKED, at=time.monotonic(), seq=1)
+        run_loop(b, passes=2)
+        return b.events == [("attach", "wcb", hostmod._label_for(wcb1()))], f"events {b.events}"
+    return _with_can_try(True, run)
+
+
+@case
+def loop_the_hold_is_rechecked_after_a_while():
+    def run():
+        FakeOS(ssid="WCB1", kind="wcb", relay_id=1)
+        b = FakeBridge(wcb1())
+        b.auth_needed = dict(LOCKED, at=time.monotonic() - hostmod.AUTH_RECHECK_S - 1, seq=1)
+        run_loop(b, passes=2)
+        return b.events == [("attach", "wcb", hostmod._label_for(wcb1()))], f"events {b.events}"
+    return _with_can_try(False, run)
 
 
 # -- wifi_bounce's failure message --------------------------------------------

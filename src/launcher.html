@@ -166,6 +166,14 @@
   .pick b { font-size:13.5px; font-weight:600; display:block; }
   .pick small { font-size:11.5px; color:var(--muted); line-height:1.4; }
   #actionNote { font-size:12px; color:var(--muted); line-height:1.5; margin-top:10px; }
+  /* The access-token box. Its colour on the edge, like every other state here: amber, the "needs attention" hue. */
+  #authbox { display:none; margin-bottom:10px; padding:10px 12px; border:1.5px solid var(--warn);
+             border-radius:9px; }
+  #authbox .msg { font-size:12.5px; color:var(--strong); line-height:1.45; }
+  #authbox .bar { margin-top:8px; }
+  #authbox input { flex:1; min-width:0; font-family:'IBM Plex Mono',ui-monospace,monospace; }
+  #authnote { font-size:11.5px; color:var(--muted); line-height:1.45; margin-top:6px; }
+  #authnote.err { color:var(--err); }
 
   /* margin-top:auto pins this to the bottom when there is room, and the panel
      scrolls when there is not -- at 800px tall with four view options the
@@ -296,6 +304,18 @@
 
     <div id="sidefoot">
       <div class="sect" style="border-bottom:0">
+        <!-- A droid whose WebSocket wants its access token (src/wsauth.py). Shown for a
+             locked row, an attach the board refused, or a link the host is holding. -->
+        <div id="authbox" role="group" aria-labelledby="authmsg">
+          <div class="msg" id="authmsg"></div>
+          <form class="bar" id="authform" autocomplete="off">
+            <input id="authtok" type="password" spellcheck="false" maxlength="32"
+                   placeholder="access token" aria-label="access token">
+            <button class="btn" id="authsave" type="submit">Save and connect</button>
+          </form>
+          <div id="authnote">The token set on the board, in its WiFi settings. Kept on this computer and
+            sent to that board alone.</div>
+        </div>
         <button class="btn primary" id="go" disabled>Connect and open</button>
         <div id="actionNote"></div>
         <button class="btn" id="back" style="display:none; width:100%; margin-top:8px">Back to the tool</button>
@@ -532,7 +552,9 @@ function selectRow(d) {
 
 function paintSelection() {
   const ok = !!(_sel && _sel.isConnected && _sel._attach);
-  $('go').disabled = !ok;
+  // A locked row has nothing to connect to yet: its token comes first (paintAuthFor).
+  $('go').disabled = !ok || !!_sel._auth;
+  paintAuthFor(ok ? _sel : null);
   if (!ok) {
     $('selTitle').textContent = 'Nothing selected';
     $('selSub').textContent = 'Pick a droid, a WCB or a cable on the left.';
@@ -541,8 +563,110 @@ function paintSelection() {
   }
   $('selTitle').textContent = _sel.querySelector('b').textContent;
   $('selSub').textContent = _sel.querySelector('small').textContent;
-  $('actionNote').textContent =
-    'Opens ' + VIEWS[currentView()].label + ' on ' + _sel._attach.label + '.';
+  $('actionNote').textContent = _sel._auth
+    ? 'Enter its access token: then it can say what it is, and Intellex connects.'
+    : 'Opens ' + VIEWS[currentView()].label + ' on ' + _sel._attach.label + '.';
+}
+
+// ── A droid that wants its access token ─────────────────────────────────────
+// A board whose WebSocket has a token set runs nothing until it is logged in to, and the host does that with the
+// token saved for that board (src/wsauth.py). When there is none, or the board refused it, the host says so -- a
+// locked row from discovery, an attach answered 401, or /_api/status authNeeded while it holds a link -- and this box
+// asks. `_need` is that request ({key, label, host, why, message, seq}) plus `for`, the host it belongs to, and
+// `then`, what happens once the token is saved. The key goes back with the token; the token itself is never shown,
+// logged or kept here once sent.
+let _need = null;
+
+function showAuth(need, forHost, then) {
+  if (!_need || _need.key !== need.key) $('authtok').value = '';
+  _need = Object.assign({}, need, { for: forHost, then });
+  $('authmsg').textContent = need.why === 'rejected'
+    ? (need.label || forHost) + ' refused the saved access token. Enter it again:'
+    : 'This droid needs its access token: ' + (need.label || forHost) + '.';
+  $('authbox').style.display = 'block';
+}
+
+function hideAuth() {
+  _need = null;
+  $('authbox').style.display = 'none';
+  $('authtok').value = '';
+  authNote('');
+}
+
+function authNote(text, err) {
+  const n = $('authnote');
+  n.textContent = text || 'The token set on the board, in its WiFi settings. Kept on this computer and sent to '
+                       + 'that board alone.';
+  n.className = err ? 'err' : '';
+}
+
+// Follows the selection: a locked row asks at once; another row clears a request that belonged to another host. No
+// selection clears nothing: the lists are redrawn empty first on every scan, and a held link's request (opened over
+// it, showBackIfConnected) must survive that.
+function paintAuthFor(r) {
+  const host = r && r._attach && r._attach.body && r._attach.body.host;
+  if (r && r._auth) {
+    if (!_need || _need.key !== r._auth.key || _need.why !== r._auth.why) showAuth(r._auth, host, unlockRow);
+  } else if (_need && r && _need.for !== host) {
+    hideAuth();
+  }
+}
+
+$('authform').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const need = _need;
+  if (!need) return;
+  $('authsave').disabled = true;
+  let r;
+  try {
+    r = await api('/_api/token', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ key: need.key, token: $('authtok').value, label: need.label || '' }),
+    });
+  } catch (_) { r = { ok: false, error: 'the host did not answer' }; }
+  $('authsave').disabled = false;
+  if (!r.ok) { authNote(r.error || 'not saved', true); return; }
+  $('authtok').value = '';
+  authNote('Saved. Logging in…');
+  if (need.then) need.then(need);
+};
+
+// A locked row's token is saved: ask the board again -- it can say what it is now -- and connect to what it turns out
+// to be, so a WCB or a relay gets its doorway role (CLAUDE.md rule 10) rather than an unnamed link.
+async function unlockRow() {
+  await scanWifi();               // re-renders, and reselects the row for the same host
+  if (_sel && _sel.isConnected && _sel._attach && !_sel._auth) {
+    hideAuth();
+    connect(_sel._attach.body, _sel._attach.label);
+  } else if (_sel && _sel._auth) {
+    authNote(_sel._auth.why === 'rejected' ? 'The board refused that token.' : 'It still wants its token.', true);
+  }
+}
+
+// The host holds the link while it waits for a token (host.py AUTH_RECHECK_S) and logs in by itself once one is
+// saved. Watch for that rather than attaching again here, which would race the reconnect loop's own login -- two
+// tries of one token, and with a wrong one two refusals. `seq` tells a NEW refusal from the one already shown.
+async function waitForLogin(need) {
+  const until = Date.now() + 20000;
+  while (Date.now() < until) {
+    await new Promise(res => setTimeout(res, 500));
+    let st;
+    try { st = await api('/_api/status'); } catch (_) { continue; }
+    if (st.attached) {
+      hideAuth();
+      setStatus('connected — opening ' + VIEWS[currentView()].label + '…');
+      openTools();
+      return;
+    }
+    if (!st.wantsLink) { hideAuth(); setStatus('not connected', true); return; }
+    const n = st.authNeeded;
+    if (n && n.seq !== need.seq) {
+      showAuth(n, need.for, waitForLogin);
+      authNote(n.why === 'rejected' ? 'The board refused that token.' : n.message, true);
+      return;
+    }
+  }
+  authNote('Not logged in yet — Intellex keeps trying.', true);
 }
 
 // Re-selects the equivalent row after a rescan, so a refresh mid-decision does not
@@ -716,6 +840,12 @@ async function connect(body, label) {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
   });
+  if (!r.ok && r.authNeeded) {
+    // The board wants its access token. The host holds this target meanwhile and logs in once it is saved.
+    setStatus(r.error, true);
+    showAuth(r.authNeeded, body.host, waitForLogin);
+    return;
+  }
   if (!r.ok) { setStatus(r.error || 'could not connect', true); return; }
   setStatus('connected — opening ' + VIEWS[currentView()].label + '…');
   // Straight to the tool(s). The shim in each auto-connects to what we just attached.
@@ -796,6 +926,17 @@ async function scanWifi() {
           { body: {kind:'ws', host:c.host, role: isWcb ? 'wcb' : 'relay',
                    relayId: c.relayId ? parseInt(c.relayId) : undefined},
             label: c.host }, 'wifi'));
+      } else if (c.isLocked) {
+        // A board with an access token set answers nothing until it is logged in to, so it cannot say yet whether it
+        // is a NaviCore, a WCB or a relay. Listed rather than called "not a droid", and selecting it asks for the
+        // token (paintAuthFor); once saved, unlockRow() asks again and connects to what it turns out to be.
+        const a = c.auth || {};
+        const r = row(true, `Locked droid at ${c.host}`,
+          [a.why === 'rejected' ? 'refused the saved access token' : 'needs its access token',
+           a.label && a.label !== c.host ? a.label : '', `via ${c.via}`].filter(Boolean).join(' · '),
+          { body: {kind:'ws', host:c.host}, label: c.host }, 'wifi');
+        r._auth = a;
+        el.appendChild(r);
       } else if (c.routable) {
         // The adapter is fine and something IS there — very likely a board
         // mid-boot, so tell watchForDroid() to keep looking.
@@ -1503,6 +1644,10 @@ async function showBackIfConnected() {
       $('back').style.display = '';
       $('back').onclick = openTools;
       setStatus('currently on ' + st.target + ' — pick another, or go back');
+    } else if (st.wantsLink && st.authNeeded) {
+      // Opened over a link the host is holding for a token (the tools' banner asks too): ask here as well.
+      setStatus(st.authNeeded.message, true);
+      showAuth(st.authNeeded, st.authNeeded.host, waitForLogin);
     }
   } catch (e) { /* nothing attached, or the host is starting: leave it hidden */ }
 }

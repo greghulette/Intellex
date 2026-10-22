@@ -1577,6 +1577,86 @@
     b.innerHTML = html;
   }
 
+  // ── "This droid needs its access token" ───────────────────────────────────
+  // A board with a token set runs nothing until the host logs in to it, which the
+  // host does with the token saved for that board (src/wsauth.py) -- the tools never
+  // see the exchange. When there is none, or the board refused the saved one, the
+  // host holds the link and says so in /_api/status (authNeeded), and this asks,
+  // in whichever tool the user is looking at: a droid that changed its token while
+  // the tool was open would otherwise sit behind "Still trying to reach the droid",
+  // which sends people to their WiFi for a problem that is not there.
+  //
+  // BUILT ONCE AND UPDATED IN PLACE, never re-rendered from HTML like banner():
+  // this runs every 2 s and the user is typing into it. Same place and colours as
+  // the still-trying banner, which it replaces while it is up. The token goes to
+  // /_api/token with the key the host gave; it is not kept here, and the field is
+  // cleared once it is sent.
+  let authSavedSeq = null;      // the refusal current when a token was last saved
+  function authBanner(need) {
+    let b = document.getElementById('intellex-auth');
+    if (!need) { if (b) b.remove(); authSavedSeq = null; return; }
+    if (!b) {
+      b = document.createElement('form');
+      b.id = 'intellex-auth';
+      b.autocomplete = 'off';
+      b.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;margin:0;'
+        + 'background:#4a3a1e;color:#ffd79a;border-bottom:1px solid #7a5f2e;'
+        + 'padding:9px 14px;font:13px/1.45 system-ui,sans-serif;text-align:center';
+      const msg = document.createElement('b');
+      msg.className = 'intellex-auth-msg';
+      const input = document.createElement('input');
+      input.type = 'password';
+      input.maxLength = 32;
+      input.spellcheck = false;
+      input.placeholder = 'access token';
+      input.setAttribute('aria-label', 'access token');
+      // The tool's own key handlers must not see the token being typed. Enter
+      // still submits: that is the form's default action, not a bubbling event.
+      for (const t of ['keydown', 'keyup', 'keypress']) input.addEventListener(t, (e) => e.stopPropagation());
+      input.style.cssText = 'margin-left:10px;font:13px ui-monospace,Consolas,monospace;padding:3px 7px;'
+        + 'border-radius:6px;border:1px solid #7a5f2e;background:#2b2212;color:#ffd79a;width:16em';
+      const save = document.createElement('button');
+      save.type = 'submit';
+      save.textContent = 'Save';
+      save.style.cssText = 'margin-left:8px;font:inherit;padding:3px 12px;cursor:pointer;border-radius:6px;'
+        + 'border:1px solid #7a5f2e;background:#6b5328;color:#fff';
+      const note = document.createElement('span');
+      note.className = 'intellex-auth-note';
+      note.style.cssText = 'margin-left:10px;opacity:.9';
+      b.append(msg, input, save, note);
+      b.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        save.disabled = true;
+        let r;
+        try {
+          r = await (await fetch('/_api/token', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: b.dataset.key, token: input.value, label: b.dataset.label || '' }),
+          })).json();
+        } catch (_) { r = { ok: false, error: 'the Intellex host did not answer' }; }
+        save.disabled = false;
+        if (!r.ok) { note.textContent = r.error || 'not saved'; return; }
+        input.value = '';
+        authSavedSeq = Number(b.dataset.seq);
+        note.textContent = 'Saved - logging in…';
+      });
+      document.body.appendChild(b);
+    }
+    if (b.dataset.key !== need.key) b.querySelector('input').value = '';
+    b.dataset.key = need.key;
+    b.dataset.label = need.label || '';
+    b.dataset.seq = String(need.seq);
+    b.querySelector('.intellex-auth-msg').textContent = need.why === 'rejected'
+      ? `${need.label || 'This droid'} refused the saved access token. Enter it again:`
+      : `This droid needs its access token: ${need.label || ''}.`;
+    // A refusal after the save is news; the same one, while the host logs in, is not.
+    if (authSavedSeq !== null && need.seq !== authSavedSeq) {
+      b.querySelector('.intellex-auth-note').textContent =
+        need.why === 'rejected' ? 'The board refused that token.' : '';
+      authSavedSeq = null;
+    }
+  }
+
   // ── "This tool changed underneath you" ──────────────────────────────────────
   // The chooser runs while this page stays open — the shell's overlay sits over
   // the panes, and a tool can live in its own window — and a branch Set or an
@@ -1654,7 +1734,11 @@
       (IS_WCB ? autoConnectWcb : autoConnect)();
     }
 
-    if (st.attached || !st.wantsLink) { downSince = 0; banner(''); return; }
+    if (st.attached || !st.wantsLink) { downSince = 0; banner(''); authBanner(null); return; }
+    // Held for an access token: say THAT, at once -- waiting out QUIET_S first and
+    // then blaming the WiFi would be the wrong story on both counts.
+    if (st.authNeeded) { banner(''); authBanner(st.authNeeded); return; }
+    authBanner(null);
     if (!downSince) downSince = Date.now();
     const secs = Math.round((Date.now() - downSince) / 1000);
     if (secs < QUIET_S) { banner(''); return; }   // still within a normal reboot

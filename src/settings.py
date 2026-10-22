@@ -1,6 +1,8 @@
 """Small persistent settings, kept beside the tool bundles and the firmware cache.
 
-Currently one thing: which GITHUB BRANCH each product's firmware comes from.
+Two things: which GITHUB BRANCH each product's firmware comes from, and the ACCESS
+TOKEN of each droid whose WebSocket asks for one (see "Access tokens" below and
+src/wsauth.py).
 
 WHY A BRANCH SETTING EXISTS
 Both flashers already took a `branch` argument and defaulted to "main" -- the
@@ -118,6 +120,69 @@ def set_branch(product: str, b: str) -> Optional[str]:
 
 def branches() -> dict:
     return {NAVICORE: branch(NAVICORE), WCB: branch(WCB)}
+
+
+# ── Access tokens, per droid ────────────────────────────────────────────────
+# A droid whose WebSocket has a token set will run nothing a session sends until
+# that session logs in with ?AUTH,<token> (src/wsauth.py has the protocol). The
+# user types the token once; it is kept here, under the key wsauth.droid_key()
+# names for the board that asked, so the next attach logs in by itself.
+#
+# IN THE CLEAR, beside the branch setting, on purpose: the file is the user's own
+# (paths.user_data_dir), a WCB's own config pull and ?backup carry the same
+# token in clear (and the mesh password beside it), and a keyring would be a
+# dependency per platform for a secret that already travels that way. What this
+# module does guarantee is that the value goes nowhere else: no log line, no
+# /_api reply and no error message carries it.
+#
+# THE SAME RULES THE FIRMWARE APPLIES (WCB ?WIFI,TOKEN, NaviCore wifiToken): 8-32
+# printable ASCII characters, none of space , ^ ; ? " \. Those break the config
+# chain (^ ; ,) or the line grammar, so a token holding one can never have been
+# set on a board. Refusing it here also keeps a newline -- a second command --
+# out of the ?AUTH line this value is pasted into.
+_TOKEN_FORBIDDEN = set(' ,^;?"\\')
+# Prefixes wsauth.droid_key() hands out. A key arrives back from the page with the
+# token (POST /_api/token), so it is checked rather than trusted. Any printable
+# text after the prefix: a network name may hold spaces and non-ASCII.
+_KEY_RE = re.compile(r"^(mac|ssid|host):[^\x00-\x1f\x7f]{1,110}$")
+
+
+def valid_token(t) -> bool:
+    return (isinstance(t, str) and 8 <= len(t) <= 32
+            and all(0x21 <= ord(c) <= 0x7E and c not in _TOKEN_FORBIDDEN for c in t))
+
+
+def valid_token_key(k) -> bool:
+    return isinstance(k, str) and bool(_KEY_RE.match(k))
+
+
+def token(key: str) -> Optional[str]:
+    """The token saved for the droid `key` names, or None. A stored value that is
+    not a usable token (a hand edit) is None too: sent, it would only fail."""
+    stored = _load().get("tokens")
+    entry = stored.get(key) if isinstance(stored, dict) else None
+    t = entry.get("token") if isinstance(entry, dict) else None
+    return t if valid_token(t) else None
+
+
+def set_token(key: str, t: str, label: str = "") -> Optional[str]:
+    """Store it. Returns an error string, or None on success. The error never
+    repeats the value: it is shown to the user and may be logged."""
+    if not valid_token_key(key):
+        return "unknown droid - scan again and enter the token when it asks"
+    if not valid_token(t):
+        return ("an access token is 8-32 characters: letters, digits and punctuation, "
+                'with no spaces and none of , ^ ; ? " \\')
+    d = _load()
+    if not isinstance(d.get("tokens"), dict):
+        d["tokens"] = {}               # a hand-edited or foreign shape: replace it, do not raise
+    # The label is only what the launcher showed (the network and the address), kept
+    # so a person reading the file can tell the entries apart.
+    clean = "".join(c for c in str(label or "") if c.isprintable())[:80]
+    import datetime
+    d["tokens"][key] = {"token": t, "label": clean,
+                        "saved": datetime.datetime.now().isoformat(timespec="seconds")}
+    return None if _save(d) else "could not write the settings file"
 
 
 # ── Where a tool is published ───────────────────────────────────────────────

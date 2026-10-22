@@ -281,6 +281,16 @@ follow. The role and `relayId` land in the spec, so `/_api/status` reports them 
 keeps them; a port that does not answer is left without a role, as before, and asked again on
 its next reattach.
 
+**A doorway with an access token answers none of the three questions.** It drops each one
+unexecuted and answers `[AUTH:REQUIRED]` instead, so it would have read as "something on port
+80 that is not a droid". `probe()` logs in first, with the token saved for that board, the
+same way an attach does (`wsauth.exchange`, CLAUDE.md rule 11), and then asks again. With no
+token to send, or one the board refused, the board is reported as `kind: "locked"`, with what
+the launcher needs to ask for the token. The chooser lists it as a locked droid. Once the
+token is saved, the probe can identify the board, so the doorway is connected with its real
+role and `relayId`, never as an unnamed link. A COM port needs none of this: a token guards
+WebSocket sessions only.
+
 One thing that **does** differ, and matters: the SSID to re-associate after a drop. All three
 firmwares derive `<prefix>-<id>` from a *different* prefix — `NaviCore-<id>`,
 `MgmtRelay-<id>`, `WCB-<alias|number>` (`WCB_WiFi.cpp` `wcbWifiDefaultSsid`) — and the bounce
@@ -619,6 +629,7 @@ text against fakes.
 
 | Date | Commit | Change |
 |---|---|---|
+| 2026-10-21 | — | **A doorway with an access token is identified, or reported as locked.** A WCB, NaviCore or MgmtRelay with a token set drops every line a WebSocket session sends before it logs in, `probe()`'s three questions included. `probe()` now logs in with the token saved for that board, keyed by its MAC address, and asks again. With nothing to send, it reports `kind: "locked"`, which the chooser lists and unlocks. See the paragraph under *Three doorways, one address*, and CLAUDE.md rule 11. `tools/smoke_ws_auth.py` G. Not run against firmware: the device side was being written at the same time. |
 | 2026-10-21 | _(this commit)_ | **An incomplete copy at the published stamp stayed broken.** After 0.2.2 shipped, an Update tools pressed on 0.2.1, just before updating Intellex, dropped the sequence builder again. 0.2.2's launcher called that copy "up to date" (stamp only), and nothing fetched it again. `page_refs`, `cmdlib_needed`, `missing_from` and the patterns moved to `src/webfiles.py`, shared with the host. `/_api/webui-version` now reports `missing` and calls such a copy stale, the launcher says "incomplete", and the host fetches it whole at start (`_repair_incomplete_tools`, one tool at a time, under `_fetch_lock` with Update tools) and reports `repaired`, which the launcher passes to open pages as a Reload offer. Tested by `tools/smoke_updates.py` U5, and end to end: a staged host started online on a Wizard without the builder had fetched it whole within 32 s. |
 | 2026-10-20 | `1936035` | **A branch's new Wizard files were never bundled.** With WCB set to `seq-builder`, Update tools fetched that branch's Wizard (right stamp) from the fixed `WCB_FILES` list, without `seq-builder.js`, `seq-builder.css` or `cmdlib/`, so the sequence builder could not load in the app. The fetcher now adds what `index.html` loads (`page_refs()`) and the manifest-listed `cmdlib/` when the code names it (`cmdlib_needed()`, `_stage_cmdlib()`, shared with the NaviCore path). It re-fetches a same-stamp copy that lacks any of them (`_missing_from()`). The vendors include every `cmdlib/<vendor>/manifest.json` the code names, and a missing `WCB_VENDOR` file is no longer fatal. Run against the published seq-builder and main Wizards and the NaviCore tool: complete, byte-identical to Pages, and "up to date" on the second run. Covered by `tools/smoke_updates.py`. |
 | 2026-10-04 | _(this commit)_ | **The NaviCore tool reached through a WCB on USB could come up "direct".** Only a WiFi attach ever carried a role (from discovery), so a serial attach reported `role: ""` and the shim never forced Via WCB; through W1 the tool's PING draws NaviCore's PONG back whenever W1's 20 s relay window is open, so a reload or reconnect inside it left *Update over USB (OTA)* enabled and pointed at the WCB — rule 10's hazard, over USB. `api_attach` (and the reconnect loop, and a `--serial` start) now identifies a serial target through the open port with `discover.classify()`, split out of `probe()` so both read answers one way, and records `role`/`relayId` before answering. WCB HIL `intellex.nc_via_usb_doorway` (INTELLEX.md finding 4; bench). |

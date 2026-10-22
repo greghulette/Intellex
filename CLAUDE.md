@@ -248,6 +248,28 @@ as `repaired` for the launcher to tell open pages.
     host that does not identify itself is held, never attached with a guessed role. Without
     this, a hop from a WCB's AP to NaviCore's forced a direct link into Via WCB. Windows only
     (`ssid_for_host` cannot answer on macOS). `tools/smoke_reconnect_identity.py`.
+11. **An access token goes to the board it was saved for, when that board asks for it, once
+    per save, and nowhere else.** A board with a token set runs nothing a WebSocket session
+    sends until the session logs in (`src/wsauth.py` has the protocol). There are three ways to
+    get this wrong:
+    - **Keyed by address, it leaks.** Every access point here is `192.168.4.1` (rule 10), so a
+      token saved "for 192.168.4.1" goes to whichever board's network the laptop joined last.
+      The key is the board's MAC address, read from the ARP cache over the open connection at
+      every login (`wsauth.droid_key`). The network name is only the fallback: every board
+      on one router shares it, and macOS cannot read it at all.
+    - **Resent, it locks the board.** For 1 s after any failed `?AUTH`, the board refuses every
+      `?AUTH` on every session, the user's other client included. So a refused token is not
+      sent again until the user saves one, and the next try waits out that second
+      (`LOCKOUT_S`). While there is nothing to send, the reconnect loop holds
+      (`AUTH_RECHECK_S`) instead of opening a session on the board every second.
+    - **Volunteered or shown, it is out.** `?AUTH` only answers `[AUTH:REQUIRED]`. The
+      `[AUTH:...]` lines the host handled never reach a page. The value is in no log line, no
+      `/_api` reply and no error text, only in `settings.json`.
+
+    And `WebSocketTransport.open()` logs in **before it returns**. The host reports
+    "attached" when it returns and the tools handshake at once, so a PING sent before the
+    login is dropped by the board, and the NaviCore tool reads a handshake with no PONG as a
+    bridge. `tools/smoke_ws_auth.py`.
 
 ## Offline is the normal case, not the edge case
 
@@ -496,6 +518,15 @@ maintenance. Three rules it is built on, all of which were bugs first:
   detail and layout list scroll. Pinning just the maintenance block pushed
   "Connect and open" below the fold, which is worse than what it fixed.
 
+**A droid that wants its access token** (rule 11) is asked for it wherever the user is.
+In the chooser, discovery lists a board it cannot log in to as a **locked droid**, not "not
+a droid" (`probe()` kind `locked`). Selecting it opens a token box in the pinned panel.
+Saving the token re-probes the board, so it is connected with the role it turns out to have
+(rule 10). An attach the board refuses answers 401 with the same box. In a tool, the shim
+replaces the still-trying banner with a token banner, and the shell's bar says "needs its
+access token". The token goes to `POST /_api/token` with the key the host handed out, and
+the reconnect loop logs in on its next pass.
+
 The **theme** is remembered in `intellex_theme` and defaults to the OS preference.
 Both marks ship: the dark one's near-white housing outline vanishes on a white
 panel. Fonts are **bundled** (`src/assets/fonts/`, 60 KB) — IBM Plex Sans is a
@@ -638,8 +669,19 @@ node tools/smoke_doorway_via_wcb.js
 # reattaches as before when nothing identifies itself. Runs the REAL
 # reconnect_loop against a fake Bridge and a faked
 # route/SSID/probe, and asserts the order. Also checks the bounce's failure
-# message. Run after touching reconnect_loop, ssid_for_host or wifi_bounce.
+# message. And a board that wants its access token: held and asked for, not
+# reattached blind or every second. Run after touching reconnect_loop,
+# ssid_for_host or wifi_bounce.
 python tools/smoke_reconnect_identity.py
+
+# The access token (rule 11), against a fake board on 127.0.0.1 that speaks the
+# firmware's protocol: no token (nothing new sent), the right token, a wrong one
+# then the right one (refused once, never resent, the lockout waited out), a late
+# prompt, probe() of a locked board, and the real host: the 401, the loop holding,
+# /_api/token, a reattach logging in again, and no token in the log. Also the
+# [AUTH:...] filter against every UTF-8 split, and the ARP parsers. Run after
+# touching wsauth.py, ws_transport.py, probe(), the token settings or the hold.
+python tools/smoke_ws_auth.py
 
 # Does the NaviCore tool's direct-OTA button say WiFi when the link is WiFi,
 # stay that way through a run (the tool writes USB back as it ends), and leave

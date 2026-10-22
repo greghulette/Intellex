@@ -98,6 +98,7 @@ from transport import (Transport, TransportError, list_serial_ports, serial_allo
 from serial_transport import SerialTransport             # noqa: E402
 from ws_transport import WebSocketTransport              # noqa: E402
 import discover                                          # noqa: E402
+import wsauth                                            # noqa: E402
 
 # Resolved, not hard-coded: a frozen app serves the UPDATED copy from the user
 # data dir when one exists, and the shipped copy otherwise. See src/paths.py.
@@ -207,6 +208,15 @@ class Bridge:
         self.session: int = 0
         self.retry_fails: int = 0
         self.bounce_fails: int = 0
+        # THE BOARD WANTS ITS ACCESS TOKEN and there is none to send it (none saved,
+        # or the saved one was refused): wsauth.AuthNeeded.as_dict() plus "at" (when,
+        # time.monotonic) and "seq" (which refusal this is, so a page can tell a new
+        # one from the one it already showed). /_api/status reports it and the pages
+        # ask the user; the reconnect loop holds rather than reconnect to a board it
+        # has nothing to log in with (AUTH_RECHECK_S). Belongs to the target, like
+        # the counts above: cleared by an attach, a detach and a new session.
+        self.auth_needed: Optional[dict] = None
+        self._auth_seq: int = 0
 
     # -- page side ---------------------------------------------------------------
     def bind_page(self, ws: web.WebSocketResponse, loop: asyncio.AbstractEventLoop) -> None:
@@ -259,6 +269,7 @@ class Bridge:
             if not superseded:
                 self._transport, self.target_label = t, label
                 self.last_error = ""
+                self.auth_needed = None   # open() logged in, or nothing asked it to
                 # Start the idle clock NOW, not at 0. time.monotonic() is seconds
                 # since boot, so a default of 0.0 made a freshly attached link look
                 # idle for the machine's entire uptime — logged as "unreachable
@@ -293,6 +304,7 @@ class Bridge:
             self.session += 1
             self.retry_fails = 0
             self.bounce_fails = 0
+            self.auth_needed = None
 
     def note_failure(self, spec: Optional[dict], why: str, count: bool = False) -> bool:
         """Record why an attach of `spec` failed -- only while `spec` is still the target.
@@ -315,6 +327,21 @@ class Bridge:
             self.last_error = why
             if count:
                 self.retry_fails += 1
+            return True
+
+    def note_auth(self, spec: Optional[dict], need: dict, why: str = "") -> bool:
+        """The board behind `spec` wants its access token and there is none to send
+        (need: wsauth.AuthNeeded.as_dict()). Recorded, like note_failure, only while
+        `spec` is still the target. Never counted toward a bounce: the route is fine
+        -- the board answered -- and re-associating the adapter cannot produce a
+        token. `why` replaces the need's own message in last_error when the caller
+        has a fuller one (the reconnect loop's move hold)."""
+        with self._lock:
+            if self._spec is not spec:
+                return False
+            self._auth_seq += 1
+            self.auth_needed = dict(need, at=time.monotonic(), seq=self._auth_seq)
+            self.last_error = why or need.get("message", "")
             return True
 
     def _drop(self) -> None:
@@ -1367,7 +1394,19 @@ async def api_status(_req: web.Request) -> web.Response:
         "kind": spec.get("kind", ""),
         "role": spec.get("role", ""),
         "relayId": spec.get("relayId"),
+        # The board wants its access token: {key, label, host, why, message, seq},
+        # or null. Both tools' shim and the launcher show an entry box for it and
+        # POST the token to /_api/token with this key. Never carries a token.
+        "authNeeded": _public_need(bridge.auth_needed),
     })
+
+
+def _public_need(need: Optional[dict]) -> Optional[dict]:
+    """Bridge.auth_needed as the pages see it: without the monotonic time, which
+    means nothing outside this process."""
+    if not need:
+        return None
+    return {k: v for k, v in need.items() if k != "at"}
 
 
 # ── What is on a COM port ──────────────────────────────────────────────────────
@@ -1519,6 +1558,18 @@ async def api_attach(req: web.Request) -> web.Response:
         # it inline wedges the event loop that is also serving the page.
         await asyncio.to_thread(lambda: bridge.attach(bridge.rebuild(),
                                                       _label_for(spec), spec))
+    except wsauth.AuthNeeded as e:
+        # The board asked for its access token and there was none to send. 401 and
+        # what to ask for: the launcher shows an entry box and POSTs the token to
+        # /_api/token under e.key. The target stays wanted and the reconnect loop
+        # holds (Bridge.note_auth), so nothing reconnects to the board, or resends a
+        # refused token, while the user types; a saved token ends the hold and the
+        # loop logs in -- the launcher watches /_api/status rather than attaching
+        # again, which would race it. The need goes out as /_api/status reports it,
+        # seq included, so a later refusal can be told from this one (the bare need
+        # if a newer target replaced it).
+        need = _public_need(bridge.auth_needed) if bridge.note_auth(spec, e.as_dict()) else e.as_dict()
+        return web.json_response({"ok": False, "error": str(e), "authNeeded": need}, status=401)
     except TransportError as e:
         # Recorded only while this attach's target is still the one wanted: a loser
         # superseded by a newer attach (or a detach) must not leave its "superseded"
@@ -1558,6 +1609,35 @@ async def api_identify(req: web.Request) -> web.Response:
     res = await asyncio.to_thread(discover.identify_serial, port)
     return web.json_response({"ok": res["version"] is not None,
                               "version": res["version"], "busy": res["busy"]})
+
+
+async def api_token(req: web.Request) -> web.Response:
+    """Save the access token the user typed for a board: {key, token, label}.
+
+    `key` is the one the host handed out with the request for it (/_api/status
+    authNeeded, an attach's 401, a locked row from discovery), checked here rather
+    than trusted. Saving clears the board's refused mark (wsauth.token_saved), so
+    the reconnect loop's hold ends on its next pass and it logs in with this. A
+    board not attached yet (a locked row in the chooser) is probed again by the
+    launcher, which then attaches. POST, so behind the origin guard.
+
+    THE VALUE IS NEVER REPEATED: not in the log line, not in the reply, not in an
+    error. A 400 says what a token must look like, never what was typed.
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    key, label = body.get("key"), body.get("label") or ""
+    err = settings.set_token(key, body.get("token"), label if isinstance(label, str) else "")
+    if err:
+        return web.json_response({"ok": False, "error": err}, status=400)
+    wsauth.token_saved(key)
+    need = bridge.auth_needed
+    print(f"access token saved for {need['label'] if need and need.get('key') == key else key}")
+    return web.json_response({"ok": True})
 
 
 async def api_detach(_req: web.Request) -> web.Response:
@@ -1838,6 +1918,13 @@ BOUNCE_COOLDOWN_S  = 10.0    # short: a bounce is now conditional on being misro
                              # so retrying is cheap and the first one after the AP
                              # returns is the one that sticks
 auto_bounce = True           # --no-auto-bounce turns it off
+# A board that wants an access token the host does not have is NOT reconnected to
+# every second. Each try opens a session on it -- a WCB serves two and closes the
+# least recently used to take a third, so that can be the user's other client --
+# and achieves nothing until a token is saved, which ends the hold at once
+# (wsauth.can_try). Tried again this often anyway, so a laptop that has moved on, or
+# a board whose token was cleared, is noticed. A retry never resends a refused token.
+AUTH_RECHECK_S = 15.0
 
 
 def _reidentify_if_moved(spec: Optional[dict]) -> Optional[dict]:
@@ -1896,6 +1983,13 @@ def _reidentify_if_moved(spec: Optional[dict]) -> Optional[dict]:
         # which would skip the attach being reported on.
         info = discover.probe(host)
         kind = info.get("kind")
+        if kind == "locked":
+            # The new board wants ITS access token, which the probe -- keyed by the
+            # board that answered, not by the old network's -- had none of. Held like
+            # any unidentified host, and the need goes to the pages to ask for it.
+            return {"hold": f'now on "{now}", not "{was}", and {host} wants its access '
+                            "token before it will say what it is - not reattaching blind",
+                    "auth": info.get("auth")}
         if kind not in ("navicore", "relay", "wcb"):
             return {"hold": f'now on "{now}", not "{was}", and nothing at {host} has '
                             "identified itself yet - not reattaching blind"}
@@ -2061,13 +2155,25 @@ async def reconnect_loop(_app: web.Application) -> None:
                 # user most needs it to explain itself.
                 spec = bridge._spec
 
+                # NOTHING TO LOG IN WITH: hold (AUTH_RECHECK_S). Ahead of the move
+                # check, which probes the board on a Mac and would open a session on
+                # it every second too.
+                need = bridge.auth_needed
+                if (need and not wsauth.can_try(need["key"])
+                        and time.monotonic() - need.get("at", 0) < AUTH_RECHECK_S):
+                    continue
+
                 # SAME ADDRESS, DIFFERENT BOARD? Settled before the attach, never
                 # after -- _reidentify_if_moved says why the order matters.
                 move = await asyncio.to_thread(_reidentify_if_moved, spec)
                 if move and bridge._spec is not spec:
                     continue    # re-targeted or detached while it probed: theirs wins
                 if move and "hold" in move:
-                    bridge.last_error = move["hold"]
+                    if move.get("auth"):
+                        # Locked: the pages ask for the new board's token.
+                        bridge.note_auth(spec, move["auth"], move["hold"])
+                    else:
+                        bridge.last_error = move["hold"]
                     if move["hold"] != held:
                         held = move["hold"]
                         print(held)
@@ -2091,6 +2197,16 @@ async def reconnect_loop(_app: web.Application) -> None:
                 # A COM port that was not identified at its first attach (it was
                 # busy, or did not answer) is asked now. No-op once it has a role.
                 await asyncio.to_thread(_identify_attached_serial, spec)
+            except wsauth.AuthNeeded as e:
+                # The board answered and wants a token there is none of: recorded for
+                # the pages to ask, held from the next pass, and -- unlike the failure
+                # below -- never counted toward a bounce (Bridge.note_auth).
+                why = str(e)
+                if not bridge.note_auth(spec, e.as_dict()):
+                    continue
+                if why != failed_why:
+                    failed_why = why
+                    print(f"reconnect held: {why} - waiting for it to be entered")
             except TransportError as e:
                 # SAY WHY. A failed reattach used to be counted and nothing else, so
                 # /_api/status kept whatever the drop had said ("probe failed") for
@@ -2282,6 +2398,7 @@ def build_app() -> web.Application:
         web.post("/_api/wifi-bounce", api_wifi_bounce),
         web.post("/_api/attach", api_attach),
         web.post("/_api/detach", api_detach),
+        web.post("/_api/token", api_token),
         web.post("/_api/identify", api_identify),
         web.post("/_api/signals", api_signals),
         web.get("/_intellex.js", shim_js),
@@ -2356,7 +2473,11 @@ def main() -> int:
             _identify_attached_serial(spec)
         except TransportError as e:
             print(f"attach failed: {e}")
-            print("           will keep retrying every second")
+            if isinstance(e, wsauth.AuthNeeded):
+                bridge.note_auth(spec, e.as_dict())
+                print("           enter it in the launcher or the tool, and it attaches")
+            else:
+                print("           will keep retrying every second")
 
     url = f"http://{BIND_HOST}:{a.port}/"
     sys.stdout.reconfigure(line_buffering=True)   # so a redirected log is live, not buffered
