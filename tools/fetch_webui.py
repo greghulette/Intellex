@@ -340,7 +340,9 @@ def _stage_cmdlib(base: str, page_dir: pathlib.Path, sources=()) -> int | None:
     if not names:
         return None
     root = page_dir / "cmdlib"
-    root.mkdir()
+    # exist_ok: a page that loads a script from cmdlib/ has put it there already (the page_refs loop), and a
+    # FileExistsError is no FetchError - it would end the update in a traceback instead of "nothing was changed".
+    root.mkdir(exist_ok=True)
     got = 0
     for n in names:
         dest = root / n
@@ -410,8 +412,8 @@ def fetch_wcb(base: str, check: bool, force: bool) -> int:
     if remote == have and remote != "unknown" and not force and not missing:
         print("[wcb] up to date")
         return 0
-    if missing:
-        print(f"[wcb] the bundled copy lacks {', '.join(missing)} - fetching it whole again")
+    if missing:   # --check only says so: nothing is fetched then
+        print(f"[wcb] the bundled copy lacks {', '.join(missing)}" + ("" if check else " - fetching it whole again"))
     if check:
         print("[wcb] update available (run without --check to apply)")
         return 0
@@ -600,8 +602,8 @@ def _fetch_navicore(base: str, check: bool, force: bool) -> int:
     if remote == have and not force and not missing:
         print("up to date")
         return 0
-    if missing:
-        print(f"the bundled copy lacks {', '.join(missing)} - fetching it whole again")
+    if missing:   # --check only says so: nothing is fetched then
+        print(f"the bundled copy lacks {', '.join(missing)}" + ("" if check else " - fetching it whole again"))
     if check:
         print("update available (run without --check to apply)")
         return 0
