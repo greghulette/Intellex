@@ -27,6 +27,11 @@ And a board that wants its ACCESS TOKEN (src/wsauth.py): moved onto one, the loo
 holds and asks for that board's token rather than attaching or guessing; while it
 holds it asks the OS nothing and opens nothing, until a token is saved or
 AUTH_RECHECK_S has passed. The login itself is tools/smoke_ws_auth.py's.
+
+And an attach on its way up is not a lost link: while one is inside open() the loop
+asks nothing and attaches nothing, and its own reattach claims the link only if it
+is still down (Bridge.attach if_down). The real Bridge and host against a fake board
+are tools/smoke_ws_auth.py K.
 """
 from __future__ import annotations
 
@@ -111,6 +116,8 @@ class FakeBridge:
         # host.Bridge's access-token hold (Bridge.note_auth): None, or what the board
         # asked for, which the loop reads before anything else on every pass.
         self.auth_needed = None
+        # host.Bridge.opening: an attach is inside open(), so the link is on its way up.
+        self._opening = False
 
     @property
     def attached(self):
@@ -120,6 +127,10 @@ class FakeBridge:
     def wants_link(self):
         return self._want and self._spec is not None
 
+    @property
+    def opening(self):
+        return self._opening
+
     def rebuild(self):
         return object()
 
@@ -127,12 +138,18 @@ class FakeBridge:
         self.events.append(("set_target", spec.get("role"), spec.get("ssid")))
         self._spec, self._want = spec, True
 
-    def attach(self, _t, label, spec=None):
+    def attach(self, _t, label, spec=None, if_down=False):
+        # As host.Bridge.attach: the loop's reattach (if_down) claims the link only
+        # while it is still down, nobody is opening one, and `spec` is still the target.
+        if if_down and (self._open or self._opening or self._spec is not spec):
+            self.events.append(("attach refused", (spec or {}).get("role")))
+            return False
         self.events.append(("attach", (spec or {}).get("role"), label))
         self._open, self.target_label = True, label
         self.last_rx = time.monotonic()
         if spec is not None:
             self._spec = spec
+        return True
 
     def _drop(self):
         self._open = False
@@ -345,6 +362,34 @@ def loop_user_retarget_during_the_probe_wins():
            on_probe=lambda: setattr(b, "_spec", user_spec))
     run_loop(b, passes=1)
     return b.events == [] and b._spec is user_spec, f"events {b.events}, spec {b._spec!r}"
+
+
+@case
+def loop_leaves_an_attach_that_is_opening_alone():
+    # /_api/attach inside open() (the access-token prompt wait: 1 s for a board with no
+    # token) reads as wanted and down. The loop asked the OS and the board, then
+    # reattached into it and dropped the link the attach published (HIL
+    # intellex.wifi_link_loss, run 20261022-145043). It must ask nothing, attach nothing.
+    os_ = FakeOS(ssid="NaviCore", kind="navicore")
+    spec = wcb1()
+    del spec["ssid"]                       # a Mac's attach: the move check probes
+    b = FakeBridge(spec)
+    b._opening = True
+    run_loop(b, passes=3)
+    return b.events == [] and os_.calls == [], f"events {b.events}, calls {os_.calls}"
+
+
+@case
+def loop_attach_made_during_the_check_is_not_reattached_over():
+    # The loop found the link down and started its move check (a probe, on a Mac);
+    # meanwhile an attach brought the link up. The loop's reattach is if_down, and
+    # refused: nothing of the new link is dropped.
+    spec = wcb1()
+    del spec["ssid"]
+    b = FakeBridge(spec)
+    FakeOS(ssid="WCB1", kind="wcb", relay_id=1, on_probe=lambda: setattr(b, "_open", True))
+    run_loop(b, passes=1)
+    return b.events == [("attach refused", "wcb")], f"events {b.events}"
 
 
 @case

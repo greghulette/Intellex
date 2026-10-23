@@ -196,6 +196,16 @@ class Bridge:
         # by the time open() returns has been superseded, and must close what it
         # opened rather than publish it.
         self._gen: int = 0
+        # HOW MANY ATTACHES ARE INSIDE open() RIGHT NOW. Until one publishes, the link
+        # reads as wanted and down, which is also what a dropped link looks like, and
+        # the reconnect loop took one for the other: it reattached into the attach,
+        # dropped the link /_api/attach had just published and closed the page on it.
+        # open() lasting tens of ms kept that rare; the access-token prompt wait
+        # (wsauth.PROMPT_WAIT_S, 1 s for a board with no token) made it every attach
+        # (HIL intellex.wifi_link_loss, run 20261022-145043). The loop waits while this
+        # is nonzero (opening), and its own attach claims the link only if it is still
+        # down (attach if_down). Changed only under _lock.
+        self._opening: int = 0
         # THE RECONNECT LOOP'S COUNTS, kept here because they belong to one attach:
         # reattaches failed in a row (BOUNCE_AFTER_FAILS of them call for a bounce)
         # and bounces failed in a row (BOUNCE_GIVE_UP of them stop the bouncing).
@@ -252,19 +262,42 @@ class Bridge:
                 self._pages.discard(ws)
 
     # -- transport side ----------------------------------------------------------
-    def attach(self, t: Transport, label: str, spec: Optional[dict] = None) -> None:
+    def attach(self, t: Transport, label: str, spec: Optional[dict] = None,
+               if_down: bool = False) -> bool:
+        """Open `t` and publish it as THE link. Returns True once published.
+
+        if_down: the reconnect loop's reattach of `spec`, which it decided on before
+        its move check -- a probe that takes a second on a Mac. Claimed only if the
+        link is still down, no other attach is inside open(), and `spec` is still the
+        target, all checked in the same locked section that claims the generation;
+        otherwise nothing is touched and it returns False. Without that, an attach
+        made during the check was dropped by the reattach that followed it, and the
+        target it had set was replaced by the one the loop had been retrying.
+        """
         with self._lock:
+            # "Down" as the loop reads it (attached): a transport that closed without
+            # being dropped yet is down, and the _drop() below clears it as before.
+            if if_down and (self.attached or self._opening or self._spec is not spec):
+                return False          # someone else's attach owns the link: theirs wins
             self._gen += 1
             mine = self._gen
-        self._drop()                  # takes the lock itself; no I/O held under it
-        t.open()                      # raises TransportError; caller reports it
+            self._opening += 1
+        try:
+            self._drop()              # takes the lock itself; no I/O held under it
+            t.open()                  # raises TransportError; caller reports it
+        except BaseException:
+            with self._lock:
+                self._opening -= 1
+            raise
         import time as _t
         # ONE locked section for the publish AND the target. They were two, and a
         # detach landing between them was undone: it cleared _spec and _want and
         # closed the link just published, then this re-recorded the target and set
         # _want, so the reconnect loop reattached the link the user had stopped
-        # (HIL intellex.bridge_attach_detach_window).
+        # (HIL intellex.bridge_attach_detach_window). The open count comes down in
+        # it too: between the two, the link would read as down with nobody opening.
         with self._lock:
+            self._opening -= 1
             superseded = mine != self._gen
             if not superseded:
                 self._transport, self.target_label = t, label
@@ -287,6 +320,7 @@ class Bridge:
             with contextlib.suppress(Exception):
                 t.close()
             raise TransportError("superseded by a newer attach")
+        return True
 
     def detach(self) -> None:
         """User asked to stop. Forget the target so nothing reconnects."""
@@ -426,6 +460,11 @@ class Bridge:
     @property
     def attached(self) -> bool:
         return self._transport is not None and self._transport.is_open
+
+    @property
+    def opening(self) -> bool:
+        """An attach is inside open(): the link is on its way up, not lost."""
+        return self._opening > 0
 
     def write(self, data: bytes) -> None:
         t = self._transport
@@ -2146,6 +2185,12 @@ async def reconnect_loop(_app: web.Application) -> None:
             if bridge.attached or not bridge.wants_link:
                 bridge.reconnecting = False
                 continue
+            # AN ATTACH ON ITS WAY UP IS NOT A LOST LINK. Until open() returns the link
+            # reads as wanted and down, for as long as the access-token prompt wait
+            # (1 s for a board with no token), and reattaching into it dropped the
+            # link /_api/attach had just published (Bridge._opening says more).
+            if bridge.opening:
+                continue
             try:
                 # IN A THREAD. Transport.open() is blocking -- pyserial's open and
                 # the WebSocket handshake both are, the latter for up to its connect
@@ -2188,8 +2233,13 @@ async def reconnect_loop(_app: web.Application) -> None:
                     bridge.bounce_fails = 0
                     print(move["note"])
 
-                await asyncio.to_thread(lambda: bridge.attach(bridge.rebuild(),
-                                                              _label_for(spec), spec))
+                # if_down: the move check above took a probe's time on a Mac, and an
+                # attach made meanwhile owns the link and the target -- reattaching
+                # over it dropped its page and put this pass's old spec back.
+                if not await asyncio.to_thread(lambda: bridge.attach(bridge.rebuild(),
+                                                                     _label_for(spec), spec,
+                                                                     if_down=True)):
+                    continue
                 print(f"reconnected  {bridge.target_label}")
                 bridge.retry_fails = 0
                 held = None

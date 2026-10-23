@@ -271,6 +271,15 @@ as `repaired` for the launcher to tell open pages.
     login is dropped by the board, and the NaviCore tool reads a handshake with no PONG as a
     bridge. `tools/smoke_ws_auth.py`.
 
+    **That makes every WiFi attach take a second, and an attach that is opening is not a lost
+    link.** A board with no token says nothing at open, so `open()` waits out `PROMPT_WAIT_S`,
+    and until it returns the link reads as wanted and down. The reconnect loop took that for a
+    drop: it reattached into the attach, dropped the link `/_api/attach` had just published,
+    and closed the page on it (HIL `intellex.wifi_link_loss`, 2026-10-22). So the loop waits
+    while `Bridge.opening`, and its own reattach is `attach(..., if_down=True)`, which claims
+    the link only if it is still down and its spec still the target. Do not make the loop's
+    reattach a plain `attach()` again. `tools/smoke_ws_auth.py` K.
+
 ## Offline is the normal case, not the edge case
 
 The workflow this app is built around: **get everything current while you have a
@@ -670,8 +679,9 @@ node tools/smoke_doorway_via_wcb.js
 # reconnect_loop against a fake Bridge and a faked
 # route/SSID/probe, and asserts the order. Also checks the bounce's failure
 # message. And a board that wants its access token: held and asked for, not
-# reattached blind or every second. Run after touching reconnect_loop,
-# ssid_for_host or wifi_bounce.
+# reattached blind or every second. And an attach inside open() is left alone,
+# and one made during the move check is not reattached over. Run after touching
+# reconnect_loop, Bridge.attach, ssid_for_host or wifi_bounce.
 python tools/smoke_reconnect_identity.py
 
 # The access token (rule 11), against a fake board on 127.0.0.1 that speaks the
@@ -679,8 +689,11 @@ python tools/smoke_reconnect_identity.py
 # then the right one (refused once, never resent, the lockout waited out), a late
 # prompt, probe() of a locked board, and the real host: the 401, the loop holding,
 # /_api/token, a reattach logging in again, and no token in the log. Also the
-# [AUTH:...] filter against every UTF-8 split, and the ARP parsers. Run after
-# touching wsauth.py, ws_transport.py, probe(), the token settings or the hold.
+# [AUTH:...] filter against every UTF-8 split, and the ARP parsers. And K: the
+# reconnect loop does not race an attach waiting for a prompt, or reattach over
+# an attach made during its move check. Run after touching wsauth.py,
+# ws_transport.py, probe(), the token settings, the hold, Bridge.attach or
+# reconnect_loop.
 python tools/smoke_ws_auth.py
 
 # Does the NaviCore tool's direct-OTA button say WiFi when the link is WiFi,

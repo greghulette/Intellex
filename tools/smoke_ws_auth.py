@@ -28,6 +28,9 @@ What it holds the app to:
      a token changed on the board asked for again, and no token in the log
   I  which board a token belongs to: the ARP parsers, and droid_key's fallbacks
   J  what a token may be (the firmware's rules) and that no error repeats it
+  K  the host again: an attach waiting for a prompt is not raced by the reconnect
+     loop, and a new attach that lands during the loop's move check is not
+     reattached over (one session, the page kept, the new target kept)
 
 The tokens here are test values; even so, no PASS/FAIL line prints one.
 """
@@ -42,6 +45,7 @@ import os
 import pathlib
 import random
 import re
+import socket
 import sys
 import tempfile
 import threading
@@ -720,6 +724,132 @@ def case_j():
     check(settings.branch("wcb") == "main", "the branch setting beside it is untouched")
 
 
+# ── K ───────────────────────────────────────────────────────────────────────
+async def case_k():
+    """The wait for a prompt is not a gap the reconnect loop may fill.
+
+    open() waits up to PROMPT_WAIT_S for a board with no token, which says nothing
+    when a session opens. For that long an attach looks like a link that is wanted
+    and down, and the loop reattached into it: on the Mac its move check probed the
+    board (a second session), then its attach dropped the link /_api/attach had just
+    published and closed the page on it (HIL intellex.wifi_link_loss and
+    wifi_ap_hop_reidentify, run 20261022-145043: "/_link ended (the host closed the
+    socket)" and a "reconnected" line before anything had dropped). The wait is
+    made longer here and the move check slower than the open, so a loop that races
+    the attach cannot miss it either way round."""
+    print("-- K  an attach is not raced by the reconnect loop")
+    import aiohttp
+    from aiohttp import web
+    import host as hostmod
+
+    fresh()
+    board = Board(token=None, kind="navicore")       # silent at open, like NaviCore
+    with contextlib.closing(socket.socket()) as s:
+        s.bind((HOST, 0))
+        dead = s.getsockname()[1]                     # nothing listens here once closed
+    port_holder = {"p": board.port}
+    hostmod.WebSocketTransport = (lambda host, on_data, on_lost:
+                                  WebSocketTransport(host, on_data, on_lost, port=port_holder["p"]))
+    hostmod.auto_bounce = False
+    hostmod.bridge = hostmod.Bridge()                 # not case H's, bound to its event loop
+    check_s = 3.0                                     # the move check: longer than an open here
+    asked: list = []
+
+    def slow_move_check(_spec):
+        # The Mac's _reidentify_by_probe opens a session on the board; ~1 s on the bench.
+        asked.append(time.monotonic())
+        time.sleep(check_s)
+        return None
+    real_move_check, real_wait = hostmod._reidentify_if_moved, wsauth.PROMPT_WAIT_S
+    hostmod._reidentify_if_moved = slow_move_check
+    wsauth.PROMPT_WAIT_S = 2.5                        # at least two loop passes inside every open()
+    real_tcp_open = discover.tcp_open
+    discover.tcp_open = lambda *_a, **_k: True
+    log = io.StringIO()
+
+    app = hostmod.build_app()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, hostmod.BIND_HOST, 0)
+    await site.start()
+    base = f"http://{hostmod.BIND_HOST}:{site._server.sockets[0].getsockname()[1]}"
+
+    async def pong(page, timeout=3.0) -> bool:
+        try:
+            await page.send_str('{"type":"PING"}\n')
+        except (aiohttp.ClientError, ConnectionError):
+            return False                      # the host closed the page (it is closing)
+        got = b""
+        end = time.monotonic() + timeout
+        while b'"PONG"' not in got and time.monotonic() < end and not page.closed:
+            with contextlib.suppress(asyncio.TimeoutError):
+                m = await asyncio.wait_for(page.receive(), 0.5)
+                if m.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
+                    break
+                got += m.data if isinstance(m.data, bytes) else str(m.data).encode()
+        return b'"PONG"' in got
+
+    try:
+        with contextlib.redirect_stdout(log):
+            async with aiohttp.ClientSession() as s:
+                async def status():
+                    async with s.get(f"{base}/_api/status") as r:
+                        return await r.json()
+
+                async def post(path, body):
+                    async with s.post(f"{base}{path}", json=body) as r:
+                        return r.status, await r.json()
+
+                # K1: nothing attached before. The loop must leave the attach's open() alone.
+                t0 = time.monotonic()
+                code, body = await post("/_api/attach", {"kind": "ws", "host": HOST, "role": "navicore"})
+                check(code == 200 and time.monotonic() - t0 >= wsauth.PROMPT_WAIT_S - 0.2,
+                      "the attach waits out the prompt and answers 200", (code, body))
+                page = await s.ws_connect(f"{base}/_link")
+                check(await pong(page), "a page on it gets a PONG")
+                await asyncio.sleep(check_s + 1.5)          # a raced reattach would have landed by now
+                check(not page.closed and await pong(page), "the same page still has the link")
+                check(board.sessions == 1, "one session on the board: the loop opened none", board.sessions)
+                check(not [t for t in asked if t < t0 + wsauth.PROMPT_WAIT_S], "the loop checked nothing "
+                      "while the attach was opening", [round(t - t0, 1) for t in asked])
+                check("reconnected" not in log.getvalue(), "and printed no 'reconnected'",
+                      [ln for ln in log.getvalue().splitlines() if "reconnected" in ln])
+                await page.close()
+                await post("/_api/detach", {})
+
+                # K2: the loop decided to reattach a target that is down, and a new attach lands
+                # while its move check runs. The new attach wins; the loop must not reattach over it.
+                port_holder["p"] = dead
+                code, _ = await post("/_api/attach", {"kind": "ws", "host": HOST, "role": "wcb", "relayId": 1})
+                check(code == 502, "an attach to a board that is not there: 502, and the loop keeps trying", code)
+                n = len(asked)
+                end = time.monotonic() + 3
+                while len(asked) == n and time.monotonic() < end:
+                    await asyncio.sleep(0.05)
+                check(len(asked) > n, "the loop is inside its move check")
+                port_holder["p"] = board.port
+                sessions = board.sessions
+                code, body = await post("/_api/attach", {"kind": "ws", "host": HOST, "role": "navicore"})
+                check(code == 200, "a new attach meanwhile answers 200", (code, body))
+                page = await s.ws_connect(f"{base}/_link")
+                check(await pong(page), "a page on it gets a PONG")
+                await asyncio.sleep(check_s + 1.0)          # the loop's check has returned by now
+                st = await status()
+                check(not page.closed and await pong(page), "the same page still has the link")
+                check(board.sessions == sessions + 1, "one session for it: the loop opened none",
+                      (sessions, board.sessions))
+                check(st["attached"] and st["role"] == "navicore" and st["relayId"] is None,
+                      "the target is the new attach's, not the one the loop was retrying", st)
+                await page.close()
+                await post("/_api/detach", {})
+    finally:
+        await runner.cleanup()
+        hostmod.bridge.detach()
+        board.stop()
+        hostmod._reidentify_if_moved, wsauth.PROMPT_WAIT_S = real_move_check, real_wait
+        discover.tcp_open = real_tcp_open
+
+
 def main() -> int:
     import shutil
     try:
@@ -732,6 +862,7 @@ def main() -> int:
         asyncio.run(case_h())
         case_i()
         case_j()
+        asyncio.run(case_k())
     finally:
         shutil.rmtree(_DATA, ignore_errors=True)
     print("\nws-auth: " + ("OK" if not _bad else f"{_bad} FAILURE(S)"))
