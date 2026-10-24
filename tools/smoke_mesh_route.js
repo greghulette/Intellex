@@ -30,9 +30,10 @@ if (start < 0 || end < 0) { console.error('FAIL: could not extract the function'
 let body = src.slice(start, end + 4);
 // Shrink ONLY the watchdog constant so a 45 s guard is testable in milliseconds.
 // The race, the clearTimeout and the reporting are the shipped text.
-body = body.replace('const PULL_WATCHDOG_MS = 45000;', 'const PULL_WATCHDOG_MS = 40;');
+body = body.replace('const PULL_WATCHDOG_MS = 45000;', 'const PULL_WATCHDOG_MS = 40;')
+           .replace('const PULL_WATCHDOG_MARGIN_MS = 5000;', 'const PULL_WATCHDOG_MARGIN_MS = 20;');
 
-let pulls = [], armed = [], concurrent = 0, maxConcurrent = 0;
+let pulls = [], pullTimes = [], armed = [], concurrent = 0, maxConcurrent = 0;
 let relayCardPresent = false;
 let hangOn = null;    // board number whose pull never calls back
 let wdpNodes = null;  // the sweep's parsed nodes, or null for "no sweep yet"
@@ -52,7 +53,7 @@ function makeScope() {
     // resolving. relayRouteAll relies on the same thing.
     remoteBoardPull: async (parent, n, attempt, max, onComplete) => {
       concurrent++; maxConcurrent = Math.max(maxConcurrent, concurrent);
-      pulls.push([parent, n]);
+      pulls.push([parent, n]); pullTimes.push(Date.now());
       globalThis._pullingBoards.add(n);
       await new Promise(r => setTimeout(r, 5));
       globalThis._pullingBoards.delete(n); globalThis.boardBaselines[n] = {pulled:true};
@@ -84,7 +85,8 @@ function makeScope() {
 // NaviCore at 20. Clients are WCB_Client hosts with no WCB config to pull, and the
 // Wizard gives them a lightweight client card, never a board config.
 function reset() {
-  pulls = []; armed = []; concurrent = 0; maxConcurrent = 0;
+  pulls = []; pullTimes = []; armed = []; concurrent = 0; maxConcurrent = 0;
+  globalThis._activePulls = new Map();
   globalThis.boardConnections = { 21: { isConnected: () => true } };  // the doorway WCB
   globalThis.boardBaselines = { 21: {} };                             // its own config is pulled
   globalThis.remoteRelayForBoard = {};
@@ -160,6 +162,17 @@ const check = (name, cond, extra='') => {
   await makeScope()();
   check('a silent pull did not strand the board behind it',
         pulls.some(p => p[1] === 2), JSON.stringify(pulls));
+
+  // 6b — a pull the tool still holds, before its own deadline (a reply in many
+  //      parts: the tool's cap grows with them), is waited for past the 45 s
+  //      watchdog, up to that deadline plus the margin; then the loop moves on.
+  reset();
+  hangOn = 1;
+  globalThis._activePulls = new Map([[1, { settled: false, deadlineAt: Date.now() + 1000 }]]);
+  await makeScope()();
+  const waited = pullTimes[1] - pullTimes[0];
+  check('waited for the tool\'s own deadline on a pull it still holds',
+        pulls.some(p => p[1] === 2) && waited >= 1000, `waited ${waited} ms; ${JSON.stringify(pulls)}`);
   hangOn = null;
 
   // 7 — CLIENTS ARE NOT BOARDS. Reported from hardware: a MgmtRelay at 19 and a

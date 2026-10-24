@@ -1279,21 +1279,41 @@
           // runs unattended in the background. A pull that never calls back would
           // park this loop forever on board one and silently strand every board
           // behind it, looking exactly like "it only pulled the first one".
-          // 45 s clears the tool's own worst case with room to spare — 3 attempts
-          // x PULL_TIMEOUT_MS 6 s, plus 2 x PULL_RETRY_MS 2.5 s = 23 s.
+          // 45 s clears the tool's own worst case for a short reply with room to
+          // spare — 3 attempts x PULL_TIMEOUT_MS 6 s, plus 2 x PULL_RETRY_MS 2.5 s
+          // = 23 s. A reply in parts the tool gives longer, as long as its parts
+          // take (PULL_PART_MS each: a full sequence store is ~35 of them), so
+          // while the tool still holds this pull the watchdog waits for the tool's
+          // own deadline (+5 s) instead: a big board is not given up on while its
+          // parts are still arriving.
           const PULL_WATCHDOG_MS = 45000;
+          const PULL_WATCHDOG_MARGIN_MS = 5000;
+          const t0 = Date.now();
+          const wizardDeadline = () => {
+            try {
+              const p = typeof _activePulls !== 'undefined' ? _activePulls.get(n) : null;
+              return p && !p.settled && p.deadlineAt ? p.deadlineAt + PULL_WATCHDOG_MARGIN_MS : 0;
+            } catch (_) { return 0; }
+          };
           let timer;
           const done = await Promise.race([
             new Promise(res => {
               const p = window.remoteBoardPull(slot, n, 1, 3, res);
               if (p && p.catch) p.catch(() => res(false));
             }),
-            new Promise(res => { timer = setTimeout(() => res('timeout'), PULL_WATCHDOG_MS); }),
+            new Promise(res => {
+              const check = () => {
+                const until = Math.max(t0 + PULL_WATCHDOG_MS, wizardDeadline());
+                if (Date.now() >= until) res('timeout');
+                else timer = setTimeout(check, Math.min(5000, until - Date.now()));
+              };
+              timer = setTimeout(check, PULL_WATCHDOG_MS);
+            }),
           ]);
           clearTimeout(timer);
           if (done === 'timeout') {
             console.warn(`[Intellex] pull of WCB${n} through ${parentNum} never reported back `
-              + `after ${PULL_WATCHDOG_MS / 1000}s — moving on to the next board. `
+              + `after ${Math.round((Date.now() - t0) / 1000)}s — moving on to the next board. `
               + 'Use that board\'s own Pull Config button to retry it.');
           }
           await new Promise(r => setTimeout(r, 250));   // let reassembly clear

@@ -225,7 +225,10 @@ through an `onComplete` **callback**, not by resolving. `relayRouteAll` can rely
 because it is user-triggered and reports through toasts; this runs unattended, so a pull that
 never calls back would park the loop forever on board one and silently strand every board
 behind it — indistinguishable from *"it only pulled the first one"*. 45 s clears the tool's own
-worst case (3 × `PULL_TIMEOUT_MS` 6 s + 2 × `PULL_RETRY_MS` 2.5 s = 23 s) with room to spare.
+worst case for a short reply (3 × `PULL_TIMEOUT_MS` 6 s + 2 × `PULL_RETRY_MS` 2.5 s = 23 s) with room to spare.
+A reply in parts the tool gives longer (`PULL_PART_MS` a part: a full sequence store is ~35 parts), so
+while the tool still holds the pull (`_activePulls`, before its `deadlineAt`) the watchdog waits for that
+deadline plus 5 s instead: a big board is not given up on while its parts are still arriving.
 
 `tools/smoke_mesh_route.js` covers all of this with no hardware, no browser and no droid — it
 *extracts the function's real source text* from the shim rather than restating it, so the test
