@@ -354,9 +354,39 @@ def probe(host: str, timeout: float = _PROBE_TIMEOUT_S) -> dict:
             info = classify(_logged_in_lines(ws, host, timeout * 2, gate))
             if gate.get("need"):
                 return dict(_unknown(), kind="locked", auth=gate["need"])
+            # A DOORWAY'S VERDICT IS CONFIRMED BY ASKING ONCE MORE. "wcb" and "relay" rest on NOT having seen a bare
+            # PONG, and a NaviCore hosting its own AP whose PONG came late - after its own ?WDP,DUMP, which carries a
+            # SELF row (N=20 ... PEER=3) like any board's - read as a WCB. Attached that way, the shim held the
+            # NaviCore tool in Via WCB on NaviCore's own access point, every line wrapped for a WCB to forward, and a
+            # Save never answered (2026-10-27; a probe moments later said navicore). A WCB or relay never PONGs for
+            # itself - it mirrors a NaviCore's, with an id - so one more PING costs a doorway up to _CONFIRM_S and
+            # settles a NaviCore.
+            if info.get("kind") in ("wcb", "relay"):
+                version = _bare_pong(ws, _CONFIRM_S)
+                if version is not None:
+                    return dict(_unknown(), kind="navicore", version=version)
             return info
     except Exception:
         return _unknown()
+
+
+_CONFIRM_S = 1.5      # how long a doorway verdict waits for a bare PONG to overturn it (probe)
+
+
+def _bare_pong(ws, seconds: float) -> Optional[str]:
+    """PING once more and wait up to `seconds` for a PONG the host sends for itself (no id) -> its version, or None.
+    An id-bearing PONG is a NaviCore behind a doorway, mirrored, and does not count (classify says why)."""
+    ws.send(PROBE_LINES[0])
+    for line in _read_lines(ws, seconds):
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("type") == "PONG" and "id" not in obj:
+            return str(obj.get("version", "unknown"))
+    return None
 
 
 def _logged_in_lines(ws, host: str, seconds: float, gate: dict):

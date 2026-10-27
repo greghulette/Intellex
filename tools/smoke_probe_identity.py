@@ -119,6 +119,22 @@ CASE_RELAY_PONG_NO_DUMP = [
 # Something on port 80 that is none of the three.
 CASE_SILENT: list[str] = []
 
+# NaviCore hosting the AP, its PONG LATE: its own dump (SELF row N=20, PEER=3) ends before the PONG lands, which read
+# as a WCB - and the NaviCore tool then wrapped every Save for a WCB to forward, on NaviCore's own AP, and got no answer
+# (2026-10-27). The confirming PING (probe's _bare_pong) gets the bare PONG this time.
+_NC_SELF_DUMP = [
+    "[WDP:N=20,CLIENT=0,ALIAS=NaviCore,HW=32,HWREV=,FW=v0.2.0_252112ROCT26,CAP=0000,CTRL=0,CAPTAGS=,MAESTRO=-,"
+    "AGE=0,SEEN=1,PEER=3]",
+    "[WDP:N=1,CLIENT=0,ALIAS=Body,HW=1,HWREV=,FW=7.0.1_241725ROCT2026,CAP=00D0,CTRL=20,CAPTAGS=mgmt.rx24,MAESTRO=1,"
+    "AGE=47,SEEN=1,PEER=1]",
+    "[WDPCFG:EN=1,AUTOJOIN=1,PEERS=3]",
+    "[WDP:END,count=3]",
+]
+CASE_NAVICORE_LATE_PONG = [_RC_CH, *_NC_SELF_DUMP]
+LATE_BARE_PONG = ['{"type":"PONG","version":"v0.2.0_252112ROCT26"}', _RC_CH]
+# A WCB doorway asked again: the NaviCore behind it answers over the mesh, mirrored WITH its id. Still a WCB.
+LATE_MESH_PONG = ['{"sys":1,"type":"PONG","id":20,"version":"v0.2.0_030003QSEP26","model":2,"mode":1}', _RC_CH]
+
 
 class _FakeWS:
     """Enough of websockets.sync.client's socket for _read_lines to work.
@@ -129,11 +145,14 @@ class _FakeWS:
     exercise that.
     """
 
-    def __init__(self, lines):
+    def __init__(self, lines, after_ping=None):
         blob = "".join(l + "\n" for l in lines)
         cut = len(blob) // 2
         self._chunks = [blob[:cut], blob[cut:]] if blob else []
         self._i = 0
+        # Lines that arrive only once a SECOND PING has gone out - the confirming one (probe's _bare_pong).
+        self._after_ping = after_ping
+        self.pings = 0
 
     def __enter__(self):
         return self
@@ -141,8 +160,11 @@ class _FakeWS:
     def __exit__(self, *_exc):
         return False
 
-    def send(self, _data):
-        pass
+    def send(self, data):
+        if '"PING"' in str(data):
+            self.pings += 1
+            if self.pings == 2 and self._after_ping:
+                self._chunks.append("".join(l + "\n" for l in self._after_ping))
 
     def recv(self, timeout=None):
         if self._i >= len(self._chunks):
@@ -154,15 +176,27 @@ class _FakeWS:
         return c
 
 
-def _install_fake(lines):
-    """Swap in a websockets client that replays `lines`. probe() imports it at
-    call time, so this has to be a module in sys.modules, not an attribute."""
+_last_ws: list = []
+
+
+def _install_fake(lines, after_ping=None):
+    """Swap in a websockets client that replays `lines` (and `after_ping` once a second PING is sent). probe() imports
+    it at call time, so this has to be a module in sys.modules, not an attribute."""
     mod = types.ModuleType("websockets.sync.client")
-    mod.connect = lambda *_a, **_k: _FakeWS(lines)
+
+    def connect(*_a, **_k):
+        ws = _FakeWS(lines, after_ping)
+        _last_ws[:] = [ws]
+        return ws
+    mod.connect = connect
     sys.modules["websockets.sync.client"] = mod
 
 
 CASES = [
+    ("NaviCore hosting, PONG late: the confirming PING finds it", CASE_NAVICORE_LATE_PONG,
+     {"kind": "navicore", "version": "v0.2.0_252112ROCT26", "relayId": None}, LATE_BARE_PONG),
+    ("WCB doorway asked again: the mirrored PONG keeps it a WCB", CASE_WCB_NO_PONG,
+     {"kind": "wcb", "alias": "Body", "relayId": "1"}, LATE_MESH_PONG),
     ("WCB doorway, relayed PONG arrives", CASE_WCB_PONG,
      {"kind": "wcb", "alias": "Body", "relayId": "1"}),
     ("WCB doorway, PONG misses the window", CASE_WCB_NO_PONG,
@@ -183,8 +217,8 @@ def main() -> int:
     import discover
 
     bad = 0
-    for name, lines, expect in CASES:
-        _install_fake(lines)
+    for name, lines, expect, *after in CASES:
+        _install_fake(lines, after[0] if after else None)
         got = discover.probe("192.168.4.1", timeout=0.05)
         for key, want in expect.items():
             ok = got.get(key) == want
@@ -205,6 +239,19 @@ def main() -> int:
     ):
         bad += not ok
         print(f"  {'PASS' if ok else 'FAIL'}  {check}" + ("" if ok else f"  got {ids}"))
+
+    # The confirming PING goes only where the verdict rests on a missing PONG: a NaviCore that answered is not asked
+    # again (no extra wait on the common case).
+    _install_fake(CASE_NAVICORE_BARE)
+    discover.probe("192.168.4.1", timeout=0.05)
+    once = _last_ws[0].pings
+    _install_fake(CASE_WCB_NO_PONG)
+    discover.probe("192.168.4.1", timeout=0.05)
+    twice = _last_ws[0].pings
+    for check, ok in (("a NaviCore that PONGed is PINGed once", once == 1),
+                      ("a doorway verdict is confirmed with a second PING", twice == 2)):
+        bad += not ok
+        print(f"  {'PASS' if ok else 'FAIL'}  {check}" + ("" if ok else f"  got {once}, {twice}"))
 
     print()
     print("probe-identity: " + ("OK" if not bad else f"{bad} FAILURE(S)"))

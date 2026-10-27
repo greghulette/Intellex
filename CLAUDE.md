@@ -679,7 +679,10 @@ python tools/smoke_fanout.py
 # Discovery's "what IS this host" logic, replaying REAL recorded console
 # streams from the bench through the real probe(). Guards the trap that a
 # doorway mirrors the mesh, so a PONG on the wire is not proof the thing you
-# are talking to sent it. Run it after touching discover.probe().
+# are talking to sent it -- and the reverse (2026-10-27): a NaviCore whose PONG
+# came after its own ?WDP,DUMP (which has a SELF row like any board's) read as
+# a WCB, so a doorway verdict is confirmed with one more PING. Run it after
+# touching discover.probe().
 python tools/smoke_probe_identity.py
 
 # The shim's mesh auto-pull, run against fakes. Extracts routeMeshThroughBoard's
