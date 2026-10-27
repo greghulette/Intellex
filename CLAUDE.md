@@ -145,7 +145,9 @@ That is a hard constraint, not a preference — a fork drifts within a week and 
 that a fix to the web tool is a fix here too.
 
 - Bundle for offline (a con floor has no internet).
-- An explicit **Update** button pulls the current version from GitHub Pages.
+- An explicit **Update** button pulls the current version from GitHub Pages, and since 2026-10-26
+  the host does the same by itself when a newer copy is published (see
+  [§ The tools update themselves](#the-tools-update-themselves)).
 - Compare versions using the tool's own footer stamp: `<span id="footer-dtg">` in `index.html`,
   set by NaviCore's pre-commit hook on every commit.
 
@@ -373,15 +375,40 @@ on screen:
   a Wizard commit does not always move `UI_VERSION`, so two branches can share a stamp.
   `changed` in the reply is read from the bundle *directory* (the swap renames it), not the
   stamp.
-- **An open tool page is never reloaded for you.** The chooser is an overlay over live panes,
-  and a reload throws away pulled configs and unpushed edits. The launcher announces on the
-  `intellex` BroadcastChannel and the shim shows Reload / Later in that tool's page.
+- **An open tool page reloads itself only when it has nothing to lose** (since 2026-10-26; it
+  used to be never). The chooser is an overlay over live panes, and a reload throws away unpushed
+  edits. The launcher announces on the `intellex` BroadcastChannel and the shim shows Reload /
+  Later in that tool's page; the page itself reloads once nothing would be lost
+  ([§ The tools update themselves](#the-tools-update-themselves)).
 - **The tools' files are served `no-cache`, and each served page stamps its own
   `<script src>`/`<link href>` with `?v=<mtime>.<size>`** (serve time only, like the shim
   tag). Without it WebKit kept a weeks-old `app.js` "fresh" on its own heuristic and never
   asked again: the new `index.html` ran the old scripts. The tool directories are resolved
   per request (`webui_dir()`, `wcb_dir()`, `_tool_files`), not by `add_static` at startup,
   or a frozen app's first Update is invisible until a restart.
+
+## The tools update themselves
+
+Greg, 2026-10-26: *"It doesn't make sense to have to manually refresh the page if we update them."*
+
+- **The host fetches a newer tool by itself** (`host._auto_update_tools_loop`): 30 s after start and
+  every 5 min, it compares each tool's served stamp with its branch's published one (the same
+  probes as `/_api/webui-version`) and runs the fetcher for what differs, under `_fetch_lock` with
+  Update tools, the branch fetch and the start repair. Offline the one probe answers at once and
+  nothing changes. What landed is recorded (`_tools_auto`) and reported as `autoUpdated` in
+  `/_api/webui-version`. `INTELLEX_AUTO_TOOLS=0` turns it off.
+- **A page learns of it from `/_api/status`**, which it already polls every 2 s (`watchLink`):
+  `tools` names the copy each tool is served from (`_bundle_token`, the bundle directory's identity,
+  so any swap moves it, whatever the stamp says), and `flashing` whether a native flash runs. The
+  first answer is the copy the page loaded; a later one naming another means a newer copy is served.
+- **"Reload when safe"** (Greg's choice over "never" and "always"): the shim's `pageBusy` reloads the
+  page as soon as nothing would be lost and says what it waits for until then, with Reload / Later.
+  Busy is: a flash, any open window or editor (`.modal-overlay.open`), a key pressed in the last
+  15 s; the config tool's `_configUnsaved()` (what Close Config asks about), `_bridgeUploadInFlight`
+  or `_bulkActive`; the Wizard's `generalSettingsDirty` or a board's "unsaved" badge
+  (`updatePushAllButton`'s own test), or a pull, push or OTA in flight. A tool state the shim cannot
+  read counts as busy, never safe. Boards the Wizard pulled are not lost: after the reload the shim
+  pulls each again (`routeMeshThroughBoard`).
 
 ## Firmware comes from a branch you choose
 
@@ -626,6 +653,7 @@ the test wants. Unset, each changes nothing, so the app as users run it is untou
 | `INTELLEX_DISCOVER_HOSTS=192.168.4.1` | The hosts discovery probes (set-but-empty means none); an explicit `?hosts=` still wins. | `discover.scan()` |
 | `INTELLEX_WS_ALLOW=192.168.4.1` | Only these hosts are attached to over WiFi or probed to re-identify a moved target (case-insensitive; set-but-empty means none). Includes `Bridge.rebuild()`'s fallback to `192.168.4.1`. | `transport.ws_allowed()`, used by `Bridge.rebuild`, `WebSocketTransport.open`, `_reidentify_if_moved` |
 | `INTELLEX_DATA_DIR=<dir>` | The per-user directory itself — settings, logs, bundles, the firmware cache — on every platform. | `paths.user_data_dir()` |
+| `INTELLEX_AUTO_TOOLS=0` | The host never fetches a newer tool by itself, so a test never has a tool swapped under it. | `host._auto_tools_enabled()` |
 
 `LOCALAPPDATA` alone isolates a host on Windows only: on macOS and Linux the directory hangs
 off the home folder, so a staged host wrote the real `~/Library/Application Support/Intellex`
@@ -713,7 +741,7 @@ node tools/smoke_wizard_reconnect.js
 # reachable(), the serial paths, scan() or the WebSocket attach.
 python tools/smoke_test_hooks.py
 
-# The two updates, against fakes: Update tools bundles what each page loads
+# The two updates, against fakes (U7: the tools updating themselves): Update tools bundles what each page loads
 # (a branch's new script, its cmdlib/ vendors) and refetches a same-stamp copy
 # that lacks one; the host calls such a copy incomplete and repairs it at start;
 # Update Intellex starts the new copy in a fresh environment, and app.py
@@ -734,6 +762,12 @@ python tools/smoke_wiki.py
 # concludes -- so the layer that disagrees is the answer. Everything offline
 # hangs off that one probe, so when it is wrong five things fail at once.
 python tools/netcheck.py
+
+# Does an open tool page reload itself onto a newer copy -- and only when it has
+# nothing to lose? Extracts the shim's pageBusy / onToolsStatus and runs them
+# against fake tool state (each thing that holds it, an unreadable state, the
+# Wizard's and the config tool's). Run after touching that section or /_api/status.
+node tools/smoke_tools_reload.js
 
 # Both browser tools have no build step, so a syntax slip silently breaks all
 # event wiring. Run after editing shell.html, launcher.html or the shim.

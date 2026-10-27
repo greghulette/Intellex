@@ -19,6 +19,11 @@ No network, no window. Checked against the REAL modules:
     U5  host.py            /_api/webui-version calls a copy missing a file its page loads incomplete and stale at
                            the published stamp; the startup repair fetches that tool alone, whole, records it for the
                            launcher to tell open pages, and leaves a copy it could not fetch saying incomplete
+    U7  host.py            the tools update themselves: a tool whose branch publishes another stamp is fetched
+                           (that one alone, or --tool all for both), none when every stamp matches or nothing could be
+                           read (offline), a fetch that does not land changes nothing; what landed is recorded for the
+                           launcher; /_api/status names the copy each tool is served from (a token that moves when one
+                           lands) and whether a flash runs; INTELLEX_AUTO_TOOLS=0 turns it off
     U6  no REST API        the release check and the branch list read github.com's own links (a local stand-in
                            here): the latest tag from where /releases/latest redirects, this computer's build from
                            the release's SHA256SUMS.txt, the branches from git's ref advertisement - and never ask
@@ -410,6 +415,103 @@ finally:
         os.environ["INTELLEX_OFFLINE"] = off6
     srv.shutdown()
     shutil.rmtree(tmp6, ignore_errors=True)
+
+# ── U7 ─────────────────────────────────────────────────────────────────────
+# 2026-10-26, Greg: "It doesn't make sense to have to manually refresh the page if we update them." The host fetches a
+# newer published tool by itself (host._auto_update_tools_once, every AUTO_TOOLS_S); a page learns of it from
+# /_api/status `tools` and reloads when it has nothing to lose (tools/smoke_tools_reload.js).
+tmp7 = pathlib.Path(tempfile.mkdtemp(prefix="intellex-smoke-auto-"))
+NC7, WZ7 = tmp7 / "webui", tmp7 / "webui_wcb"
+NC7.mkdir()
+(NC7 / "index.html").write_bytes(b'<span id="footer-dtg">NC-1</span>')
+(WZ7 / "Wizard").mkdir(parents=True)
+(WZ7 / "Wizard" / "app.js").write_bytes(b"const UI_VERSION = 'WZ-1';")
+pub7 = {"navicore": "NC-1", "wcb": "WZ-1"}
+saved7 = {k: getattr(host, k) for k in ("webui_dir", "wcb_dir", "_published_dtg", "_wcb_published_ver")}
+fetched7: list = []
+land7 = {"ok": True}
+
+
+def fake_fetch_stamp(argv, **kw):
+    """The fetcher: each tool named gets a new directory, at the published stamp, swapped in by rename."""
+    fetched7.append(argv[argv.index("--tool") + 1])
+    if not land7["ok"]:
+        return subprocess.CompletedProcess(argv, 1, "github.io is not reachable - the bundled tools are unchanged.\n", "")
+    tool = fetched7[-1]
+    for p, d, f, old in (("navicore", NC7, "index.html", 'footer-dtg">'), ("wcb", WZ7, "Wizard/app.js", "UI_VERSION = '")):
+        if tool not in (p, "all"):
+            continue
+        new = d.with_name(d.name + ".new")
+        shutil.copytree(d, new)
+        text = (new / f).read_text()
+        cur = text.split(old, 1)[1][:4]
+        (new / f).write_text(text.replace(old + cur, old + pub7[p]))
+        prev = d.with_name(d.name + ".prev")
+        shutil.rmtree(prev, ignore_errors=True)
+        d.rename(prev)
+        new.rename(d)
+    return subprocess.CompletedProcess(argv, 0, f"[{tool}] updated\n", "")
+
+
+def status7() -> dict:
+    return json.loads(asyncio.run(host.api_status(None)).body)
+
+
+try:
+    host.webui_dir, host.wcb_dir = (lambda: NC7), (lambda: WZ7)
+    host._published_dtg, host._wcb_published_ver = (lambda: pub7["navicore"]), (lambda: pub7["wcb"])
+    proc.run = fake_fetch_stamp
+    host._tools_auto.clear()
+    st0 = status7()
+    tok = st0.get("tools") or {}
+    check(set(tok) == {"navicore", "wcb"} and all(len(v) == 12 for v in tok.values()) and st0.get("flashing") is False,
+          f"U7 /_api/status names each tool's copy (a 12-character token) and that no flash runs: {tok}")
+    check(asyncio.run(host._auto_update_tools_once()) == [] and not fetched7,
+          "U7 every stamp the published one: nothing is fetched")
+    pub7.update(navicore="", wcb="")
+    check(asyncio.run(host._auto_update_tools_once()) == [] and not fetched7,
+          "U7 nothing published could be read (offline): nothing is fetched")
+    pub7.update(navicore="NC-2", wcb="WZ-1")
+    got = asyncio.run(host._auto_update_tools_once())
+    st1 = status7()
+    check(got == ["navicore"] and fetched7 == ["navicore"] and host._bundled_dtg() == "NC-2",
+          f"U7 a newer config tool alone is fetched alone: {got} {fetched7} {host._bundled_dtg()}")
+    check(st1["tools"]["navicore"] != tok["navicore"] and st1["tools"]["wcb"] == tok["wcb"],
+          f"U7 ...its token moves and the Wizard's does not: {tok} -> {st1['tools']}")
+    wv = json.loads(asyncio.run(host.api_webui_version(None)).body)
+    check((wv.get("autoUpdated") or {}).get("version") == "NC-2" and (wv.get("wcb") or {}).get("autoUpdated") is None,
+          f"U7 ...and the launcher is told what updated itself: {wv.get('autoUpdated')}")
+    fetched7.clear()
+    pub7.update(navicore="NC-3", wcb="WZ-2")
+    got = asyncio.run(host._auto_update_tools_once())
+    check(sorted(got) == ["navicore", "wcb"] and fetched7 == ["all"] and host._wcb_bundled_ver() == "WZ-2",
+          f"U7 both newer: one fetch of --tool all: {got} {fetched7}")
+    fetched7.clear()
+    pub7.update(navicore="NC-4")
+    land7["ok"] = False
+    before7 = dict(host._tools_auto)
+    got = asyncio.run(host._auto_update_tools_once())
+    check(got == [] and fetched7 == ["navicore"] and host._bundled_dtg() == "NC-3" and host._tools_auto == before7,
+          f"U7 a fetch that does not land changes nothing: {got} {host._bundled_dtg()}")
+    with host._flash_lock:
+        host._flash_state["running"] = True
+    check(status7().get("flashing") is True, "U7 /_api/status says a flash runs")
+    with host._flash_lock:
+        host._flash_state["running"] = False
+    old7 = os.environ.get("INTELLEX_AUTO_TOOLS")
+    os.environ["INTELLEX_AUTO_TOOLS"] = "0"
+    off = host._auto_tools_enabled()
+    os.environ.pop("INTELLEX_AUTO_TOOLS", None)
+    on = host._auto_tools_enabled()
+    if old7 is not None:
+        os.environ["INTELLEX_AUTO_TOOLS"] = old7
+    check(off is False and on is True, "U7 INTELLEX_AUTO_TOOLS=0 turns it off; unset it is on")
+finally:
+    proc.run = real_run
+    for k, v in saved7.items():
+        setattr(host, k, v)
+    host._tools_auto.clear()
+    shutil.rmtree(tmp7, ignore_errors=True)
 
 print()
 print("PASSED" if not failures else f"FAILED: {len(failures)} check(s)")

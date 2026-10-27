@@ -697,6 +697,7 @@ async def api_webui_version(_req: web.Request) -> web.Response:
         "reason": "" if published else _published_error,
         "missing": missing,
         "repaired": _tools_repaired.get("navicore"),
+        "autoUpdated": _tools_auto.get("navicore"),
         "wcb": {
             "bundled": wcb_bundled,
             "published": wcb_published,
@@ -706,6 +707,7 @@ async def api_webui_version(_req: web.Request) -> web.Response:
             "reason": "" if wcb_published else _wcb_published_error,
             "missing": wcb_missing,
             "repaired": _tools_repaired.get("wcb"),
+            "autoUpdated": _tools_auto.get("wcb"),
         },
     })
 
@@ -1253,6 +1255,72 @@ def _bundle_identity(product: str) -> tuple:
         return (str(d), None, None)
 
 
+def _bundle_token(product: str) -> str:
+    """_bundle_identity as the pages see it: a short opaque token, no path. /_api/status carries one per tool; a page
+    that loaded under one token and then sees another is running a copy the host no longer serves (intellex_shim.js)."""
+    import hashlib
+    return hashlib.sha1(repr(_bundle_identity(product)).encode()).hexdigest()[:12]
+
+
+# ── The tools update themselves ─────────────────────────────────────────────
+# Greg, 2026-10-26: "It doesn't make sense to have to manually refresh the page if we update them." So the host looks
+# for a newer published copy of each tool AUTO_TOOLS_FIRST_S after start and every AUTO_TOOLS_S after that, and
+# fetches it the way Update tools does: the fetcher, under _fetch_lock, for the branch each product is set to
+# (_published_dtg / _wcb_published_ver compare against that branch's copy). Offline - a droid's access point, or a
+# test host leashed by INTELLEX_OFFLINE - the one probe answers at once and nothing changes. An open page learns of it
+# from /_api/status `tools` and reloads itself once it has nothing to lose (intellex_shim.js, "reload when safe").
+# INTELLEX_AUTO_TOOLS=0 turns it off: the WCB repo's HIL harness sets it for every staged host, so a test never has a
+# tool swapped under it.
+AUTO_TOOLS_FIRST_S = 30.0
+AUTO_TOOLS_S = 300.0
+_tools_auto: dict = {}       # {product: {"version", "at"}}: what this host fetched by itself since start
+
+
+def _auto_tools_enabled() -> bool:
+    import os
+    return os.environ.get("INTELLEX_AUTO_TOOLS", "1").strip() not in ("0", "false", "no", "off")
+
+
+async def _auto_update_tools_once() -> list:
+    """Fetch every tool whose published copy (its branch's) carries another stamp than the one served. -> the products
+    that changed. A tool with no copy, or none published (offline, a branch that publishes none), is left alone."""
+    published, wcb_published = await asyncio.gather(
+        asyncio.to_thread(_published_dtg), asyncio.to_thread(_wcb_published_ver))
+    stale = []
+    bundled, wcb_bundled = _bundled_dtg(), _wcb_bundled_ver()
+    if published and bundled and published != bundled:
+        stale.append("navicore")
+    if wcb_published and wcb_bundled and wcb_published != wcb_bundled:
+        stale.append("wcb")
+    if not stale:
+        return []
+    tool = "all" if len(stale) == 2 else stale[0]
+    before = {p: _bundle_identity(p) for p in stale}
+    async with _fetch_lock:                      # never beside Update tools, the branch fetch or the start repair
+        r = await asyncio.to_thread(proc.run, _fetcher_argv(tool), capture_output=True, text=True, timeout=600)
+    changed = [p for p in stale if _bundle_identity(p) != before[p]]
+    for p in changed:
+        ver = _wcb_bundled_ver() if p == "wcb" else _bundled_dtg()
+        _tools_auto[p] = {"version": ver, "at": time.time()}
+        print(f"tools     the {p} tool updated itself to {ver}")
+    if r.returncode != 0 and len(changed) < len(stale):
+        last = ((r.stdout or r.stderr or "").strip().splitlines() or ["no output"])[-1]
+        print(f"tools     a tool update did not land: {last}")
+    return changed
+
+
+async def _auto_update_tools_loop() -> None:
+    await asyncio.sleep(AUTO_TOOLS_FIRST_S)      # after the start repair and the first page loads, not against them
+    while True:
+        try:
+            await _auto_update_tools_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                   # noqa: BLE001 - a check that fails is tried again, never fatal
+            print(f"tools     the update check failed: {type(e).__name__}: {e}")
+        await asyncio.sleep(AUTO_TOOLS_S)
+
+
 # ── Native flashing ─────────────────────────────────────────────────────────
 # The page CANNOT flash through this app: intellex_shim.js presents the host's byte
 # pipe as a Web Serial port, and esptool-js needs real DTR/RTS to walk the board
@@ -1437,6 +1505,10 @@ async def api_status(_req: web.Request) -> web.Response:
         # or null. Both tools' shim and the launcher show an entry box for it and
         # POST the token to /_api/token with this key. Never carries a token.
         "authNeeded": _public_need(bridge.auth_needed),
+        # Which copy of each tool is served now (_bundle_token), and whether a native flash runs: an open page whose
+        # copy is no longer served reloads itself when it has nothing to lose, and a flash is something to lose.
+        "tools": {"navicore": _bundle_token("navicore"), "wcb": _bundle_token("wcb")},
+        "flashing": bool(_flash_state.get("running")),
     })
 
 
@@ -2372,6 +2444,9 @@ async def _start_bg(app: web.Application) -> None:
     app["app_update_check"] = asyncio.ensure_future(asyncio.to_thread(selfupdate.check, False, False))
     # A tool copy missing a file its page loads is fetched again, also in the background (_repair_incomplete_tools).
     app["tools_repair"] = asyncio.ensure_future(_repair_incomplete_tools())
+    # A newer published tool is fetched by itself, now and then (_auto_update_tools_loop).
+    if _auto_tools_enabled():
+        app["tools_auto"] = asyncio.ensure_future(_auto_update_tools_loop())
 
 
 async def _stop_bg(app: web.Application) -> None:

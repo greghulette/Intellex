@@ -1683,12 +1683,16 @@
   // Update there replaces this tool's files or the branch it flashes from. This
   // page kept running what it loaded, so the change looked like it had not
   // happened (2026-10-15: "it knew to change the binary, but not the gui"). The
-  // launcher now says so on a BroadcastChannel (launcher.html announceTools) and
-  // the page OFFERS the reload. It never takes one by itself: a reload throws
-  // away the configs it pulled and any edit not yet pushed. At the bottom, so it
-  // never covers the still-trying banner at the top.
+  // launcher says so on a BroadcastChannel (launcher.html announceTools), and
+  // since 2026-10-26 the host fetches a newer published tool by itself
+  // (host.py _auto_update_tools_loop); either way /_api/status `tools` names the
+  // copy now served, and a page whose copy it no longer is RELOADS ITSELF WHEN IT
+  // HAS NOTHING TO LOSE (Greg: "reload when safe" - pageBusy below). Until then it
+  // offers the reload. At the bottom, so it never covers the still-trying banner
+  // at the top.
   const TOOL_KEY = IS_WCB ? 'wcb' : 'navicore';
-  function updateNotice(text) {
+  const TOOL_LABEL = IS_WCB ? 'WCB Wizard' : 'config tool';
+  function updateNotice(text, tail = ' Reload to use it — edits not yet pushed are lost.') {
     let n = document.getElementById('intellex-update');
     if (!n) {
       n = document.createElement('div');
@@ -1715,8 +1719,53 @@
       document.body.appendChild(n);
     }
     // textContent: the text comes from the launcher, but nothing here needs markup.
-    n.querySelector('.intellex-update-msg').textContent =
-      text + ' Reload to use it — edits not yet pushed are lost.';
+    n.querySelector('.intellex-update-msg').textContent = text + tail;
+  }
+
+  // What a reload would lose right now, as the rest of a sentence ("... once <it>"), or '' when nothing. Each tool's
+  // own state, read by bare name (the shim shares the tools' global scope; wizState says why), each guarded so a
+  // rename in a tool reads as busy, never as safe:
+  //   both: a native flash running (the host's), any open window or editor (.modal-overlay.open - the button editor,
+  //     Config, the clip editor, the Wizard's dialogs), a key pressed in the last TYPING_QUIET_MS;
+  //   the config tool: changes not on the board yet (_configUnsaved, what Close Config asks about), a save or library
+  //     upload in flight (_bridgeUploadInFlight, _bulkActive);
+  //   the Wizard: anything not pushed (generalSettingsDirty, a board's "unsaved" badge - updatePushAllButton's own
+  //     test), a pull, push or OTA in flight. Boards it pulled are not lost: after the reload the shim pulls each
+  //     again (routeMeshThroughBoard, once per board with no baseline), and the cabled one answers its own pull.
+  const TYPING_QUIET_MS = 15000;
+  let _lastKeyAt = 0;
+  document.addEventListener('keydown', () => { _lastKeyAt = Date.now(); }, true);
+  function pageBusy(st) {
+    if (st && st.flashing) return 'the flash finishes';
+    if (document.querySelector('.modal-overlay.open')) return 'its open window is closed';
+    if (Date.now() - _lastKeyAt < TYPING_QUIET_MS) return 'you stop typing';
+    if (!IS_WCB) {
+      try {
+        if (typeof _configUnsaved === 'function' && _configUnsaved()) return 'its changes are saved to the board';
+        if (_bridgeUploadInFlight || _bulkActive) return 'the save finishes';
+      } catch (_) { return 'it can tell nothing is unsaved'; }
+      return '';
+    }
+    try {
+      if (generalSettingsDirty || document.querySelector('[id$="-unsaved-badge"]:not([style*="none"])'))
+        return 'its changes are pushed';
+      if (_pullingBoards.size || _pushingBoards.size || _otaInProgress.size || _boardPullInFlight.size || _activePulls.size)
+        return 'its pull, push or update finishes';
+    } catch (_) { return 'it can tell nothing is unpushed'; }
+    return '';
+  }
+  // Called with every /_api/status (watchLink, every 2 s). The first answer names the copy this page loaded; a later
+  // one naming another means a newer copy is served.
+  let _toolAtLoad = null;
+  function onToolsStatus(st) {
+    const cur = st && st.tools && st.tools[TOOL_KEY];
+    if (!cur) return;
+    if (_toolAtLoad === null) { _toolAtLoad = cur; return; }
+    if (cur === _toolAtLoad) return;
+    const why = pageBusy(st);
+    if (!why) { location.reload(); return; }
+    updateNotice(`A new version of the ${TOOL_LABEL} has been downloaded. It loads by itself once ${why} —`,
+                 ' or Reload now (edits not yet pushed are lost).');
   }
   try {
     const tools = new BroadcastChannel('intellex');
@@ -1733,6 +1782,7 @@
     if (IS_WCB) wcbLinkConn(thePort);
     let st;
     try { st = await (await fetch('/_api/status')).json(); } catch (_) { return; }
+    onToolsStatus(st);
 
     // GET THE PAGE BACK. The host is attached but our socket is not open, and the
     // tool was not the one who closed it -- so the droid dropped and came back
